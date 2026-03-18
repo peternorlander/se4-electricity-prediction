@@ -1,5 +1,9 @@
 import os
 import requests
+from datetime import datetime, timezone
+
+
+SENSOR_ENTITY_ID = "sensor.electricity_price_predictions"
 
 
 def _get_headers() -> dict:
@@ -14,7 +18,7 @@ def _get_base_url() -> str:
     return os.environ["HA_URL"].rstrip("/")
 
 
-def fetch_electricity_addon() -> float:
+def fetch_addon_value() -> float:
     """
     Fetch the electricity price addon value from HA.
 
@@ -25,39 +29,64 @@ def fetch_electricity_addon() -> float:
     response = requests.get(url, headers=_get_headers(), timeout=10)
     response.raise_for_status()
 
-    state = response.json()["state"]
+    value = float(response.json()["state"])
+    print(f"  → Fetched electricity_price_addon: {value} SEK/kWh")
 
-    return float(state)
+    return value
 
 
-def push_predictions(predictions_raw: dict, predictions_with_addon: dict, timestamp: str) -> None:
+def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
     """
-    Push price predictions to a HA sensor via the REST API.
+    Apply 5% markup and fixed addon to raw SEK/kWh predictions.
 
-    Creates or updates sensor.electricity_price_predictions with:
-      - state: ISO timestamp of when the prediction was made
-      - attributes:
-          predictions_raw: list of {date, min, mean, max} in SEK/kWh
-          predictions_with_addon: same structure with addon applied
+    Formula: adjusted = raw * 1.05 + addon_value
 
     Args:
         predictions_raw: Dict keyed by date string with min/mean/max in SEK/kWh.
-        predictions_with_addon: Same structure with addon and VAT applied.
-        timestamp: ISO formatted datetime string for the state value.
+        addon_value: Fixed addon in SEK/kWh from input_number.electricity_price_addon.
+
+    Returns:
+        Same structure with addon applied.
     """
-    def _to_list(predictions: dict) -> list:
-        return [
-            {
-                "date": date_str,
-                "min": values["min"],
-                "mean": values["mean"],
-                "max": values["max"]
-            }
-            for date_str, values in predictions.items()
-        ]
+    adjusted = {}
+
+    for day, values in predictions_raw.items():
+        adjusted[day] = {
+            "min": round(values["min"] * 1.05 + addon_value, 4),
+            "mean": round(values["mean"] * 1.05 + addon_value, 4),
+            "max": round(values["max"] * 1.05 + addon_value, 4)
+        }
+
+    return adjusted
+
+
+def _to_list(predictions: dict) -> list:
+    return [
+        {
+            "date": date_str,
+            "min": values["min"],
+            "mean": values["mean"],
+            "max": values["max"]
+        }
+        for date_str, values in predictions.items()
+    ]
+
+
+def push_predictions(predictions_raw: dict, predictions_with_addon: dict) -> None:
+    """
+    Push price predictions to a HA sensor via the REST API.
+
+    Creates or updates sensor.electricity_price_predictions with state set to
+    the UTC timestamp of when the prediction was made.
+
+    Args:
+        predictions_raw: Dict keyed by date string with min/mean/max in SEK/kWh.
+        predictions_with_addon: Same structure with 5% markup and addon applied.
+    """
+    predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
     payload = {
-        "state": timestamp,
+        "state": predicted_at,
         "attributes": {
             "predictions_raw": _to_list(predictions_raw),
             "predictions_with_addon": _to_list(predictions_with_addon),
@@ -66,8 +95,9 @@ def push_predictions(predictions_raw: dict, predictions_with_addon: dict, timest
         }
     }
 
-    url = f"{_get_base_url()}/api/states/sensor.electricity_price_predictions"
+    url = f"{_get_base_url()}/api/states/{SENSOR_ENTITY_ID}"
     response = requests.post(url, headers=_get_headers(), json=payload, timeout=10)
     response.raise_for_status()
 
-    print(f"Pushed predictions to HA: {response.status_code}")
+    print(f"  → Pushed predictions to HA: {SENSOR_ENTITY_ID}")
+    print(f"  → State set to: {predicted_at}")
