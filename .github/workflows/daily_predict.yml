@@ -26,4 +26,6 @@ jobs:
       - name: Run prediction
         env:
           ENTSO_E_TOKEN: ${{ secrets.ENTSO_E_TOKEN }}
+          HA_URL: ${{ secrets.HA_URL }}
+          HA_TOKEN: ${{ secrets.HA_TOKEN }}
         run: python predict.py

@@ -1,37 +1,7 @@
-import requests
 import pandas as pd
 from datetime import date
 
-
-NORDPOOL_API_URL = "https://dataportal-api.nordpoolgroup.com/api/DayAheadPrices"
-SE4_DELIVERY_AREA = "SE4"
-
-
-def _fetch_nordpool_today_sek() -> float:
-    """
-    Fetch today's average day-ahead price from Nordpool in SEK/MWh.
-
-    Returns:
-        Daily mean price in SEK/MWh.
-    """
-    today_str = date.today().strftime("%Y-%m-%d")
-    params = {
-        "currency": "SEK",
-        "deliveryArea": SE4_DELIVERY_AREA,
-        "date": today_str
-    }
-
-    response = requests.get(NORDPOOL_API_URL, params=params, timeout=30)
-    response.raise_for_status()
-
-    data = response.json()
-    prices = [
-        entry["entryPerArea"][SE4_DELIVERY_AREA]
-        for entry in data["multiAreaEntries"]
-        if entry.get("entryPerArea", {}).get(SE4_DELIVERY_AREA) is not None
-    ]
-
-    return sum(prices) / len(prices)
+from sources.nordpool import fetch_today_mean_sek
 
 
 def calculate_eur_to_sek_rate(entso_e_prices_df: pd.DataFrame) -> float:
@@ -48,7 +18,7 @@ def calculate_eur_to_sek_rate(entso_e_prices_df: pd.DataFrame) -> float:
     Returns:
         Exchange rate as float (SEK per EUR).
     """
-    nordpool_mean_sek = _fetch_nordpool_today_sek()
+    nordpool_mean_sek = fetch_today_mean_sek()
 
     today = date.today()
     df = entso_e_prices_df.copy()
@@ -60,9 +30,9 @@ def calculate_eur_to_sek_rate(entso_e_prices_df: pd.DataFrame) -> float:
 
     rate = nordpool_mean_sek / entso_mean_eur
 
-    print(f"Nordpool today mean: {nordpool_mean_sek:.2f} SEK/MWh")
-    print(f"ENTSO-E today mean:  {entso_mean_eur:.2f} EUR/MWh")
-    print(f"Derived EUR/SEK rate: {rate:.4f}")
+    print(f"  Nordpool today mean: {nordpool_mean_sek:.2f} SEK/MWh")
+    print(f"  ENTSO-E today mean:  {entso_mean_eur:.2f} EUR/MWh")
+    print(f"  Derived EUR/SEK rate: {rate:.4f}")
 
     return rate
 
