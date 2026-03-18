@@ -25,7 +25,11 @@ def _fetch_nordpool_today_sek() -> float:
     response.raise_for_status()
 
     data = response.json()
-    prices = [entry["price"] for entry in data["multiAreaEntries"] if entry["price"] is not None]
+    prices = [
+        entry["entryPerArea"][SE4_DELIVERY_AREA]
+        for entry in data["multiAreaEntries"]
+        if entry.get("entryPerArea", {}).get(SE4_DELIVERY_AREA) is not None
+    ]
 
     return sum(prices) / len(prices)
 
