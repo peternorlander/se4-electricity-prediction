@@ -2,3 +2,4 @@ requests>=2.32
 pandas>=2.2
 numpy>=1.26
 xgboost>=2.0
+scikit-learn>=1.4
