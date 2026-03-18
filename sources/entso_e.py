@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 
 SE4_AREA_CODE = "10Y1001A1001A47J"
-ENTSO_E_API_URL = "https://web-api.tp.entsoe.eu/api""
+ENTSO_E_API_URL = "https://web-api.tp.entsoe.eu/api"
 
 
 def _get_token() -> str:
