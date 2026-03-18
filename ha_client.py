@@ -42,7 +42,7 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
     Formula: adjusted = raw * 1.05 + addon_value
 
     Args:
-        predictions_raw: Dict keyed by date string with min/mean/max in SEK/kWh.
+        predictions_raw: Dict keyed by date string with min/avg/max in SEK/kWh.
         addon_value: Fixed addon in SEK/kWh from input_number.electricity_price_addon.
 
     Returns:
@@ -53,7 +53,7 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
     for day, values in predictions_raw.items():
         adjusted[day] = {
             "min": round(values["min"] * 1.05 + addon_value, 4),
-            "mean": round(values["mean"] * 1.05 + addon_value, 4),
+            "avg": round(values["avg"] * 1.05 + addon_value, 4),
             "max": round(values["max"] * 1.05 + addon_value, 4)
         }
 
@@ -65,7 +65,7 @@ def _to_list(predictions: dict) -> list:
         {
             "date": date_str,
             "min": values["min"],
-            "mean": values["mean"],
+            "avg": values["avg"],
             "max": values["max"]
         }
         for date_str, values in predictions.items()
@@ -80,7 +80,7 @@ def push_predictions(predictions_raw: dict, predictions_with_addon: dict) -> Non
     the UTC timestamp of when the prediction was made.
 
     Args:
-        predictions_raw: Dict keyed by date string with min/mean/max in SEK/kWh.
+        predictions_raw: Dict keyed by date string with min/avg/max in SEK/kWh.
         predictions_with_addon: Same structure with 5% markup and addon applied.
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]

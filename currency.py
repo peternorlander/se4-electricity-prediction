@@ -42,7 +42,7 @@ def convert_predictions_to_sek(predictions: dict, eur_to_sek_rate: float) -> dic
     Convert predicted prices from EUR/MWh to SEK/kWh.
 
     Args:
-        predictions: Dict keyed by date string with min/mean/max in EUR/MWh.
+        predictions: Dict keyed by date string with min/avg/max in EUR/MWh.
         eur_to_sek_rate: Exchange rate (SEK per EUR).
 
     Returns:
@@ -53,7 +53,7 @@ def convert_predictions_to_sek(predictions: dict, eur_to_sek_rate: float) -> dic
     for day, values in predictions.items():
         converted[day] = {
             "min": round(values["min"] * eur_to_sek_rate / 1000, 4),
-            "mean": round(values["mean"] * eur_to_sek_rate / 1000, 4),
+            "avg": round(values["avg"] * eur_to_sek_rate / 1000, 4),
             "max": round(values["max"] * eur_to_sek_rate / 1000, 4)
         }
 

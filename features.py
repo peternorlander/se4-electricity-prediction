@@ -32,13 +32,13 @@ def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
 
 def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Aggregate hourly ENTSO-E prices to daily min/mean/max.
+    Aggregate hourly ENTSO-E prices to daily min/avg/max.
 
     Args:
         df: DataFrame with columns: timestamp (UTC), price_eur_mwh.
 
     Returns:
-        DataFrame with one row per day and price_min/mean/max columns.
+        DataFrame with one row per day and price_min/avg/max columns.
     """
     df = df.copy()
     df["timestamp_local"] = df["timestamp"].dt.tz_convert("Europe/Stockholm")
@@ -46,7 +46,7 @@ def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
 
     return df.groupby("date").agg(
         price_min=("price_eur_mwh", "min"),
-        price_mean=("price_eur_mwh", "mean"),
+        price_avg=("price_eur_mwh", "mean"),
         price_max=("price_eur_mwh", "max")
     ).reset_index()
 
