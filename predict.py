@@ -2,7 +2,12 @@ import json
 from datetime import datetime, timedelta
 
 from sources.entso_e import fetch_prices
-from sources.open_meteo import fetch_historical, fetch_forecast
+from sources.open_meteo import (
+    fetch_historical,
+    fetch_forecast,
+    fetch_international_wind_historical,
+    fetch_international_wind_forecast,
+)
 from sources.nordpool import get_dates_with_known_prices
 from features import build_training_data, build_forecast_features
 from model import train, predict
@@ -40,6 +45,17 @@ def main():
     forecast_hourly = fetch_forecast()
     print(f"  → {len(forecast_hourly)} records")
 
+    print(f"Fetching historical wind data DE/DK {historical_start} → {weather_hist_end}...")
+    wind_intl_hourly = fetch_international_wind_historical(
+        str(historical_start),
+        str(weather_hist_end)
+    )
+    print(f"  → {len(wind_intl_hourly)} records")
+
+    print("Fetching 8-day wind forecast DE/DK...")
+    wind_intl_forecast = fetch_international_wind_forecast()
+    print(f"  → {len(wind_intl_forecast)} records")
+
     print("Deriving EUR/SEK exchange rate...")
     eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly)
 
@@ -47,14 +63,14 @@ def main():
     known_price_dates = get_dates_with_known_prices()
 
     print("Building training data...")
-    training_data = build_training_data(prices_hourly, weather_hourly)
+    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly)
     print(f"  → {len(training_data)} days of merged data")
 
     print("Training models...")
     models = train(training_data)
     print("  → Done")
 
-    forecast_features = build_forecast_features(forecast_hourly)
+    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast)
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
     ].reset_index(drop=True)
