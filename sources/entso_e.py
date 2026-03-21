@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 
 
 SE4_AREA_CODE   = "10Y1001A1001A47J"
-DE_LU_AREA_CODE = "10Y1001A1001A82H"  # Germany/Luxembourg — prisledare för norra Europa
-DK2_AREA_CODE   = "10YDK-2--------M"  # Danmark DK2 — direkt kopplat till SE4
+DE_LU_AREA_CODE = "10Y1001A1001A82H"  # Germany/Luxembourg — price leader for northern Europe
+DK2_AREA_CODE   = "10YDK-2--------M"  # Denmark DK2 — directly coupled to SE4
 ENTSO_E_API_URL = "https://web-api.tp.entsoe.eu/api"
 
 

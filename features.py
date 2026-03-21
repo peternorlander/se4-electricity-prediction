@@ -187,7 +187,7 @@ def build_forecast_features(
     Args:
         forecast_hourly:           Hourly weather forecast from Open-Meteo (SE4/Malmö).
         wind_intl_forecast_hourly: Hourly wind forecast for Germany and Denmark.
-        market_daily:              Dagliga DE/DK2-priser från aggregate_market_prices_daily().
+        market_daily:              Daily DE/DK2 prices from aggregate_market_prices_daily().
 
     Returns:
         Daily DataFrame with feature columns ready for inference.
@@ -197,8 +197,8 @@ def build_forecast_features(
 
     forecast_daily = pd.merge(forecast_daily, wind_intl_daily, on="date")
 
-    # Framtida DE/DK2-priser är okända — vi använder det senaste kända priset
-    # som "marknadsregim-indikator" för hela prognoshorisonten.
+    # Future DE/DK2 prices are unknown — we use the most recent known price
+    # as a "market regime indicator" for the entire forecast horizon.
     last_known = market_daily.iloc[-1]
     forecast_daily["price_de_lag1"] = last_known["price_de"]
     forecast_daily["price_dk2_lag1"] = last_known["price_dk2"]
