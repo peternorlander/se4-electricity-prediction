@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, UTC
 
-from sources.entso_e import fetch_prices
+from sources.entso_e import fetch_prices, fetch_market_prices
 from sources.open_meteo import (
     fetch_historical,
     fetch_forecast,
@@ -9,7 +9,11 @@ from sources.open_meteo import (
     fetch_international_wind_forecast,
 )
 from sources.nordpool import get_dates_with_known_prices
-from features import build_training_data, build_forecast_features
+from features import (
+    build_training_data,
+    build_forecast_features,
+    aggregate_market_prices_daily,
+)
 from model import train, predict
 from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
 from ha_client import fetch_addon_value, apply_addon, push_predictions
@@ -56,6 +60,14 @@ def main():
     wind_intl_forecast = fetch_international_wind_forecast()
     print(f"  → {len(wind_intl_forecast)} records")
 
+    print(f"Fetching DE/DK2 market prices {historical_start} → {today}...")
+    market_prices_hourly = fetch_market_prices(
+        historical_start.strftime("%Y%m%d"),
+        today.strftime("%Y%m%d")
+    )
+    print(f"  → {len(market_prices_hourly)} records")
+    market_daily = aggregate_market_prices_daily(market_prices_hourly)
+
     print("Deriving EUR/SEK exchange rate...")
     eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly)
 
@@ -63,14 +75,14 @@ def main():
     known_price_dates = get_dates_with_known_prices()
 
     print("Building training data...")
-    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly)
+    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly)
     print(f"  → {len(training_data)} days of merged data")
 
     print("Training models...")
     models = train(training_data)
     print("  → Done")
 
-    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast)
+    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily)
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
     ].reset_index(drop=True)

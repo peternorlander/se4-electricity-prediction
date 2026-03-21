@@ -1,4 +1,5 @@
 import pandas as pd
+from datetime import timedelta
 
 
 FEATURE_COLUMNS = [
@@ -11,6 +12,9 @@ FEATURE_COLUMNS = [
     "mean_wind_utklippan",
     "mean_wind_karlskrona",
     "mean_wind_hano",
+    # Market coupling — lag-1 Day-Ahead prices (EUR/MWh) from neighbouring zones
+    "price_de_lag1",   # German (DE/LU) price from the previous day
+    "price_dk2_lag1",  # Danish (DK2) price from the previous day
     "day_of_week", "month", "day_of_year"
 ]
 
@@ -100,18 +104,60 @@ def aggregate_international_wind_daily(df: pd.DataFrame) -> pd.DataFrame:
     return df.groupby("date").agg(**agg).reset_index()
 
 
+def aggregate_market_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate hourly DE/DK2 market prices to daily means (Stockholm-tid).
+
+    Args:
+        df: DataFrame with columns: timestamp (UTC tz-aware), price_de, price_dk2.
+
+    Returns:
+        DataFrame with one row per day and columns: date, price_de, price_dk2.
+    """
+    df = df.copy()
+    df["date"] = df["timestamp"].dt.tz_convert("Europe/Stockholm").dt.date
+
+    return df.groupby("date").agg(
+        price_de=("price_de", "mean"),
+        price_dk2=("price_dk2", "mean"),
+    ).reset_index()
+
+
+def add_market_lag_features(df: pd.DataFrame, market_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add lag-1 market prices (DE and DK2) to a daily DataFrame.
+
+    Prices from day D-1 are joined to day D. Since the day-ahead auction runs
+    simultaneously across all exchanges, only historical prices can be used as features.
+
+    Args:
+        df:           Daily DataFrame with a 'date' column (date objects).
+        market_daily: Daily DataFrame from aggregate_market_prices_daily().
+
+    Returns:
+        df with added columns price_de_lag1 and price_dk2_lag1.
+    """
+    lagged = market_daily.copy()
+    lagged["date"] = (pd.to_datetime(lagged["date"]) + timedelta(days=1)).dt.date
+    lagged = lagged.rename(columns={"price_de": "price_de_lag1", "price_dk2": "price_dk2_lag1"})
+
+    return pd.merge(df, lagged[["date", "price_de_lag1", "price_dk2_lag1"]], on="date", how="left")
+
+
 def build_training_data(
     prices_hourly: pd.DataFrame,
     weather_hourly: pd.DataFrame,
     wind_intl_hourly: pd.DataFrame,
+    market_prices_hourly: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Merge and prepare the full training dataset.
 
     Args:
-        prices_hourly: Hourly prices from ENTSO-E.
-        weather_hourly: Hourly weather from Open-Meteo archive (SE4/Malmö).
-        wind_intl_hourly: Hourly wind data for Germany and Denmark.
+        prices_hourly:        Hourly SE4 prices from ENTSO-E.
+        weather_hourly:       Hourly weather from Open-Meteo archive (SE4/Malmö).
+        wind_intl_hourly:     Hourly wind data for Germany and Denmark.
+        market_prices_hourly: Hourly DE/LU + DK2 prices from ENTSO-E.
 
     Returns:
         Daily DataFrame ready for model training.
@@ -119,9 +165,11 @@ def build_training_data(
     prices_daily = aggregate_prices_daily(prices_hourly)
     weather_daily = aggregate_weather_daily(weather_hourly)
     wind_intl_daily = aggregate_international_wind_daily(wind_intl_hourly)
+    market_daily = aggregate_market_prices_daily(market_prices_hourly)
 
     merged = pd.merge(prices_daily, weather_daily, on="date")
     merged = pd.merge(merged, wind_intl_daily, on="date")
+    merged = add_market_lag_features(merged, market_daily)
     merged = add_time_features(merged)
     merged = merged.dropna().reset_index(drop=True)
 
@@ -131,13 +179,15 @@ def build_training_data(
 def build_forecast_features(
     forecast_hourly: pd.DataFrame,
     wind_intl_forecast_hourly: pd.DataFrame,
+    market_daily: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
 
     Args:
-        forecast_hourly: Hourly weather forecast from Open-Meteo (SE4/Malmö).
+        forecast_hourly:           Hourly weather forecast from Open-Meteo (SE4/Malmö).
         wind_intl_forecast_hourly: Hourly wind forecast for Germany and Denmark.
+        market_daily:              Dagliga DE/DK2-priser från aggregate_market_prices_daily().
 
     Returns:
         Daily DataFrame with feature columns ready for inference.
@@ -146,6 +196,13 @@ def build_forecast_features(
     wind_intl_daily = aggregate_international_wind_daily(wind_intl_forecast_hourly)
 
     forecast_daily = pd.merge(forecast_daily, wind_intl_daily, on="date")
+
+    # Framtida DE/DK2-priser är okända — vi använder det senaste kända priset
+    # som "marknadsregim-indikator" för hela prognoshorisonten.
+    last_known = market_daily.iloc[-1]
+    forecast_daily["price_de_lag1"] = last_known["price_de"]
+    forecast_daily["price_dk2_lag1"] = last_known["price_dk2"]
+
     forecast_daily = add_time_features(forecast_daily)
 
     return forecast_daily
