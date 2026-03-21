@@ -71,18 +71,13 @@ def _parse_period(period: ET.Element) -> list:
     return records
 
 
-def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    Fetch day-ahead prices from ENTSO-E for a given bidding zone.
 
-    Args:
-        area_code:  ENTSO-E bidding zone EIC code.
-        start_date: Start date in YYYYMMDD format.
-        end_date:   End date in YYYYMMDD format (exclusive).
+# ENTSO-E API maximum allowed date range per request
+_MAX_RANGE_DAYS = 365
 
-    Returns:
-        DataFrame with columns: timestamp (UTC), price_eur_mwh.
-    """
+
+def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """Fetch a single chunk (max 365 days) of day-ahead prices from ENTSO-E."""
     params = {
         "documentType": "A44",
         "in_Domain": area_code,
@@ -103,6 +98,40 @@ def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.Dat
 
     df = pd.DataFrame(records)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+
+    return df
+
+
+def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Fetch day-ahead prices from ENTSO-E for a given bidding zone.
+
+    Automatically splits requests longer than 365 days into yearly chunks,
+    since the ENTSO-E API enforces a maximum range per request.
+
+    Args:
+        area_code:  ENTSO-E bidding zone EIC code.
+        start_date: Start date in YYYYMMDD format.
+        end_date:   End date in YYYYMMDD format (exclusive).
+
+    Returns:
+        DataFrame with columns: timestamp (UTC), price_eur_mwh.
+    """
+    start = datetime.strptime(start_date, "%Y%m%d")
+    end = datetime.strptime(end_date, "%Y%m%d")
+    chunks = []
+
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=_MAX_RANGE_DAYS), end)
+        chunks.append(_fetch_prices_area_chunk(
+            area_code,
+            chunk_start.strftime("%Y%m%d"),
+            chunk_end.strftime("%Y%m%d"),
+        ))
+        chunk_start = chunk_end
+
+    df = pd.concat(chunks, ignore_index=True)
     df = df.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
 
     return df
