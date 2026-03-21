@@ -12,6 +12,10 @@ FEATURE_COLUMNS = [
     "mean_wind_utklippan",
     "mean_wind_karlskrona",
     "mean_wind_hano",
+    # Solar radiation (GHI, W/m²) — global horizontal irradiance drives solar output
+    "mean_radiation", "max_radiation",          # SE4 local (Malmö / Open-Meteo ERA5)
+    "mean_radiation_de_north",                  # Northern Germany — largest solar market affecting SE4
+    "mean_radiation_dk1", "mean_radiation_dk2", # Denmark — directly coupled to SE4
     # Market coupling — lag-1 Day-Ahead prices (EUR/MWh) from neighbouring zones
     "price_de_lag1",   # German (DE/LU) price from the previous day
     "price_dk2_lag1",  # Danish (DK2) price from the previous day
@@ -24,7 +28,7 @@ def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
     Aggregate hourly weather data to daily features.
 
     Args:
-        df: DataFrame with columns: timestamp, temperature, windspeed.
+        df: DataFrame with columns: timestamp, temperature, windspeed, radiation.
 
     Returns:
         DataFrame with one row per day and aggregated weather columns.
@@ -37,7 +41,9 @@ def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
         min_temp=("temperature", "min"),
         max_temp=("temperature", "max"),
         mean_wind=("windspeed", "mean"),
-        max_wind=("windspeed", "max")
+        max_wind=("windspeed", "max"),
+        mean_radiation=("radiation", "mean"),
+        max_radiation=("radiation", "max"),
     ).reset_index()
 
 
@@ -81,25 +87,30 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def aggregate_international_wind_daily(df: pd.DataFrame) -> pd.DataFrame:
+def aggregate_international_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Aggregate hourly international wind data to daily means.
+    Aggregate hourly international wind and solar data to daily means.
 
-    Detects all columns named windspeed_{location} and produces mean_wind_{location}.
-    This is driven by WIND_LOCATIONS in sources/open_meteo.py — no changes needed here
-    when locations are added or removed.
+    Detects all windspeed_{key} and radiation_{key} columns and produces
+    mean_wind_{key} and mean_radiation_{key} respectively.
+    Driven by WIND_LOCATIONS in sources/open_meteo.py — no changes needed
+    here when locations are added or removed.
 
     Args:
-        df: DataFrame with columns: timestamp, windspeed_{location}, ...
+        df: DataFrame with columns: timestamp, windspeed_{key}, radiation_{key}, ...
 
     Returns:
-        DataFrame with one row per day and mean_wind_{location} columns.
+        DataFrame with one row per day and mean_wind_{key} / mean_radiation_{key} columns.
     """
     df = df.copy()
     df["date"] = pd.to_datetime(df["timestamp"]).dt.date
 
     wind_cols = [c for c in df.columns if c.startswith("windspeed_")]
-    agg = {f"mean_wind_{c[len('windspeed_'):]}": (c, "mean") for c in wind_cols}
+    rad_cols  = [c for c in df.columns if c.startswith("radiation_")]
+
+    agg = {}
+    agg.update({f"mean_wind_{c[len('windspeed_'):]}":      (c, "mean") for c in wind_cols})
+    agg.update({f"mean_radiation_{c[len('radiation_'):]}" : (c, "mean") for c in rad_cols})
 
     return df.groupby("date").agg(**agg).reset_index()
 
@@ -164,7 +175,7 @@ def build_training_data(
     """
     prices_daily = aggregate_prices_daily(prices_hourly)
     weather_daily = aggregate_weather_daily(weather_hourly)
-    wind_intl_daily = aggregate_international_wind_daily(wind_intl_hourly)
+    wind_intl_daily = aggregate_international_weather_daily(wind_intl_hourly)
     market_daily = aggregate_market_prices_daily(market_prices_hourly)
 
     merged = pd.merge(prices_daily, weather_daily, on="date")
@@ -193,7 +204,7 @@ def build_forecast_features(
         Daily DataFrame with feature columns ready for inference.
     """
     forecast_daily = aggregate_weather_daily(forecast_hourly)
-    wind_intl_daily = aggregate_international_wind_daily(wind_intl_forecast_hourly)
+    wind_intl_daily = aggregate_international_weather_daily(wind_intl_forecast_hourly)
 
     forecast_daily = pd.merge(forecast_daily, wind_intl_daily, on="date")
 

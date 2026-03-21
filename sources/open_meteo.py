@@ -9,7 +9,10 @@ OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 LOCATION_LAT = 55.6
 LOCATION_LON = 13.0
 TIMEZONE = "Europe/Stockholm"
-HOURLY_VARIABLES = "temperature_2m,windspeed_10m"
+HOURLY_VARIABLES = "temperature_2m,windspeed_10m,shortwave_radiation"
+
+# Variables fetched per international location (wind + solar)
+INTL_VARIABLES = "windspeed_10m,shortwave_radiation"
 
 # Named extra wind locations for grid correlation features.
 # Keys become column names: windspeed_{key} → mean_wind_{key}.
@@ -24,11 +27,13 @@ WIND_LOCATIONS = {
 
 
 def _parse_response(data: dict) -> pd.DataFrame:
+    hourly = data["hourly"]
     return pd.DataFrame(
         {
-            "timestamp": pd.to_datetime(data["hourly"]["time"]),
-            "temperature": data["hourly"]["temperature_2m"],
-            "windspeed": data["hourly"]["windspeed_10m"]
+            "timestamp": pd.to_datetime(hourly["time"]),
+            "temperature": hourly["temperature_2m"],
+            "windspeed": hourly["windspeed_10m"],
+            "radiation": hourly["shortwave_radiation"],
         }
     )
 
@@ -44,7 +49,7 @@ def fetch_historical(start_date: str, end_date: str) -> pd.DataFrame:
         end_date: End date as YYYY-MM-DD string.
 
     Returns:
-        DataFrame with columns: timestamp, temperature, windspeed.
+        DataFrame with columns: timestamp, temperature, windspeed, radiation (W/m²).
     """
     params = {
         "latitude": LOCATION_LAT,
@@ -66,7 +71,7 @@ def fetch_forecast() -> pd.DataFrame:
     Fetch 8-day hourly weather forecast from Open-Meteo.
 
     Returns:
-        DataFrame with columns: timestamp, temperature, windspeed.
+        DataFrame with columns: timestamp, temperature, windspeed, radiation (W/m²).
     """
     params = {
         "latitude": LOCATION_LAT,
@@ -82,32 +87,36 @@ def fetch_forecast() -> pd.DataFrame:
     return _parse_response(response.json())
 
 
-def _fetch_wind_series(lat: float, lon: float, url: str, extra_params: dict) -> pd.Series:
+def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict) -> pd.DataFrame:
+    """Fetch wind speed and solar radiation for a single location."""
     params = {
         "latitude": lat,
         "longitude": lon,
-        "hourly": "windspeed_10m",
+        "hourly": INTL_VARIABLES,
         "timezone": TIMEZONE,
         **extra_params,
     }
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
-    data = response.json()
-    return pd.Series(
-        data["hourly"]["windspeed_10m"],
-        index=pd.to_datetime(data["hourly"]["time"])
-    )
+    hourly = response.json()["hourly"]
+    return pd.DataFrame({
+        "time": pd.to_datetime(hourly["time"]),
+        "windspeed": hourly["windspeed_10m"],
+        "radiation": hourly["shortwave_radiation"],
+    })
 
 
-def _fetch_all_wind_locations(url: str, extra_params: dict) -> pd.DataFrame:
-    series = {
-        name: _fetch_wind_series(lat, lon, url, extra_params)
+def _fetch_all_locations(url: str, extra_params: dict) -> pd.DataFrame:
+    location_data = {
+        name: _fetch_location_series(lat, lon, url, extra_params)
         for name, (lat, lon) in WIND_LOCATIONS.items()
     }
-    first = next(iter(series.values()))
-    return pd.DataFrame(
-        {"timestamp": first.index, **{f"windspeed_{name}": s.values for name, s in series.items()}}
-    )
+    first = next(iter(location_data.values()))
+    df = pd.DataFrame({"timestamp": first["time"]})
+    for name, loc_df in location_data.items():
+        df[f"windspeed_{name}"] = loc_df["windspeed"].values
+        df[f"radiation_{name}"] = loc_df["radiation"].values
+    return df
 
 
 def fetch_international_wind_historical(start_date: str, end_date: str) -> pd.DataFrame:
@@ -119,9 +128,9 @@ def fetch_international_wind_historical(start_date: str, end_date: str) -> pd.Da
         end_date: End date as YYYY-MM-DD string.
 
     Returns:
-        DataFrame with columns: timestamp, windspeed_{location_key}, ...
+        DataFrame with columns: timestamp, windspeed_{key}, radiation_{key}, ...
     """
-    return _fetch_all_wind_locations(
+    return _fetch_all_locations(
         OPEN_METEO_ARCHIVE_URL,
         {"start_date": start_date, "end_date": end_date},
     )
@@ -129,12 +138,12 @@ def fetch_international_wind_historical(start_date: str, end_date: str) -> pd.Da
 
 def fetch_international_wind_forecast() -> pd.DataFrame:
     """
-    Fetch 8-day hourly wind speed forecast for all WIND_LOCATIONS from Open-Meteo.
+    Fetch 8-day hourly wind speed and solar radiation forecast for all WIND_LOCATIONS.
 
     Returns:
-        DataFrame with columns: timestamp, windspeed_{location_key}, ...
+        DataFrame with columns: timestamp, windspeed_{key}, radiation_{key}, ...
     """
-    return _fetch_all_wind_locations(
+    return _fetch_all_locations(
         OPEN_METEO_FORECAST_URL,
         {"forecast_days": 8},
     )
