@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 from sources.entso_e import fetch_prices
 from sources.open_meteo import (
@@ -23,7 +23,7 @@ TRAINING_DAYS = 365
 
 
 def main():
-    today = datetime.utcnow().date()
+    today = datetime.now(UTC).date()
     historical_start = today - timedelta(days=TRAINING_DAYS)
     weather_hist_end = today - timedelta(days=WEATHER_ARCHIVE_LAG_DAYS)
 
