@@ -72,7 +72,12 @@ def _to_list(predictions: dict) -> list:
     ]
 
 
-def push_predictions(predictions_raw: dict, predictions_with_addon: dict) -> None:
+def push_predictions(
+    predictions_raw: dict,
+    predictions_with_addon: dict,
+    model_metrics: dict = None,
+    feature_importance: dict = None,
+) -> None:
     """
     Push price predictions to a HA sensor via the REST API.
 
@@ -80,19 +85,32 @@ def push_predictions(predictions_raw: dict, predictions_with_addon: dict) -> Non
     the UTC timestamp of when the prediction was made.
 
     Args:
-        predictions_raw: Dict keyed by date string with min/avg/max in SEK/kWh.
+        predictions_raw:        Dict keyed by date string with min/avg/max in SEK/kWh.
         predictions_with_addon: Same structure with 5% markup and addon applied.
+        model_metrics:          Walk-forward MAE stats from walk_forward_validate().
+        feature_importance:     Feature importance dict from get_feature_importance().
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
+    attributes = {
+        "predictions_raw": _to_list(predictions_raw),
+        "predictions_with_addon": _to_list(predictions_with_addon),
+        "friendly_name": "Electricity Price Predictions",
+        "unit_of_measurement": "SEK/kWh"
+    }
+
+    if model_metrics is not None:
+        attributes["mae_overall"] = model_metrics["mae_overall"]
+        attributes["mae_min"] = model_metrics["mae_min"]
+        attributes["mae_avg"] = model_metrics["mae_avg"]
+        attributes["mae_max"] = model_metrics["mae_max"]
+
+    if feature_importance is not None:
+        attributes["feature_importance"] = feature_importance
+
     payload = {
         "state": predicted_at,
-        "attributes": {
-            "predictions_raw": _to_list(predictions_raw),
-            "predictions_with_addon": _to_list(predictions_with_addon),
-            "friendly_name": "Electricity Price Predictions",
-            "unit_of_measurement": "SEK/kWh"
-        }
+        "attributes": attributes,
     }
 
     url = f"{_get_base_url()}/api/states/{SENSOR_ENTITY_ID}"

@@ -15,6 +15,7 @@ from features import (
     aggregate_market_prices_daily,
 )
 from model import train, predict
+from evaluate import walk_forward_validate, get_feature_importance
 from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
 from ha_client import fetch_addon_value, apply_addon, push_predictions
 
@@ -78,9 +79,17 @@ def main():
     training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly)
     print(f"  → {len(training_data)} days of merged data")
 
+    print("Running walk-forward validation...")
+    model_metrics = walk_forward_validate(training_data)
+
     print("Training models...")
     models = train(training_data)
+    feature_importance = get_feature_importance(models)
     print("  → Done")
+
+    print("\n=== Feature importance ===")
+    for feature, importance in feature_importance.items():
+        print(f"  {feature:<30} {importance:.4f}")
 
     forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, training_data)
     forecast_features = forecast_features[
@@ -99,7 +108,7 @@ def main():
     print(json.dumps(predictions_raw, indent=2))
 
     print("\nPushing predictions to Home Assistant...")
-    push_predictions(predictions_raw, predictions_with_addon)
+    push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance)
 
 
 if __name__ == "__main__":
