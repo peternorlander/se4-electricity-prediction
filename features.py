@@ -31,13 +31,13 @@ FEATURE_COLUMNS = [
 ]
 
 
-def _to_stockholm_date(timestamps: pd.Series) -> pd.Series:
+def _to_swedish_date(timestamps: pd.Series) -> pd.Series:
     """
-    Convert a Series of timestamps to Europe/Stockholm date objects.
+    Convert a Series of timestamps to Swedish (Europe/Stockholm) date objects.
 
     Handles both tz-aware (UTC from Open-Meteo) and tz-naive inputs.
-    Using Stockholm midnight boundaries ensures weather and price daily
-    aggregations are aligned (ENTSO-E prices also converted to Stockholm).
+    Using Swedish midnight boundaries ensures weather and price daily
+    aggregations are aligned (ENTSO-E prices also converted to Swedish time).
     """
     if timestamps.dt.tz is None:
         timestamps = timestamps.dt.tz_localize("UTC")
@@ -55,7 +55,7 @@ def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with one row per day and aggregated weather columns.
     """
     df = df.copy()
-    df["date"] = _to_stockholm_date(pd.to_datetime(df["timestamp"]))
+    df["date"] = _to_swedish_date(pd.to_datetime(df["timestamp"]))
 
     return df.groupby("date").agg(
         mean_temp=("temperature", "mean"),
@@ -79,7 +79,7 @@ def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with one row per day and price_min/avg/max columns.
     """
     df = df.copy()
-    df["date"] = _to_stockholm_date(df["timestamp"])
+    df["date"] = _to_swedish_date(df["timestamp"])
 
     return df.groupby("date").agg(
         price_min=("price_eur_mwh", "min"),
@@ -188,7 +188,7 @@ def aggregate_international_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with one row per day and mean_wind_{key} / mean_radiation_{key} columns.
     """
     df = df.copy()
-    df["date"] = _to_stockholm_date(pd.to_datetime(df["timestamp"]))
+    df["date"] = _to_swedish_date(pd.to_datetime(df["timestamp"]))
 
     wind_cols = [c for c in df.columns if c.startswith("windspeed_")]
     rad_cols  = [c for c in df.columns if c.startswith("radiation_")]
@@ -211,7 +211,7 @@ def aggregate_market_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with one row per day and columns: date, price_de, price_dk2.
     """
     df = df.copy()
-    df["date"] = _to_stockholm_date(df["timestamp"])
+    df["date"] = _to_swedish_date(df["timestamp"])
 
     return df.groupby("date").agg(
         price_de=("price_de", "mean"),
