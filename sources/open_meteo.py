@@ -1,5 +1,6 @@
-import requests
 import pandas as pd
+
+from http_client import get_with_retry
 
 
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
@@ -67,9 +68,7 @@ def fetch_historical(start_date: str, end_date: str) -> pd.DataFrame:
         "timezone": TIMEZONE
     }
 
-    response = requests.get(OPEN_METEO_ARCHIVE_URL, params=params, timeout=30)
-    response.raise_for_status()
-
+    response = get_with_retry(OPEN_METEO_ARCHIVE_URL, params)
     return _parse_response(response.json())
 
 
@@ -88,9 +87,7 @@ def fetch_forecast() -> pd.DataFrame:
         "timezone": TIMEZONE
     }
 
-    response = requests.get(OPEN_METEO_FORECAST_URL, params=params, timeout=30)
-    response.raise_for_status()
-
+    response = get_with_retry(OPEN_METEO_FORECAST_URL, params)
     return _parse_response(response.json())
 
 
@@ -103,8 +100,7 @@ def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict)
         "timezone": TIMEZONE,
         **extra_params,
     }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
+    response = get_with_retry(url, params)
     hourly = response.json()["hourly"]
     return pd.DataFrame({
         # UTC-aware timestamps — consistent with main SE4 weather fetch

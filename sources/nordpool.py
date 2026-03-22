@@ -1,5 +1,6 @@
-import requests
 from datetime import date
+
+from http_client import get_with_retry
 
 
 NORDPOOL_API_URL = "https://dataportal-api.nordpoolgroup.com/api/DayAheadPrices"
@@ -19,7 +20,7 @@ def fetch_today_mean_sek() -> float:
         "date": date.today().strftime("%Y-%m-%d")
     }
 
-    response = requests.get(NORDPOOL_API_URL, params=params, timeout=30)
+    response = get_with_retry(NORDPOOL_API_URL, params)
     response.raise_for_status()
 
     data = response.json()
@@ -40,7 +41,7 @@ def _has_prices_for_date(target_date: date) -> bool:
         "date": target_date.strftime("%Y-%m-%d")
     }
 
-    response = requests.get(NORDPOOL_API_URL, params=params, timeout=30)
+    response = get_with_retry(NORDPOOL_API_URL, params)
 
     if response.status_code != 200:
         return False

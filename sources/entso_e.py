@@ -4,6 +4,8 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
+from http_client import get_with_retry
+
 
 SE4_AREA_CODE   = "10Y1001A1001A47J"
 DE_LU_AREA_CODE = "10Y1001A1001A82H"  # Germany/Luxembourg — price leader for northern Europe
@@ -87,7 +89,7 @@ def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> 
         "securityToken": _get_token()
     }
 
-    response = requests.get(ENTSO_E_API_URL, params=params, timeout=30)
+    response = get_with_retry(ENTSO_E_API_URL, params)
     response.raise_for_status()
 
     root = ET.fromstring(response.content)
