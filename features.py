@@ -24,6 +24,8 @@ FEATURE_COLUMNS = [
     "residual_load",
     # Weather forecast uncertainty proxies: rolling variability predicts risk of price spikes
     "wind_variability", "radiation_variability",
+    # Nuclear generation availability in SE3 — unplanned outages force SE4 to import expensive power
+    "nuclear_outage_se3",
     # Cyclic time encoding via sin/cos — captures periodicity without ordinal discontinuities
     "month_sin", "month_cos",
     "day_of_year_sin", "day_of_year_cos",
@@ -219,6 +221,27 @@ def aggregate_market_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
     ).reset_index()
 
 
+def add_nuclear_outage(df: pd.DataFrame, nuclear_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge daily SE3 nuclear outage counts into a daily DataFrame.
+
+    Days without a known outage event default to 0. Planned maintenance is
+    published on ENTSO-E months in advance, so this feature is available for
+    both training and multi-day forecasting.
+
+    Args:
+        df:            Daily DataFrame with a 'date' column (date objects).
+        nuclear_daily: DataFrame with columns: date, nuclear_outage_se3.
+
+    Returns:
+        df with added column nuclear_outage_se3 (int, 0 = no active outage).
+    """
+    nuclear = nuclear_daily[["date", "nuclear_outage_se3"]].copy()
+    merged = pd.merge(df, nuclear, on="date", how="left")
+    merged["nuclear_outage_se3"] = merged["nuclear_outage_se3"].fillna(0).astype(int)
+    return merged
+
+
 def add_market_lag_features(df: pd.DataFrame, market_daily: pd.DataFrame) -> pd.DataFrame:
     """
     Add lag-1 market prices (DE and DK2) to a daily DataFrame.
@@ -245,6 +268,7 @@ def build_training_data(
     weather_hourly: pd.DataFrame,
     wind_intl_hourly: pd.DataFrame,
     market_prices_hourly: pd.DataFrame,
+    nuclear_daily: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Merge and prepare the full training dataset.
@@ -254,6 +278,7 @@ def build_training_data(
         weather_hourly:       Hourly weather from Open-Meteo archive (SE4/Malmö).
         wind_intl_hourly:     Hourly wind data for Germany and Denmark.
         market_prices_hourly: Hourly DE/LU + DK2 prices from ENTSO-E.
+        nuclear_daily:        Daily SE3 nuclear outage counts from ENTSO-E.
 
     Returns:
         Daily DataFrame ready for model training.
@@ -266,6 +291,7 @@ def build_training_data(
     merged = pd.merge(prices_daily, weather_daily, on="date")
     merged = pd.merge(merged, wind_intl_daily, on="date")
     merged = add_market_lag_features(merged, market_daily)
+    merged = add_nuclear_outage(merged, nuclear_daily)
     merged = add_residual_load(merged)
     merged = add_weather_variability(merged)
     merged = add_time_features(merged)
@@ -278,6 +304,7 @@ def build_forecast_features(
     forecast_hourly: pd.DataFrame,
     wind_intl_forecast_hourly: pd.DataFrame,
     market_daily: pd.DataFrame,
+    nuclear_forecast_daily: pd.DataFrame,
     training_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
@@ -287,6 +314,9 @@ def build_forecast_features(
         forecast_hourly:           Hourly weather forecast from Open-Meteo (SE4/Malmö).
         wind_intl_forecast_hourly: Hourly wind forecast for Germany and Denmark.
         market_daily:              Daily DE/DK2 prices from aggregate_market_prices_daily().
+        nuclear_forecast_daily:    Daily SE3 planned nuclear outages for the forecast window.
+                                   Planned maintenance is published on ENTSO-E in advance,
+                                   so this is available for multi-day forecasting.
         training_daily:            Completed training DataFrame; used to seed the rolling
                                    weather variability so that forecast days inherit the
                                    current volatility regime.
@@ -305,6 +335,7 @@ def build_forecast_features(
     forecast_daily["price_de_lag1"] = last_known["price_de"]
     forecast_daily["price_dk2_lag1"] = last_known["price_dk2"]
 
+    forecast_daily = add_nuclear_outage(forecast_daily, nuclear_forecast_daily)
     forecast_daily = add_residual_load(forecast_daily)
 
     # Seed rolling variability with the last known values from training data.

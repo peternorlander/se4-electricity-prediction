@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timedelta, UTC
 
-from sources.entso_e import fetch_prices, fetch_market_prices
+from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3
 from sources.open_meteo import (
     fetch_historical,
     fetch_forecast,
@@ -69,6 +69,21 @@ def main():
     print(f"  → {len(market_prices_hourly)} records")
     market_daily = aggregate_market_prices_daily(market_prices_hourly)
 
+    print(f"Fetching SE3 nuclear outages {historical_start} → {today}...")
+    nuclear_outages = fetch_nuclear_outages_se3(
+        historical_start.strftime("%Y%m%d"),
+        today.strftime("%Y%m%d")
+    )
+    print(f"  → {nuclear_outages['nuclear_outage_se3'].sum()} outage-days found")
+
+    forecast_end = today + timedelta(days=10)
+    print(f"Fetching planned SE3 nuclear outages {today} → {forecast_end}...")
+    nuclear_outages_forecast = fetch_nuclear_outages_se3(
+        today.strftime("%Y%m%d"),
+        forecast_end.strftime("%Y%m%d")
+    )
+    print(f"  → {nuclear_outages_forecast['nuclear_outage_se3'].sum()} outage-days planned")
+
     print("Deriving EUR/SEK exchange rate...")
     eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly)
 
@@ -76,7 +91,7 @@ def main():
     known_price_dates = get_dates_with_known_prices()
 
     print("Building training data...")
-    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly)
+    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly, nuclear_outages)
     print(f"  → {len(training_data)} days of merged data")
 
     print("Running walk-forward validation...")
@@ -91,7 +106,7 @@ def main():
     for feature, importance in feature_importance.items():
         print(f"  {feature:<30} {importance:.4f}")
 
-    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, training_data)
+    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast, training_data)
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
     ].reset_index(drop=True)

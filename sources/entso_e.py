@@ -8,6 +8,7 @@ from http_client import get_with_retry
 
 
 SE4_AREA_CODE   = "10Y1001A1001A47J"
+SE3_AREA_CODE   = "10Y1001A1001A46L"  # Sweden SE3 — source zone for nuclear generation affecting SE4
 DE_LU_AREA_CODE = "10Y1001A1001A82H"  # Germany/Luxembourg — price leader for northern Europe
 DK2_AREA_CODE   = "10YDK-2--------M"  # Denmark DK2 — directly coupled to SE4
 ENTSO_E_API_URL = "https://web-api.tp.entsoe.eu/api"
@@ -142,6 +143,148 @@ def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.Dat
 def fetch_prices(start_date: str, end_date: str) -> pd.DataFrame:
     """Fetch day-ahead electricity prices from ENTSO-E for SE4."""
     return _fetch_prices_area(SE4_AREA_CODE, start_date, end_date)
+
+
+def _parse_outage_timeseries(ts: ET.Element) -> dict | None:
+    """
+    Parse a single TimeSeries element from an unavailability document.
+
+    Collects all start/end timestamps across all Available_Period blocks
+    and returns the widest range, so partial outage schedules are covered.
+    """
+    mrid_el = _find_first(ts, "mRID")
+
+    starts = []
+    ends = []
+    for el in _find_all(ts, "start"):
+        try:
+            starts.append(datetime.fromisoformat(el.text.replace("Z", "+00:00")))
+        except (ValueError, TypeError):
+            pass
+    for el in _find_all(ts, "end"):
+        try:
+            ends.append(datetime.fromisoformat(el.text.replace("Z", "+00:00")))
+        except (ValueError, TypeError):
+            pass
+
+    if mrid_el is None or not starts or not ends:
+        return None
+
+    return {
+        "mrid":       mrid_el.text,
+        "start_date": min(starts).date(),
+        "end_date":   max(ends).date(),
+    }
+
+
+def _fetch_outages_chunk(
+    area_code: str, start_date: str, end_date: str, business_type: str
+) -> pd.DataFrame:
+    """
+    Fetch one chunk of nuclear generation unavailability events from ENTSO-E (A77).
+
+    Args:
+        area_code:     ENTSO-E bidding zone EIC code.
+        start_date:    Start date in YYYYMMDD format.
+        end_date:      End date in YYYYMMDD format (exclusive).
+        business_type: A53 for planned maintenance, A54 for forced/unplanned outages.
+
+    Returns:
+        DataFrame with columns: mrid, start_date, end_date.
+    """
+    _EMPTY = pd.DataFrame(columns=["mrid", "start_date", "end_date"])
+
+    params = {
+        "documentType":       "A77",
+        "businessType":       business_type,
+        "biddingZone_Domain": area_code,
+        "psrType":            "B14",  # Nuclear
+        "periodStart":        f"{start_date}0000",
+        "periodEnd":          f"{end_date}0000",
+        "securityToken":      _get_token(),
+    }
+
+    response = get_with_retry(ENTSO_E_API_URL, params)
+    response.raise_for_status()
+
+    root = ET.fromstring(response.content)
+
+    # ENTSO-E returns a Reason element when no matching data is found
+    if _find_first(root, "Reason") is not None:
+        return _EMPTY
+
+    records = [
+        r for ts in _find_all(root, "TimeSeries")
+        if (r := _parse_outage_timeseries(ts)) is not None
+    ]
+
+    return pd.DataFrame(records) if records else _EMPTY
+
+
+def fetch_nuclear_outages_se3(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Fetch nuclear generation outages in SE3 from ENTSO-E (planned + forced).
+
+    Planned maintenance (A53) is published months in advance on ENTSO-E,
+    making this feature usable for multi-day forecasting. Forced outages (A54)
+    are only available for past dates but improve training accuracy.
+
+    Args:
+        start_date: Start date in YYYYMMDD format.
+        end_date:   End date in YYYYMMDD format (exclusive).
+
+    Returns:
+        DataFrame with columns: date (date), nuclear_outage_se3 (int).
+        nuclear_outage_se3 is the count of simultaneous active outage events
+        per day. Missing dates are filled with 0 (no known outage).
+    """
+    start = datetime.strptime(start_date, "%Y%m%d")
+    end   = datetime.strptime(end_date,   "%Y%m%d")
+
+    chunks = []
+    for business_type in ["A53", "A54"]:  # planned + forced
+        chunk_start = start
+        while chunk_start < end:
+            chunk_end = min(chunk_start + timedelta(days=_MAX_RANGE_DAYS), end)
+            chunks.append(_fetch_outages_chunk(
+                area_code=SE3_AREA_CODE,
+                start_date=chunk_start.strftime("%Y%m%d"),
+                end_date=chunk_end.strftime("%Y%m%d"),
+                business_type=business_type,
+            ))
+            chunk_start = chunk_end
+
+    events = pd.concat(chunks, ignore_index=True)
+    if not events.empty:
+        events = events.drop_duplicates("mrid")
+
+    # Expand each outage event to individual dates within its active range
+    daily_dates = []
+    for _, row in events.iterrows():
+        day = row["start_date"]
+        while day < row["end_date"]:
+            daily_dates.append(day)
+            day += timedelta(days=1)
+
+    # Build full date range and count simultaneous outages per day
+    full_range = pd.date_range(start, end - timedelta(days=1), freq="D")
+    result = pd.DataFrame({"date": [d.date() for d in full_range]})
+
+    if daily_dates:
+        counts = (
+            pd.Series(daily_dates)
+            .value_counts()
+            .reset_index()
+            .rename(columns={"index": "date", 0: "nuclear_outage_se3", "count": "nuclear_outage_se3"})
+        )
+        # value_counts().reset_index() column naming differs by pandas version — normalise
+        counts.columns = ["date", "nuclear_outage_se3"]
+        result = result.merge(counts, on="date", how="left")
+    else:
+        result["nuclear_outage_se3"] = 0
+
+    result["nuclear_outage_se3"] = result["nuclear_outage_se3"].fillna(0).astype(int)
+    return result
 
 
 def fetch_market_prices(start_date: str, end_date: str) -> pd.DataFrame:
