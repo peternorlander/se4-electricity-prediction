@@ -8,11 +8,17 @@ OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 # Representative coordinates for SE4 (Malmö)
 LOCATION_LAT = 55.6
 LOCATION_LON = 13.0
-TIMEZONE = "Europe/Stockholm"
-HOURLY_VARIABLES = "temperature_2m,windspeed_10m,shortwave_radiation"
 
-# Variables fetched per international location (wind + solar)
-INTL_VARIABLES = "windspeed_10m,shortwave_radiation"
+# All requests use UTC to avoid DST transition artifacts when merging with
+# ENTSO-E market data (which is always UTC). Daily aggregation in features.py
+# then converts to Europe/Stockholm to align with market day boundaries.
+TIMEZONE = "UTC"
+HOURLY_VARIABLES = "temperature_2m,windspeed_100m,shortwave_radiation"
+
+# Variables fetched per international location (wind + solar).
+# windspeed_100m (hub height) is significantly more relevant for large-scale
+# wind power than the standard 10m measurement.
+INTL_VARIABLES = "windspeed_100m,shortwave_radiation"
 
 # Named extra wind locations for grid correlation features.
 # Keys become column names: windspeed_{key} → mean_wind_{key}.
@@ -30,9 +36,10 @@ def _parse_response(data: dict) -> pd.DataFrame:
     hourly = data["hourly"]
     return pd.DataFrame(
         {
-            "timestamp": pd.to_datetime(hourly["time"]),
+            # UTC-aware timestamps — consistent with ENTSO-E data
+            "timestamp": pd.to_datetime(hourly["time"], utc=True),
             "temperature": hourly["temperature_2m"],
-            "windspeed": hourly["windspeed_10m"],
+            "windspeed": hourly["windspeed_100m"],
             "radiation": hourly["shortwave_radiation"],
         }
     )
@@ -100,8 +107,9 @@ def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict)
     response.raise_for_status()
     hourly = response.json()["hourly"]
     return pd.DataFrame({
-        "time": pd.to_datetime(hourly["time"]),
-        "windspeed": hourly["windspeed_10m"],
+        # UTC-aware timestamps — consistent with main SE4 weather fetch
+        "time": pd.to_datetime(hourly["time"], utc=True),
+        "windspeed": hourly["windspeed_100m"],
         "radiation": hourly["shortwave_radiation"],
     })
 

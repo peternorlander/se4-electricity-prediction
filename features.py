@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from datetime import timedelta
 
@@ -5,7 +6,7 @@ from datetime import timedelta
 FEATURE_COLUMNS = [
     "mean_temp", "min_temp", "max_temp",
     "mean_wind", "max_wind",
-    # International wind locations (see WIND_LOCATIONS in sources/open_meteo.py)
+    # International wind locations — 100m hub-height wind speed
     "mean_wind_de_north",
     "mean_wind_dk1",
     "mean_wind_dk2",
@@ -19,8 +20,28 @@ FEATURE_COLUMNS = [
     # Market coupling — lag-1 Day-Ahead prices (EUR/MWh) from neighbouring zones
     "price_de_lag1",   # German (DE/LU) price from the previous day
     "price_dk2_lag1",  # Danish (DK2) price from the previous day
-    "day_of_week", "month", "day_of_year"
+    # Residual load: demand proxy minus renewable supply — indicates conventional generation need
+    "residual_load",
+    # Weather forecast uncertainty proxies: rolling variability predicts risk of price spikes
+    "wind_variability", "radiation_variability",
+    # Cyclic time encoding via sin/cos — captures periodicity without ordinal discontinuities
+    "month_sin", "month_cos",
+    "day_of_year_sin", "day_of_year_cos",
+    "dow_sin", "dow_cos",
 ]
+
+
+def _to_stockholm_date(timestamps: pd.Series) -> pd.Series:
+    """
+    Convert a Series of timestamps to Europe/Stockholm date objects.
+
+    Handles both tz-aware (UTC from Open-Meteo) and tz-naive inputs.
+    Using Stockholm midnight boundaries ensures weather and price daily
+    aggregations are aligned (ENTSO-E prices also converted to Stockholm).
+    """
+    if timestamps.dt.tz is None:
+        timestamps = timestamps.dt.tz_localize("UTC")
+    return timestamps.dt.tz_convert("Europe/Stockholm").dt.date
 
 
 def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
@@ -28,13 +49,13 @@ def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
     Aggregate hourly weather data to daily features.
 
     Args:
-        df: DataFrame with columns: timestamp, temperature, windspeed, radiation.
+        df: DataFrame with columns: timestamp (UTC-aware), temperature, windspeed, radiation.
 
     Returns:
         DataFrame with one row per day and aggregated weather columns.
     """
     df = df.copy()
-    df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+    df["date"] = _to_stockholm_date(pd.to_datetime(df["timestamp"]))
 
     return df.groupby("date").agg(
         mean_temp=("temperature", "mean"),
@@ -58,8 +79,7 @@ def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with one row per day and price_min/avg/max columns.
     """
     df = df.copy()
-    df["timestamp_local"] = df["timestamp"].dt.tz_convert("Europe/Stockholm")
-    df["date"] = df["timestamp_local"].dt.date
+    df["date"] = _to_stockholm_date(df["timestamp"])
 
     return df.groupby("date").agg(
         price_min=("price_eur_mwh", "min"),
@@ -70,20 +90,85 @@ def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add calendar-based features to a daily dataframe.
+    Add trigonometric cyclic time features to a daily dataframe.
+
+    Month, day-of-year and day-of-week are encoded as sin/cos pairs so the
+    model sees the periodic wrap-around (e.g. December → January, Sunday → Monday)
+    as a smooth transition rather than a large numeric jump.
 
     Args:
         df: DataFrame with a 'date' column.
 
     Returns:
-        Same DataFrame with day_of_week, month and day_of_year columns added.
+        Same DataFrame with cyclic time feature columns added.
     """
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
-    df["day_of_week"] = df["date"].dt.dayofweek
-    df["month"] = df["date"].dt.month
-    df["day_of_year"] = df["date"].dt.dayofyear
+    month = df["date"].dt.month
+    day_of_year = df["date"].dt.dayofyear
+    dow = df["date"].dt.dayofweek
 
+    df["month_sin"] = np.sin(2 * np.pi * month / 12)
+    df["month_cos"] = np.cos(2 * np.pi * month / 12)
+    df["day_of_year_sin"] = np.sin(2 * np.pi * day_of_year / 365)
+    df["day_of_year_cos"] = np.cos(2 * np.pi * day_of_year / 365)
+    df["dow_sin"] = np.sin(2 * np.pi * dow / 7)
+    df["dow_cos"] = np.cos(2 * np.pi * dow / 7)
+
+    return df
+
+
+def add_residual_load(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute a synthetic Residual Load feature.
+
+    Residual Load = Demand Proxy - (Wind Supply + Solar Supply)
+
+    Demand proxy: heating degree days above 15 °C base (Sweden is heating-dominant,
+    so lower temperatures imply higher conventional generation need).
+    Wind and solar supplies are normalized by fixed reference values so the
+    combined metric is dimensionally consistent.
+
+    A higher residual load signals that more expensive conventional generation
+    must be dispatched, which is strongly correlated with higher prices.
+
+    Args:
+        df: Daily DataFrame with mean_temp, mean_wind, mean_radiation columns.
+
+    Returns:
+        Same DataFrame with a 'residual_load' column added.
+    """
+    df = df.copy()
+    demand_proxy = 15 - df["mean_temp"]           # Heating demand (higher when cold)
+    wind_supply = df["mean_wind"] / 15            # Normalized: 15 m/s ≈ full capacity
+    solar_supply = df["mean_radiation"] / 500     # Normalized: 500 W/m² ≈ peak summer
+    df["residual_load"] = demand_proxy - wind_supply - solar_supply
+    return df
+
+
+def add_weather_variability(df: pd.DataFrame, window: int = 7) -> pd.DataFrame:
+    """
+    Add rolling weather variability as a proxy for Weather Forecast Uncertainty (WFU).
+
+    Research shows that forecast uncertainty is a strong driver of extreme price
+    events on the intraday market. High meteorological variability periods coincide
+    with less reliable forecasts and a higher risk of price spikes.
+
+    Uses a rolling standard deviation over `window` days on wind speed and
+    radiation. Requires at least 3 observations — earlier rows will be NaN and
+    are removed by the downstream dropna() call in build_training_data.
+
+    Args:
+        df:     Daily DataFrame sorted by date with mean_wind, mean_radiation.
+        window: Rolling window in days (default 7).
+
+    Returns:
+        Same DataFrame with wind_variability and radiation_variability columns added.
+    """
+    df = df.copy()
+    df = df.sort_values("date").reset_index(drop=True)
+    df["wind_variability"] = df["mean_wind"].rolling(window, min_periods=3).std()
+    df["radiation_variability"] = df["mean_radiation"].rolling(window, min_periods=3).std()
     return df
 
 
@@ -97,13 +182,13 @@ def aggregate_international_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
     here when locations are added or removed.
 
     Args:
-        df: DataFrame with columns: timestamp, windspeed_{key}, radiation_{key}, ...
+        df: DataFrame with columns: timestamp (UTC-aware), windspeed_{key}, radiation_{key}, ...
 
     Returns:
         DataFrame with one row per day and mean_wind_{key} / mean_radiation_{key} columns.
     """
     df = df.copy()
-    df["date"] = pd.to_datetime(df["timestamp"]).dt.date
+    df["date"] = _to_stockholm_date(pd.to_datetime(df["timestamp"]))
 
     wind_cols = [c for c in df.columns if c.startswith("windspeed_")]
     rad_cols  = [c for c in df.columns if c.startswith("radiation_")]
@@ -117,7 +202,7 @@ def aggregate_international_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
 
 def aggregate_market_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Aggregate hourly DE/DK2 market prices to daily means (Stockholm-tid).
+    Aggregate hourly DE/DK2 market prices to daily means (Stockholm time).
 
     Args:
         df: DataFrame with columns: timestamp (UTC tz-aware), price_de, price_dk2.
@@ -126,7 +211,7 @@ def aggregate_market_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
         DataFrame with one row per day and columns: date, price_de, price_dk2.
     """
     df = df.copy()
-    df["date"] = df["timestamp"].dt.tz_convert("Europe/Stockholm").dt.date
+    df["date"] = _to_stockholm_date(df["timestamp"])
 
     return df.groupby("date").agg(
         price_de=("price_de", "mean"),
@@ -181,6 +266,8 @@ def build_training_data(
     merged = pd.merge(prices_daily, weather_daily, on="date")
     merged = pd.merge(merged, wind_intl_daily, on="date")
     merged = add_market_lag_features(merged, market_daily)
+    merged = add_residual_load(merged)
+    merged = add_weather_variability(merged)
     merged = add_time_features(merged)
     merged = merged.dropna().reset_index(drop=True)
 
@@ -191,6 +278,7 @@ def build_forecast_features(
     forecast_hourly: pd.DataFrame,
     wind_intl_forecast_hourly: pd.DataFrame,
     market_daily: pd.DataFrame,
+    training_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
@@ -199,6 +287,9 @@ def build_forecast_features(
         forecast_hourly:           Hourly weather forecast from Open-Meteo (SE4/Malmö).
         wind_intl_forecast_hourly: Hourly wind forecast for Germany and Denmark.
         market_daily:              Daily DE/DK2 prices from aggregate_market_prices_daily().
+        training_daily:            Completed training DataFrame; used to seed the rolling
+                                   weather variability so that forecast days inherit the
+                                   current volatility regime.
 
     Returns:
         Daily DataFrame with feature columns ready for inference.
@@ -213,6 +304,17 @@ def build_forecast_features(
     last_known = market_daily.iloc[-1]
     forecast_daily["price_de_lag1"] = last_known["price_de"]
     forecast_daily["price_dk2_lag1"] = last_known["price_dk2"]
+
+    forecast_daily = add_residual_load(forecast_daily)
+
+    # Seed rolling variability with the last known values from training data.
+    # The current volatility regime is the best proxy for near-term WFU.
+    if training_daily is not None:
+        forecast_daily["wind_variability"] = training_daily["wind_variability"].iloc[-1]
+        forecast_daily["radiation_variability"] = training_daily["radiation_variability"].iloc[-1]
+    else:
+        forecast_daily["wind_variability"] = 0.0
+        forecast_daily["radiation_variability"] = 0.0
 
     forecast_daily = add_time_features(forecast_daily)
 

@@ -82,7 +82,7 @@ def main():
     models = train(training_data)
     print("  → Done")
 
-    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily)
+    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, training_data)
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
     ].reset_index(drop=True)
