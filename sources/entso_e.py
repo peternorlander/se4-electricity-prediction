@@ -1,10 +1,15 @@
+import io
 import os
+import logging
+import zipfile
 import requests
 import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 from http_client import get_with_retry
+
+logger = logging.getLogger(__name__)
 
 
 SE4_AREA_CODE   = "10Y1001A1001A47J"
@@ -29,6 +34,21 @@ def _find_first(element: ET.Element, local_name: str):
         (el for el in element.iter() if el.tag.split("}")[-1] == local_name),
         None
     )
+
+
+def _extract_xml_files(content: bytes) -> list[bytes]:
+    """
+    Extract all XML files from a ZIP archive, or return the content as a single-item list.
+
+    ENTSO-E unavailability endpoints return a ZIP where each XML file is one
+    outage event — reading only the first file would silently discard the rest.
+    Price endpoints return raw XML directly (not zipped).
+    ZIP archives start with the magic bytes PK (0x50 0x4B).
+    """
+    if content[:2] == b"PK":
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            return [zf.read(name) for name in zf.namelist() if name.endswith(".xml")]
+    return [content]
 
 
 def _get_offset_for_position(position: int, resolution: str) -> timedelta:
@@ -147,33 +167,28 @@ def fetch_prices(start_date: str, end_date: str) -> pd.DataFrame:
 
 def _parse_outage_timeseries(ts: ET.Element) -> dict | None:
     """
-    Parse a single TimeSeries element from an unavailability document.
+    Parse a single TimeSeries element from an A77 unavailability document.
 
-    Collects all start/end timestamps across all Available_Period blocks
-    and returns the widest range, so partial outage schedules are covered.
+    ENTSO-E A77 documents use start_DateAndOrTime.date / end_DateAndOrTime.date
+    for the outage window — NOT the <start>/<end> tags used in price documents.
     """
-    mrid_el = _find_first(ts, "mRID")
+    mrid_el  = _find_first(ts, "mRID")
+    start_el = _find_first(ts, "start_DateAndOrTime.date")
+    end_el   = _find_first(ts, "end_DateAndOrTime.date")
 
-    starts = []
-    ends = []
-    for el in _find_all(ts, "start"):
-        try:
-            starts.append(datetime.fromisoformat(el.text.replace("Z", "+00:00")))
-        except (ValueError, TypeError):
-            pass
-    for el in _find_all(ts, "end"):
-        try:
-            ends.append(datetime.fromisoformat(el.text.replace("Z", "+00:00")))
-        except (ValueError, TypeError):
-            pass
+    if mrid_el is None or start_el is None or end_el is None:
+        return None
 
-    if mrid_el is None or not starts or not ends:
+    try:
+        start_date = datetime.strptime(start_el.text.strip(), "%Y-%m-%d").date()
+        end_date   = datetime.strptime(end_el.text.strip(),   "%Y-%m-%d").date()
+    except (ValueError, TypeError):
         return None
 
     return {
         "mrid":       mrid_el.text,
-        "start_date": min(starts).date(),
-        "end_date":   max(ends).date(),
+        "start_date": start_date,
+        "end_date":   end_date,
     }
 
 
@@ -207,16 +222,36 @@ def _fetch_outages_chunk(
     response = get_with_retry(ENTSO_E_API_URL, params)
     response.raise_for_status()
 
-    root = ET.fromstring(response.content)
-
-    # ENTSO-E returns a Reason element when no matching data is found
-    if _find_first(root, "Reason") is not None:
+    # Each XML file in the ZIP is one outage event — iterate all of them.
+    try:
+        xml_files = _extract_xml_files(response.content)
+    except Exception as e:
+        logger.warning(
+            "ENTSO-E outages response could not be extracted (businessType=%s): %s — raw: %s",
+            business_type, e, response.content[:200],
+        )
         return _EMPTY
 
-    records = [
-        r for ts in _find_all(root, "TimeSeries")
-        if (r := _parse_outage_timeseries(ts)) is not None
-    ]
+    records = []
+    for xml_content in xml_files:
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError as e:
+            logger.warning("ENTSO-E outages XML parse error (businessType=%s): %s", business_type, e)
+            continue
+
+        # Error responses use Acknowledgement_MarketDocument as root element
+        root_tag = root.tag.split("}")[-1]
+        if root_tag == "Acknowledgement_MarketDocument":
+            reason_el = _find_first(root, "text")
+            reason_text = reason_el.text if reason_el is not None else "unknown"
+            logger.info("ENTSO-E returned no data (businessType=%s %s → %s): %s", business_type, start_date, end_date, reason_text)
+            return _EMPTY
+
+        for ts in _find_all(root, "TimeSeries"):
+            r = _parse_outage_timeseries(ts)
+            if r is not None:
+                records.append(r)
 
     return pd.DataFrame(records) if records else _EMPTY
 
@@ -256,13 +291,18 @@ def fetch_nuclear_outages_se3(start_date: str, end_date: str) -> pd.DataFrame:
 
     events = pd.concat(chunks, ignore_index=True)
     if not events.empty:
-        events = events.drop_duplicates("mrid")
+        # mRID is always "1" within each individual document — deduplicate by
+        # outage window instead so long events spanning chunk boundaries are not
+        # double-counted while distinct events with the same mRID are preserved.
+        events = events.drop_duplicates(["start_date", "end_date"])
+
+    logger.info("SE3 nuclear outages: %d unique events (%s → %s)", len(events), start_date, end_date)
 
     # Expand each outage event to individual dates within its active range
     daily_dates = []
     for _, row in events.iterrows():
         day = row["start_date"]
-        while day < row["end_date"]:
+        while day <= row["end_date"]:
             daily_dates.append(day)
             day += timedelta(days=1)
 

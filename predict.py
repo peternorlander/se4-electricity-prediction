@@ -1,5 +1,13 @@
 import json
+import logging
+import sys
 from datetime import datetime, timedelta, UTC
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(name)s — %(message)s",
+    stream=sys.stdout,
+)
 
 from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3
 from sources.open_meteo import (
