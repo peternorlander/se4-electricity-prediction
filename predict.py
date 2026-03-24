@@ -4,7 +4,7 @@ import sys
 from datetime import datetime, timedelta, UTC
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(levelname)s %(name)s — %(message)s",
     stream=sys.stdout,
 )
