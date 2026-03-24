@@ -20,6 +20,10 @@ FEATURE_COLUMNS = [
     # Market coupling — lag-1 Day-Ahead prices (EUR/MWh) from neighbouring zones
     "price_de_lag1",   # German (DE/LU) price from the previous day
     "price_dk2_lag1",  # Danish (DK2) price from the previous day
+    # SE4 own price lags — autoregressive signal from recent price history
+    "price_se4_avg_lag1",  # Previous day's average price
+    "price_se4_avg_lag2",  # Two days ago average price
+    "price_se4_avg_lag7",  # Same weekday last week (weekly seasonality)
     # Residual load: demand proxy minus renewable supply — indicates conventional generation need
     "residual_load",
     # Weather forecast uncertainty proxies: rolling variability predicts risk of price spikes
@@ -242,6 +246,27 @@ def add_nuclear_outage(df: pd.DataFrame, nuclear_daily: pd.DataFrame) -> pd.Data
     return merged
 
 
+def add_se4_price_lags(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add lagged SE4 average prices as autoregressive features.
+
+    Lag-1 and lag-2 capture short-term momentum and mean reversion.
+    Lag-7 captures weekly seasonality (same weekday last week).
+
+    Args:
+        df: Daily DataFrame with a 'price_avg' column, sorted by date.
+
+    Returns:
+        Same DataFrame with price_se4_avg_lag1/lag2/lag7 columns added.
+    """
+    df = df.copy()
+    df = df.sort_values("date").reset_index(drop=True)
+    df["price_se4_avg_lag1"] = df["price_avg"].shift(1)
+    df["price_se4_avg_lag2"] = df["price_avg"].shift(2)
+    df["price_se4_avg_lag7"] = df["price_avg"].shift(7)
+    return df
+
+
 def add_market_lag_features(df: pd.DataFrame, market_daily: pd.DataFrame) -> pd.DataFrame:
     """
     Add lag-1 market prices (DE and DK2) to a daily DataFrame.
@@ -290,6 +315,7 @@ def build_training_data(
 
     merged = pd.merge(prices_daily, weather_daily, on="date")
     merged = pd.merge(merged, wind_intl_daily, on="date")
+    merged = add_se4_price_lags(merged)
     merged = add_market_lag_features(merged, market_daily)
     merged = add_nuclear_outage(merged, nuclear_daily)
     merged = add_residual_load(merged)
@@ -334,6 +360,18 @@ def build_forecast_features(
     last_known = market_daily.iloc[-1]
     forecast_daily["price_de_lag1"] = last_known["price_de"]
     forecast_daily["price_dk2_lag1"] = last_known["price_dk2"]
+
+    # SE4 own price lags — use the last known prices from training data.
+    # For multi-day forecasts, the most recent known price is the best available proxy.
+    if training_daily is not None and "price_avg" in training_daily.columns:
+        tail = training_daily.sort_values("date").tail(7)["price_avg"]
+        forecast_daily["price_se4_avg_lag1"] = tail.iloc[-1]
+        forecast_daily["price_se4_avg_lag2"] = tail.iloc[-2] if len(tail) >= 2 else tail.iloc[-1]
+        forecast_daily["price_se4_avg_lag7"] = tail.iloc[0] if len(tail) >= 7 else tail.iloc[-1]
+    else:
+        forecast_daily["price_se4_avg_lag1"] = 0.0
+        forecast_daily["price_se4_avg_lag2"] = 0.0
+        forecast_daily["price_se4_avg_lag7"] = 0.0
 
     forecast_daily = add_nuclear_outage(forecast_daily, nuclear_forecast_daily)
     forecast_daily = add_residual_load(forecast_daily)
