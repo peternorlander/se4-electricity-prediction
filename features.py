@@ -23,6 +23,12 @@ FEATURE_COLUMNS = [
     "price_se4_avg_lag1",  # Previous day's average price
     "price_se4_avg_lag2",  # Two days ago average price
     "price_se4_avg_lag7",  # Same weekday last week (weekly seasonality)
+    # Target-specific price lags — direct signal for min/max models
+    "price_se4_min_lag1",  # Previous day's min price
+    "price_se4_max_lag1",  # Previous day's max price
+    # Price momentum and volatility — market regime indicators
+    "price_momentum",      # lag1 - lag2: trend direction (positive = rising prices)
+    "price_volatility_7d", # Rolling 7-day std of avg price: market stability indicator
     # Residual load lag — captures momentum in supply/demand balance
     "residual_load_lag1",
     # Residual load: demand proxy minus renewable supply — indicates conventional generation need
@@ -348,22 +354,43 @@ def add_nuclear_outage(df: pd.DataFrame, nuclear_daily: pd.DataFrame) -> pd.Data
 
 def add_se4_price_lags(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add lagged SE4 average prices as autoregressive features.
+    Add lagged SE4 prices as autoregressive features.
 
-    Lag-1 and lag-2 capture short-term momentum and mean reversion.
-    Lag-7 captures weekly seasonality (same weekday last week).
+    Includes average, min and max price lags, plus derived momentum and
+    volatility features that help the model understand the current market regime.
+
+    - Lag-1/lag-2 avg: short-term momentum and mean reversion.
+    - Lag-7 avg: weekly seasonality (same weekday last week).
+    - Lag-1 min/max: target-specific signals — yesterday's min predicts today's
+      min far better than yesterday's average does, and vice versa for max.
+    - Momentum (lag1 - lag2): captures whether prices are rising or falling.
+    - Volatility (7-day rolling std): high-volatility regimes have wider
+      min-max spreads and less predictable averages.
 
     Args:
-        df: Daily DataFrame with a 'price_avg' column, sorted by date.
+        df: Daily DataFrame with price_avg, price_min, price_max columns, sorted by date.
 
     Returns:
-        Same DataFrame with price_se4_avg_lag1/lag2/lag7 columns added.
+        Same DataFrame with price lag, momentum and volatility columns added.
     """
     df = df.copy()
     df = df.sort_values("date").reset_index(drop=True)
+
+    # Average price lags
     df["price_se4_avg_lag1"] = df["price_avg"].shift(1)
     df["price_se4_avg_lag2"] = df["price_avg"].shift(2)
     df["price_se4_avg_lag7"] = df["price_avg"].shift(7)
+
+    # Target-specific lags
+    df["price_se4_min_lag1"] = df["price_min"].shift(1)
+    df["price_se4_max_lag1"] = df["price_max"].shift(1)
+
+    # Momentum: positive = prices rising, negative = falling
+    df["price_momentum"] = df["price_se4_avg_lag1"] - df["price_se4_avg_lag2"]
+
+    # Volatility: rolling 7-day standard deviation of average price
+    df["price_volatility_7d"] = df["price_avg"].rolling(7, min_periods=3).std()
+
     return df
 
 
@@ -467,14 +494,29 @@ def build_forecast_features(
     # SE4 own price lags — use the last known prices from training data.
     # For multi-day forecasts, the most recent known price is the best available proxy.
     if training_daily is not None and "price_avg" in training_daily.columns:
-        tail = training_daily.sort_values("date").tail(7)["price_avg"]
-        forecast_daily["price_se4_avg_lag1"] = tail.iloc[-1]
-        forecast_daily["price_se4_avg_lag2"] = tail.iloc[-2] if len(tail) >= 2 else tail.iloc[-1]
-        forecast_daily["price_se4_avg_lag7"] = tail.iloc[0] if len(tail) >= 7 else tail.iloc[-1]
+        sorted_train = training_daily.sort_values("date")
+        tail_avg = sorted_train.tail(7)["price_avg"]
+        forecast_daily["price_se4_avg_lag1"] = tail_avg.iloc[-1]
+        forecast_daily["price_se4_avg_lag2"] = tail_avg.iloc[-2] if len(tail_avg) >= 2 else tail_avg.iloc[-1]
+        forecast_daily["price_se4_avg_lag7"] = tail_avg.iloc[0] if len(tail_avg) >= 7 else tail_avg.iloc[-1]
+
+        # Target-specific lags
+        forecast_daily["price_se4_min_lag1"] = sorted_train["price_min"].iloc[-1]
+        forecast_daily["price_se4_max_lag1"] = sorted_train["price_max"].iloc[-1]
+
+        # Momentum: last known trend direction
+        forecast_daily["price_momentum"] = tail_avg.iloc[-1] - tail_avg.iloc[-2] if len(tail_avg) >= 2 else 0.0
+
+        # Volatility: use last known rolling volatility from training data
+        forecast_daily["price_volatility_7d"] = sorted_train["price_volatility_7d"].iloc[-1] if "price_volatility_7d" in sorted_train.columns else tail_avg.std()
     else:
         forecast_daily["price_se4_avg_lag1"] = 0.0
         forecast_daily["price_se4_avg_lag2"] = 0.0
         forecast_daily["price_se4_avg_lag7"] = 0.0
+        forecast_daily["price_se4_min_lag1"] = 0.0
+        forecast_daily["price_se4_max_lag1"] = 0.0
+        forecast_daily["price_momentum"] = 0.0
+        forecast_daily["price_volatility_7d"] = 0.0
 
     forecast_daily = add_nuclear_outage(forecast_daily, nuclear_forecast_daily)
     forecast_daily = add_residual_load(forecast_daily)
