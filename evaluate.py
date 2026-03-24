@@ -6,13 +6,26 @@ from features import FEATURE_COLUMNS
 from model import _fit_models
 
 
+# Target number of walk-forward iterations for evaluation.
+# The minimum training window is derived dynamically as n - EVAL_ITERATIONS * step,
+# so the window expands each iteration and the final iteration trains on nearly
+# all available data — closely matching what the production model uses.
+_EVAL_ITERATIONS = 35
+
+
 def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
     """
-    Walk-forward validation with a rolling training window.
+    Walk-forward validation with an expanding training window.
 
-    Reserves the last 30 days of training data for test windows. Trains a fresh
-    model per iteration on all data up to the test window and evaluates MAE on
-    the next `step` days. Repeats until the data is exhausted.
+    Runs exactly _EVAL_ITERATIONS test windows. The first iteration uses a
+    minimum training window (n - _EVAL_ITERATIONS * step days), and each
+    subsequent iteration adds `step` more days to the training set. The final
+    iteration trains on nearly all available data, closely matching the
+    production model.
+
+    This spreads evaluation across ~(EVAL_ITERATIONS * step) days of history,
+    diluting the effect of any single unusual market period (e.g. geopolitical
+    events) while progressively converging toward production model performance.
 
     Uses historical archive weather as a stand-in for forecast weather — this
     means performance will be slightly optimistic compared to live predictions,
@@ -27,22 +40,24 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
     """
     data = training_data.reset_index(drop=True)
     n = len(data)
-    train_window = n - 30
+    min_train = n - _EVAL_ITERATIONS * step
+
+    if min_train < 1:
+        raise ValueError(
+            f"Not enough data for {_EVAL_ITERATIONS} iterations: "
+            f"need at least {_EVAL_ITERATIONS * step + 1} days, got {n}."
+        )
 
     mae_min_list, mae_avg_list, mae_max_list = [], [], []
 
     print("\n=== Walk-forward validation ===")
 
-    iteration = 0
-    while True:
-        train_end = train_window + iteration * step
-        test_end = train_end + step
-
-        if test_end > n:
-            break
+    for iteration in range(_EVAL_ITERATIONS):
+        train_end  = min_train + iteration * step
+        test_end   = train_end + step
 
         train_slice = data.iloc[:train_end]
-        test_slice = data.iloc[train_end:test_end]
+        test_slice  = data.iloc[train_end:test_end]
 
         model_min, model_avg, model_max = _fit_models(train_slice)
         X_test = test_slice[FEATURE_COLUMNS].values
@@ -56,11 +71,10 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
         mae_max_list.append(mae_max)
 
         start_date = pd.to_datetime(test_slice["date"].iloc[0]).strftime("%Y-%m-%d")
-        end_date = pd.to_datetime(test_slice["date"].iloc[-1]).strftime("%Y-%m-%d")
-        print(f"  Iteration {iteration + 1} ({start_date} – {end_date}):  "
-              f"MAE min={mae_min:.2f}  avg={mae_avg:.2f}  max={mae_max:.2f}")
-
-        iteration += 1
+        end_date   = pd.to_datetime(test_slice["date"].iloc[-1]).strftime("%Y-%m-%d")
+        print(f"  Iteration {iteration + 1:>2} ({start_date} – {end_date}):  "
+              f"MAE min={mae_min:.2f}  avg={mae_avg:.2f}  max={mae_max:.2f}"
+              f"  [train={train_end} days]")
 
     mae_min_arr = np.array(mae_min_list)
     mae_avg_arr = np.array(mae_avg_list)
