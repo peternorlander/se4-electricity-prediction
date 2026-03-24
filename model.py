@@ -5,9 +5,14 @@ from features import FEATURE_COLUMNS
 
 def _make_regressor() -> XGBRegressor:
     return XGBRegressor(
-        n_estimators=200,
-        max_depth=4,
-        learning_rate=0.05,
+        n_estimators=500,
+        max_depth=5,
+        learning_rate=0.03,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_weight=3,
+        reg_alpha=0.1,
+        reg_lambda=1.5,
         random_state=42
     )
 
