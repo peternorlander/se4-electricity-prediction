@@ -19,17 +19,16 @@ HOURLY_VARIABLES = "temperature_2m,windspeed_100m,shortwave_radiation"
 # Variables fetched per international location (wind + solar).
 # windspeed_100m (hub height) is significantly more relevant for large-scale
 # wind power than the standard 10m measurement.
-INTL_VARIABLES = "windspeed_100m,shortwave_radiation"
+INTL_VARIABLES = "windspeed_100m,shortwave_radiation,temperature_2m"
 
-# Named extra wind locations for grid correlation features.
-# Keys become column names: windspeed_{key} → mean_wind_{key}.
+# Named extra locations for grid correlation features.
+# Keys become column names: windspeed_{key} → mean_wind_{key}, temperature_{key} → mean_temp_{key}.
 WIND_LOCATIONS = {
-    "de_north":   (53.5,  9.9),   # Northern Germany (Schleswig-Holstein) – largest driver of negative SE4 prices
-    "dk1":        (56.5,  8.5),   # Western Denmark / Jutland (DK1 bidding zone)
-    "dk2":        (55.7, 12.5),   # Eastern Denmark / Zealand (DK2 bidding zone, directly coupled to SE4)
-    "utklippan":  (55.96, 15.72), # Utklippan, Blekinge – open-sea station, high Baltic wind correlation
-    "karlskrona": (56.16, 15.59), # Karlskrona – captures offshore wind patterns in southern Baltic
-    "hano":       (56.01, 14.84), # Hanö – key location for southern Baltic offshore wind parks
+    "de_north":    (53.5,  9.9),   # Northern Germany (Schleswig-Holstein) – largest driver of negative SE4 prices
+    "dk1":         (56.5,  8.5),   # Western Denmark / Jutland (DK1 bidding zone)
+    "dk2":         (55.7, 12.5),   # Eastern Denmark / Zealand (DK2 bidding zone, directly coupled to SE4)
+    "karlskrona":  (56.16, 15.59), # Karlskrona – captures offshore wind patterns in southern Baltic
+    "stockholm":   (59.33, 18.07), # Stockholm – SE3 load centre, used for SE3↔SE4 temperature gradient
 }
 
 
@@ -92,7 +91,7 @@ def fetch_forecast() -> pd.DataFrame:
 
 
 def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict) -> pd.DataFrame:
-    """Fetch wind speed and solar radiation for a single location."""
+    """Fetch wind speed, solar radiation and temperature for a single location."""
     params = {
         "latitude": lat,
         "longitude": lon,
@@ -107,6 +106,7 @@ def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict)
         "time": pd.to_datetime(hourly["time"], utc=True),
         "windspeed": hourly["windspeed_100m"],
         "radiation": hourly["shortwave_radiation"],
+        "temperature": hourly["temperature_2m"],
     })
 
 
@@ -120,6 +120,7 @@ def _fetch_all_locations(url: str, extra_params: dict) -> pd.DataFrame:
     for name, loc_df in location_data.items():
         df[f"windspeed_{name}"] = loc_df["windspeed"].values
         df[f"radiation_{name}"] = loc_df["radiation"].values
+        df[f"temperature_{name}"] = loc_df["temperature"].values
     return df
 
 

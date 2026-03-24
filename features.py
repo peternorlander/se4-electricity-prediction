@@ -10,9 +10,8 @@ FEATURE_COLUMNS = [
     "mean_wind_de_north",
     "mean_wind_dk1",
     "mean_wind_dk2",
-    "mean_wind_utklippan",
     "mean_wind_karlskrona",
-    "mean_wind_hano",
+    "mean_wind_stockholm",
     # Solar radiation (GHI, W/m²) — global horizontal irradiance drives solar output
     "mean_radiation", "max_radiation",          # SE4 local (Malmö / Open-Meteo ERA5)
     "mean_radiation_de_north",                  # Northern Germany — largest solar market affecting SE4
@@ -28,6 +27,11 @@ FEATURE_COLUMNS = [
     "residual_load_lag1",
     # Residual load: demand proxy minus renewable supply — indicates conventional generation need
     "residual_load",
+    # Non-linear heating degree days — captures accelerating demand below 0°C
+    "hdd_linear",          # max(0, 17 - temp): standard HDD
+    "hdd_cold_boost",      # extra quadratic term below 0°C: captures non-linear demand surge
+    # SE3↔SE4 temperature gradient — predicts transmission stress and price divergence
+    "temp_gradient_se3_se4",
     # Weather forecast uncertainty proxies: rolling variability predicts risk of price spikes
     "wind_variability", "radiation_variability",
     # Nuclear generation availability in SE3 — unplanned outages force SE4 to import expensive power
@@ -199,6 +203,53 @@ def add_residual_load(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_hdd_and_temp_gradient(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add non-linear Heating Degree Days (HDD) and SE3↔SE4 temperature gradient.
+
+    In the Nordic system, electricity demand is strongly correlated with outdoor
+    temperature due to widespread use of electric heating and heat pumps. This
+    relationship is non-linear: below 0°C demand increases rapidly per degree,
+    while above ~15°C the relationship is weak.
+
+    The SE3↔SE4 temperature gradient captures when SE3 (Stockholm) is significantly
+    colder than SE4 (Malmö), which stresses north→south transmission and causes
+    SE4 prices to diverge upward from the system price.
+
+    Features added:
+    - hdd_linear:           max(0, 17 - temp) — standard Heating Degree Days
+    - hdd_cold_boost:       extra quadratic term for sub-zero temps, capturing the
+                            accelerating demand response when it's very cold
+    - temp_gradient_se3_se4: Stockholm temp minus Malmö temp — negative values mean
+                            SE3 is colder → higher transmission load → higher SE4 prices
+
+    Args:
+        df: Daily DataFrame with mean_temp and mean_temp_stockholm columns.
+
+    Returns:
+        Same DataFrame with HDD and temperature gradient columns added.
+    """
+    df = df.copy()
+
+    # Standard HDD with 17°C base (common Nordic base temperature)
+    df["hdd_linear"] = (17 - df["mean_temp"]).clip(lower=0)
+
+    # Non-linear cold boost: quadratic term only activates below 0°C
+    # At -10°C this adds 100, at -20°C it adds 400 — capturing the
+    # exponential increase in heating demand during extreme cold
+    below_zero = df["mean_temp"].clip(upper=0)
+    df["hdd_cold_boost"] = below_zero ** 2
+
+    # Temperature gradient: SE3 (Stockholm) minus SE4 (Malmö)
+    # Negative = SE3 is colder → more demand in SE3 → transmission stress
+    if "mean_temp_stockholm" in df.columns:
+        df["temp_gradient_se3_se4"] = df["mean_temp_stockholm"] - df["mean_temp"]
+    else:
+        df["temp_gradient_se3_se4"] = 0.0
+
+    return df
+
+
 def add_weather_variability(df: pd.DataFrame, window: int = 7) -> pd.DataFrame:
     """
     Add rolling weather variability as a proxy for Weather Forecast Uncertainty (WFU).
@@ -245,10 +296,12 @@ def aggregate_international_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
 
     wind_cols = [c for c in df.columns if c.startswith("windspeed_")]
     rad_cols  = [c for c in df.columns if c.startswith("radiation_")]
+    temp_cols = [c for c in df.columns if c.startswith("temperature_")]
 
     agg = {}
     agg.update({f"mean_wind_{c[len('windspeed_'):]}":      (c, "mean") for c in wind_cols})
     agg.update({f"mean_radiation_{c[len('radiation_'):]}" : (c, "mean") for c in rad_cols})
+    agg.update({f"mean_temp_{c[len('temperature_'):]}" :    (c, "mean") for c in temp_cols})
 
     return df.groupby("date").agg(**agg).reset_index()
 
@@ -366,6 +419,7 @@ def build_training_data(
     merged = add_market_lag_features(merged, market_daily)
     merged = add_nuclear_outage(merged, nuclear_daily)
     merged = add_residual_load(merged)
+    merged = add_hdd_and_temp_gradient(merged)
     merged = merged.sort_values("date").reset_index(drop=True)
     merged["residual_load_lag1"] = merged["residual_load"].shift(1)
     merged = add_weather_variability(merged)
@@ -424,6 +478,7 @@ def build_forecast_features(
 
     forecast_daily = add_nuclear_outage(forecast_daily, nuclear_forecast_daily)
     forecast_daily = add_residual_load(forecast_daily)
+    forecast_daily = add_hdd_and_temp_gradient(forecast_daily)
 
     # Residual load lag — use last known value from training data
     if training_daily is not None and "residual_load" in training_daily.columns:
