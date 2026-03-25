@@ -32,7 +32,7 @@ from ha_client import fetch_addon_value, apply_addon, push_predictions
 WEATHER_ARCHIVE_LAG_DAYS = 5
 
 # How many days of historical data to train on
-TRAINING_DAYS = 730
+TRAINING_DAYS = 1095
 
 
 def main():
