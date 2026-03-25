@@ -17,6 +17,7 @@ from sources.open_meteo import (
     fetch_international_wind_forecast,
 )
 from sources.nordpool import get_dates_with_known_prices
+from sources.yahoo_finance import fetch_ttf_prices
 from features import (
     build_training_data,
     build_forecast_features,
@@ -77,6 +78,13 @@ def main():
     print(f"  → {len(market_prices_hourly)} records")
     market_daily = aggregate_market_prices_daily(market_prices_hourly)
 
+    print(f"Fetching TTF gas prices {historical_start} → {today}...")
+    ttf_daily = fetch_ttf_prices(
+        str(historical_start),
+        str(today)
+    )
+    print(f"  → {len(ttf_daily)} TTF price records")
+
     print(f"Fetching SE3 nuclear outages {historical_start} → {today}...")
     nuclear_outages = fetch_nuclear_outages_se3(
         historical_start.strftime("%Y%m%d"),
@@ -99,7 +107,7 @@ def main():
     known_price_dates = get_dates_with_known_prices()
 
     print("Building training data...")
-    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly, nuclear_outages)
+    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly, nuclear_outages, ttf_daily)
     print(f"  → {len(training_data)} days of merged data")
 
     print("Running walk-forward validation...")
@@ -114,7 +122,7 @@ def main():
     for feature, importance in feature_importance.items():
         print(f"  {feature:<30} {importance:.4f}")
 
-    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast, training_data)
+    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast, training_data, ttf_daily)
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
     ].reset_index(drop=True)

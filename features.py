@@ -42,6 +42,12 @@ FEATURE_COLUMNS = [
     "wind_variability", "radiation_variability",
     # Nuclear generation availability in SE3 — unplanned outages force SE4 to import expensive power
     "nuclear_outage_se3",
+    # TTF natural gas futures — European gas benchmark, leading indicator for SE4 price regime
+    # Gas-fired plants in Germany set the marginal cost; TTF reacts faster than electricity prices
+    # to geopolitical shocks (e.g. supply disruptions), capturing regime shifts before they
+    # appear in lagged electricity prices.
+    "ttf_price_lag1",    # Yesterday's TTF close — current gas cost regime
+    "ttf_rolling_7d",    # 7-day rolling mean — smoothed medium-term trend
     # Cyclic time encoding via sin/cos — captures periodicity without ordinal discontinuities
     "month_sin", "month_cos",
     "day_of_year_sin", "day_of_year_cos",
@@ -415,12 +421,52 @@ def add_market_lag_features(df: pd.DataFrame, market_daily: pd.DataFrame) -> pd.
     return pd.merge(df, lagged[["date", "price_de_lag1", "price_dk2_lag1"]], on="date", how="left")
 
 
+def add_ttf_features(df: pd.DataFrame, ttf_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge TTF natural gas price features into a daily DataFrame.
+
+    Uses lag-1 to avoid lookahead bias (yesterday's price is available before
+    today's day-ahead auction closes). Also adds a 7-day rolling mean to capture
+    the medium-term price trend, which is more relevant for electricity price
+    prediction than the noisy daily value.
+
+    Args:
+        df:        Daily DataFrame with a 'date' column (date objects).
+        ttf_daily: DataFrame from fetch_ttf_prices() with date and ttf_close columns.
+
+    Returns:
+        df with added columns: ttf_price_lag1, ttf_rolling_7d.
+        Missing values (weekends/holidays when TTF is closed) are forward-filled
+        from the most recent trading day, then any remaining NaNs filled with 0.
+    """
+    df = df.copy()
+    ttf = ttf_daily[["date", "ttf_close"]].copy()
+
+    # Build a full date range and forward-fill weekends/holidays
+    all_dates = pd.DataFrame({"date": df["date"]})
+    ttf = pd.merge(all_dates, ttf, on="date", how="left")
+    ttf["ttf_close"] = ttf["ttf_close"].ffill()
+
+    # Lag-1: shift so that day D gets the price from day D-1
+    ttf["ttf_price_lag1"] = ttf["ttf_close"].shift(1)
+
+    # Rolling 7-day mean of the raw (non-lagged) close — medium-term regime signal
+    ttf["ttf_rolling_7d"] = ttf["ttf_close"].rolling(7, min_periods=3).mean().shift(1)
+
+    df = pd.merge(df, ttf[["date", "ttf_price_lag1", "ttf_rolling_7d"]], on="date", how="left")
+    df["ttf_price_lag1"] = df["ttf_price_lag1"].fillna(0.0)
+    df["ttf_rolling_7d"] = df["ttf_rolling_7d"].fillna(0.0)
+
+    return df
+
+
 def build_training_data(
     prices_hourly: pd.DataFrame,
     weather_hourly: pd.DataFrame,
     wind_intl_hourly: pd.DataFrame,
     market_prices_hourly: pd.DataFrame,
     nuclear_daily: pd.DataFrame,
+    ttf_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Merge and prepare the full training dataset.
@@ -431,6 +477,7 @@ def build_training_data(
         wind_intl_hourly:     Hourly wind data for Germany and Denmark.
         market_prices_hourly: Hourly DE/LU + DK2 prices from ENTSO-E.
         nuclear_daily:        Daily SE3 nuclear outage counts from ENTSO-E.
+        ttf_daily:            Daily TTF gas prices from Yahoo Finance (optional).
 
     Returns:
         Daily DataFrame ready for model training.
@@ -450,6 +497,11 @@ def build_training_data(
     merged = merged.sort_values("date").reset_index(drop=True)
     merged["residual_load_lag1"] = merged["residual_load"].shift(1)
     merged = add_weather_variability(merged)
+    if ttf_daily is not None and not ttf_daily.empty:
+        merged = add_ttf_features(merged, ttf_daily)
+    else:
+        merged["ttf_price_lag1"] = 0.0
+        merged["ttf_rolling_7d"] = 0.0
     merged = add_time_features(merged)
     merged = merged.dropna().reset_index(drop=True)
 
@@ -462,6 +514,7 @@ def build_forecast_features(
     market_daily: pd.DataFrame,
     nuclear_forecast_daily: pd.DataFrame,
     training_daily: pd.DataFrame = None,
+    ttf_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
@@ -476,6 +529,8 @@ def build_forecast_features(
         training_daily:            Completed training DataFrame; used to seed the rolling
                                    weather variability so that forecast days inherit the
                                    current volatility regime.
+        ttf_daily:                 Daily TTF gas prices from Yahoo Finance (optional).
+                                   Most recent price is used for all forecast days.
 
     Returns:
         Daily DataFrame with feature columns ready for inference.
@@ -536,6 +591,20 @@ def build_forecast_features(
     else:
         forecast_daily["wind_variability"] = 0.0
         forecast_daily["radiation_variability"] = 0.0
+
+    # TTF gas price — use the most recent known price for all forecast days.
+    # The current gas price level is the relevant regime signal for near-term electricity prices.
+    if ttf_daily is not None and not ttf_daily.empty:
+        last_ttf = ttf_daily.sort_values("date").iloc[-1]["ttf_close"]
+        rolling_ttf = ttf_daily.sort_values("date").tail(7)["ttf_close"].mean()
+        forecast_daily["ttf_price_lag1"] = last_ttf
+        forecast_daily["ttf_rolling_7d"] = rolling_ttf
+    elif training_daily is not None and "ttf_price_lag1" in training_daily.columns:
+        forecast_daily["ttf_price_lag1"] = training_daily["ttf_price_lag1"].iloc[-1]
+        forecast_daily["ttf_rolling_7d"] = training_daily["ttf_rolling_7d"].iloc[-1]
+    else:
+        forecast_daily["ttf_price_lag1"] = 0.0
+        forecast_daily["ttf_rolling_7d"] = 0.0
 
     forecast_daily = add_time_features(forecast_daily)
 
