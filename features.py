@@ -53,6 +53,8 @@ FEATURE_COLUMNS = [
     "reservoir_norway_deviation",  # Fill % minus 20-year median for same week — seasonal anomaly signal
     "reservoir_sweden_gwh",        # ENTSO-E A72: Sweden stored energy in GWh
     "reservoir_sweden_change",     # Week-over-week change for Sweden in GWh
+    # Workday indicator — demand drops 20-40% on weekends and public holidays
+    "is_workday",                  # 0 = weekend/holiday/bridge day, 1 = normal workday
     # Cyclic time encoding via sin/cos — captures periodicity without ordinal discontinuities
     "month_sin", "month_cos",
     "day_of_year_sin", "day_of_year_cos",
@@ -115,6 +117,23 @@ def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
         price_avg=("price_eur_mwh", "mean"),
         price_max=("price_eur_mwh", "max")
     ).reset_index()
+
+
+def add_workday_feature(df: pd.DataFrame, non_workdays: set) -> pd.DataFrame:
+    """
+    Add a binary workday indicator using a pre-computed set of non-workdays.
+
+    Args:
+        df:           DataFrame with a 'date' column (date objects or datetime).
+        non_workdays: Set of date objects that are weekends, holidays or bridge days.
+
+    Returns:
+        Same DataFrame with is_workday column added (int, 0 or 1).
+    """
+    df = df.copy()
+    dates = pd.to_datetime(df["date"]).dt.date
+    df["is_workday"] = (~dates.isin(non_workdays)).astype(int)
+    return df
 
 
 def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -564,6 +583,7 @@ def build_training_data(
     norway_reservoir_weekly: pd.DataFrame = None,
     norway_reservoir_median: pd.DataFrame = None,
     sweden_reservoir_weekly: pd.DataFrame = None,
+    non_workdays: set = None,
 ) -> pd.DataFrame:
     """
     Merge and prepare the full training dataset.
@@ -578,6 +598,7 @@ def build_training_data(
         norway_reservoir_weekly: Weekly Norway reservoir data from NVE (optional).
         norway_reservoir_median: 20-year median fill by week from NVE (optional).
         sweden_reservoir_weekly: Weekly Sweden reservoir data from ENTSO-E (optional).
+        non_workdays:           Set of non-workday dates from Swedish calendar (optional).
 
     Returns:
         Daily DataFrame ready for model training.
@@ -603,6 +624,7 @@ def build_training_data(
         merged["ttf_price_lag1"] = 0.0
         merged["ttf_rolling_7d"] = 0.0
     merged = add_reservoir_features(merged, norway_reservoir_weekly, norway_reservoir_median, sweden_reservoir_weekly)
+    merged = add_workday_feature(merged, non_workdays or set())
     merged = add_time_features(merged)
     merged = merged.dropna().reset_index(drop=True)
 
@@ -619,6 +641,7 @@ def build_forecast_features(
     norway_reservoir_weekly: pd.DataFrame = None,
     norway_reservoir_median: pd.DataFrame = None,
     sweden_reservoir_weekly: pd.DataFrame = None,
+    non_workdays: set = None,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
@@ -753,6 +776,7 @@ def build_forecast_features(
         forecast_daily["reservoir_sweden_gwh"] = 0.0
         forecast_daily["reservoir_sweden_change"] = 0.0
 
+    forecast_daily = add_workday_feature(forecast_daily, non_workdays or set())
     forecast_daily = add_time_features(forecast_daily)
 
     return forecast_daily

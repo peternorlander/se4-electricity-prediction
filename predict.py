@@ -11,6 +11,7 @@ logging.basicConfig(
 
 from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3, fetch_reservoir_sweden
 from sources.nve import fetch_reservoir_norway, fetch_reservoir_norway_median
+from sources.swedish_calendar import get_non_workdays
 from sources.open_meteo import (
     fetch_historical,
     fetch_forecast,
@@ -116,6 +117,11 @@ def main():
     )
     print(f"  → {len(sweden_reservoir)} weekly records")
 
+    print("Building Swedish workday calendar...")
+    forecast_end_cal = today + timedelta(days=10)
+    non_workdays = get_non_workdays(str(historical_start), str(forecast_end_cal))
+    print(f"  → {len(non_workdays)} non-workdays in range")
+
     print("Deriving EUR/SEK exchange rate...")
     eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly)
 
@@ -126,6 +132,7 @@ def main():
     training_data = build_training_data(
         prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly,
         nuclear_outages, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
+        non_workdays,
     )
     print(f"  → {len(training_data)} days of merged data")
 
@@ -144,6 +151,7 @@ def main():
     forecast_features = build_forecast_features(
         forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast,
         training_data, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
+        non_workdays,
     )
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)

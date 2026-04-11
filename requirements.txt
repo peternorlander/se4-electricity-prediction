@@ -5,3 +5,4 @@ xgboost>=2.0
 scikit-learn>=1.4
 pytz>=2024.1
 yfinance>=0.2
+holidays>=0.40
