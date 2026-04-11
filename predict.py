@@ -9,7 +9,8 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3
+from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3, fetch_reservoir_sweden
+from sources.nve import fetch_reservoir_norway, fetch_reservoir_norway_median
 from sources.open_meteo import (
     fetch_historical,
     fetch_forecast,
@@ -100,6 +101,21 @@ def main():
     )
     print(f"  → {nuclear_outages_forecast['nuclear_outage_se3'].sum()} outage-days planned")
 
+    print(f"Fetching NVE reservoir data {historical_start} → {today}...")
+    norway_reservoir = fetch_reservoir_norway(str(historical_start), str(today))
+    print(f"  → {len(norway_reservoir)} weekly records")
+
+    print("Fetching NVE 20-year reservoir median...")
+    norway_reservoir_median = fetch_reservoir_norway_median()
+    print(f"  → {len(norway_reservoir_median)} week entries")
+
+    print(f"Fetching Sweden reservoir data {historical_start} → {today}...")
+    sweden_reservoir = fetch_reservoir_sweden(
+        historical_start.strftime("%Y%m%d"),
+        today.strftime("%Y%m%d")
+    )
+    print(f"  → {len(sweden_reservoir)} weekly records")
+
     print("Deriving EUR/SEK exchange rate...")
     eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly)
 
@@ -107,7 +123,10 @@ def main():
     known_price_dates = get_dates_with_known_prices()
 
     print("Building training data...")
-    training_data = build_training_data(prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly, nuclear_outages, ttf_daily)
+    training_data = build_training_data(
+        prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly,
+        nuclear_outages, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
+    )
     print(f"  → {len(training_data)} days of merged data")
 
     print("Running walk-forward validation...")
@@ -122,7 +141,10 @@ def main():
     for feature, importance in feature_importance.items():
         print(f"  {feature:<30} {importance:.4f}")
 
-    forecast_features = build_forecast_features(forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast, training_data, ttf_daily)
+    forecast_features = build_forecast_features(
+        forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast,
+        training_data, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
+    )
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
     ].reset_index(drop=True)

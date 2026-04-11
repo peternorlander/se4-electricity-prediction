@@ -12,10 +12,11 @@ from http_client import get_with_retry
 logger = logging.getLogger(__name__)
 
 
-SE4_AREA_CODE   = "10Y1001A1001A47J"
-SE3_AREA_CODE   = "10Y1001A1001A46L"  # Sweden SE3 — source zone for nuclear generation affecting SE4
-DE_LU_AREA_CODE = "10Y1001A1001A82H"  # Germany/Luxembourg — price leader for northern Europe
-DK2_AREA_CODE   = "10YDK-2--------M"  # Denmark DK2 — directly coupled to SE4
+SE4_AREA_CODE     = "10Y1001A1001A47J"
+SE3_AREA_CODE     = "10Y1001A1001A46L"  # Sweden SE3 — source zone for nuclear generation affecting SE4
+DE_LU_AREA_CODE   = "10Y1001A1001A82H"  # Germany/Luxembourg — price leader for northern Europe
+DK2_AREA_CODE     = "10YDK-2--------M"  # Denmark DK2 — directly coupled to SE4
+SWEDEN_AREA_CODE  = "10YSE-1--------K"  # Sweden country-level — for hydro reservoir data
 ENTSO_E_API_URL = "https://web-api.tp.entsoe.eu/api"
 
 
@@ -349,3 +350,112 @@ def fetch_market_prices(start_date: str, end_date: str) -> pd.DataFrame:
         columns={"price_eur_mwh": "price_dk2"}
     )
     return pd.merge(de, dk2, on="timestamp", how="inner")
+
+
+def _parse_reservoir_point(point: ET.Element) -> float | None:
+    """Extract stored energy quantity from a reservoir data Point element."""
+    qty_el = _find_first(point, "quantity")
+    return float(qty_el.text) if qty_el is not None else None
+
+
+def _fetch_reservoir_chunk(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Fetch one chunk (max 365 days) of reservoir filling data from ENTSO-E (A72).
+
+    Returns DataFrame with columns: date (date), stored_mwh (float).
+    """
+    _EMPTY = pd.DataFrame(columns=["date", "stored_mwh"])
+
+    params = {
+        "documentType": "A72",
+        "processType": "A16",
+        "in_Domain": area_code,
+        "periodStart": f"{start_date}0000",
+        "periodEnd": f"{end_date}0000",
+        "securityToken": _get_token(),
+    }
+
+    response = get_with_retry(ENTSO_E_API_URL, params)
+    response.raise_for_status()
+
+    try:
+        root = ET.fromstring(response.content)
+    except ET.ParseError as e:
+        logger.warning("ENTSO-E reservoir XML parse error: %s", e)
+        return _EMPTY
+
+    root_tag = root.tag.split("}")[-1]
+    if root_tag == "Acknowledgement_MarketDocument":
+        reason_el = _find_first(root, "text")
+        reason_text = reason_el.text if reason_el is not None else "unknown"
+        logger.info("ENTSO-E returned no reservoir data (%s → %s): %s", start_date, end_date, reason_text)
+        return _EMPTY
+
+    records = []
+    for ts in _find_all(root, "TimeSeries"):
+        for period in _find_all(ts, "Period"):
+            start_el = _find_first(period, "start")
+            resolution_el = _find_first(period, "resolution")
+            if start_el is None:
+                continue
+
+            period_start = datetime.fromisoformat(start_el.text.replace("Z", "+00:00"))
+            resolution = resolution_el.text if resolution_el is not None else "P7D"
+
+            for point in [el for el in period if el.tag.split("}")[-1] == "Point"]:
+                pos_el = _find_first(point, "position")
+                qty = _parse_reservoir_point(point)
+                if pos_el is None or qty is None:
+                    continue
+
+                position = int(pos_el.text)
+                if resolution == "P7D":
+                    point_date = (period_start + timedelta(weeks=position - 1)).date()
+                else:
+                    point_date = (period_start + timedelta(days=position - 1)).date()
+
+                records.append({"date": point_date, "stored_mwh": qty})
+
+    return pd.DataFrame(records) if records else _EMPTY
+
+
+def fetch_reservoir_sweden(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Fetch Swedish hydro reservoir stored energy from ENTSO-E (A72 document).
+
+    Data is published weekly. Automatically chunks requests longer than 365 days.
+
+    Args:
+        start_date: Start date in YYYYMMDD format.
+        end_date:   End date in YYYYMMDD format (exclusive).
+
+    Returns:
+        DataFrame with columns:
+            date              - date object (weekly measurement date)
+            reservoir_sweden_gwh - stored energy in GWh
+    """
+    start = datetime.strptime(start_date, "%Y%m%d")
+    end = datetime.strptime(end_date, "%Y%m%d")
+    chunks = []
+
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=_MAX_RANGE_DAYS), end)
+        chunks.append(_fetch_reservoir_chunk(
+            SWEDEN_AREA_CODE,
+            chunk_start.strftime("%Y%m%d"),
+            chunk_end.strftime("%Y%m%d"),
+        ))
+        chunk_start = chunk_end
+
+    df = pd.concat(chunks, ignore_index=True)
+    if df.empty:
+        logger.warning("No Sweden reservoir data returned from ENTSO-E")
+        return pd.DataFrame(columns=["date", "reservoir_sweden_gwh"])
+
+    df = df.sort_values("date").drop_duplicates("date").reset_index(drop=True)
+    df["reservoir_sweden_gwh"] = df["stored_mwh"] / 1000.0
+    df = df[["date", "reservoir_sweden_gwh"]]
+
+    logger.info("Sweden reservoir: %d weekly records (%s → %s)", len(df), start_date, end_date)
+    return df

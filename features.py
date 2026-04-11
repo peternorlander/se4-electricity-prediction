@@ -48,6 +48,11 @@ FEATURE_COLUMNS = [
     # appear in lagged electricity prices.
     "ttf_price_lag1",    # Yesterday's TTF close — current gas cost regime
     "ttf_rolling_7d",    # 7-day rolling mean — smoothed medium-term trend
+    # Hydropower reservoir levels — weekly data forward-filled to daily
+    # Nordic hydro (~45% of Sweden's electricity) drives price levels: low reservoirs → higher prices
+    "reservoir_norway_deviation",  # Fill % minus 20-year median for same week — seasonal anomaly signal
+    "reservoir_sweden_gwh",        # ENTSO-E A72: Sweden stored energy in GWh
+    "reservoir_sweden_change",     # Week-over-week change for Sweden in GWh
     # Cyclic time encoding via sin/cos — captures periodicity without ordinal discontinuities
     "month_sin", "month_cos",
     "day_of_year_sin", "day_of_year_cos",
@@ -460,6 +465,95 @@ def add_ttf_features(df: pd.DataFrame, ttf_daily: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_reservoir_features(
+    df: pd.DataFrame,
+    norway_weekly: pd.DataFrame,
+    norway_median: pd.DataFrame,
+    sweden_weekly: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Merge weekly hydropower reservoir data onto a daily DataFrame.
+
+    Uses merge_asof (backward) to forward-fill weekly values to daily rows —
+    each day gets the most recent weekly measurement. This avoids lookahead bias
+    since reservoir data is published with a ~4-day lag (Wednesday for Saturday).
+
+    Features added:
+    - reservoir_norway_fill_pct:  Norway total fill level (0–1)
+    - reservoir_norway_deviation: Fill vs 20-year median for same week — positive = above normal
+    - reservoir_norway_change:    Week-over-week fill change — negative = draining
+    - reservoir_sweden_gwh:       Sweden stored energy in GWh
+    - reservoir_sweden_change:    Week-over-week Sweden change in GWh
+
+    Args:
+        df:             Daily DataFrame with a 'date' column (date objects).
+        norway_weekly:  NVE weekly data with date, fill_pct, weekly_change, week_number.
+        norway_median:  NVE 20-year median with week_number, median_fill_pct.
+        sweden_weekly:  ENTSO-E weekly data with date, reservoir_sweden_gwh.
+
+    Returns:
+        df with reservoir feature columns added.
+    """
+    df = df.copy()
+
+    # Convert date columns to datetime for merge_asof compatibility
+    df["_date_dt"] = pd.to_datetime(df["date"])
+
+    # --- Norway reservoir features ---
+    if norway_weekly is not None and not norway_weekly.empty:
+        no_df = norway_weekly[["date", "fill_pct", "weekly_change", "week_number"]].copy()
+        no_df["_date_dt"] = pd.to_datetime(no_df["date"])
+        no_df = no_df.sort_values("_date_dt")
+
+        # Merge 20-year median to compute deviation
+        if norway_median is not None and not norway_median.empty:
+            no_df = pd.merge(no_df, norway_median[["week_number", "median_fill_pct"]], on="week_number", how="left")
+            no_df["reservoir_norway_deviation"] = no_df["fill_pct"] - no_df["median_fill_pct"].fillna(0)
+        else:
+            no_df["reservoir_norway_deviation"] = 0.0
+
+        no_df = no_df.rename(columns={
+            "fill_pct": "reservoir_norway_fill_pct",
+            "weekly_change": "reservoir_norway_change",
+        })
+
+        df = df.sort_values("_date_dt")
+        df = pd.merge_asof(
+            df, no_df[["_date_dt", "reservoir_norway_fill_pct", "reservoir_norway_deviation", "reservoir_norway_change"]],
+            on="_date_dt", direction="backward",
+        )
+    else:
+        df["reservoir_norway_fill_pct"] = 0.0
+        df["reservoir_norway_deviation"] = 0.0
+        df["reservoir_norway_change"] = 0.0
+
+    # --- Sweden reservoir features ---
+    if sweden_weekly is not None and not sweden_weekly.empty:
+        se_df = sweden_weekly[["date", "reservoir_sweden_gwh"]].copy()
+        se_df["_date_dt"] = pd.to_datetime(se_df["date"])
+        se_df = se_df.sort_values("_date_dt")
+
+        # Compute week-over-week change in GWh
+        se_df["reservoir_sweden_change"] = se_df["reservoir_sweden_gwh"].diff()
+
+        df = pd.merge_asof(
+            df, se_df[["_date_dt", "reservoir_sweden_gwh", "reservoir_sweden_change"]],
+            on="_date_dt", direction="backward",
+        )
+    else:
+        df["reservoir_sweden_gwh"] = 0.0
+        df["reservoir_sweden_change"] = 0.0
+
+    df = df.drop(columns=["_date_dt"])
+
+    # Fill any remaining NaN (dates before first available weekly data point)
+    for col in ["reservoir_norway_fill_pct", "reservoir_norway_deviation", "reservoir_norway_change",
+                 "reservoir_sweden_gwh", "reservoir_sweden_change"]:
+        df[col] = df[col].fillna(0.0)
+
+    return df
+
+
 def build_training_data(
     prices_hourly: pd.DataFrame,
     weather_hourly: pd.DataFrame,
@@ -467,17 +561,23 @@ def build_training_data(
     market_prices_hourly: pd.DataFrame,
     nuclear_daily: pd.DataFrame,
     ttf_daily: pd.DataFrame = None,
+    norway_reservoir_weekly: pd.DataFrame = None,
+    norway_reservoir_median: pd.DataFrame = None,
+    sweden_reservoir_weekly: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Merge and prepare the full training dataset.
 
     Args:
-        prices_hourly:        Hourly SE4 prices from ENTSO-E.
-        weather_hourly:       Hourly weather from Open-Meteo archive (SE4/Malmö).
-        wind_intl_hourly:     Hourly wind data for Germany and Denmark.
-        market_prices_hourly: Hourly DE/LU + DK2 prices from ENTSO-E.
-        nuclear_daily:        Daily SE3 nuclear outage counts from ENTSO-E.
-        ttf_daily:            Daily TTF gas prices from Yahoo Finance (optional).
+        prices_hourly:          Hourly SE4 prices from ENTSO-E.
+        weather_hourly:         Hourly weather from Open-Meteo archive (SE4/Malmö).
+        wind_intl_hourly:       Hourly wind data for Germany and Denmark.
+        market_prices_hourly:   Hourly DE/LU + DK2 prices from ENTSO-E.
+        nuclear_daily:          Daily SE3 nuclear outage counts from ENTSO-E.
+        ttf_daily:              Daily TTF gas prices from Yahoo Finance (optional).
+        norway_reservoir_weekly: Weekly Norway reservoir data from NVE (optional).
+        norway_reservoir_median: 20-year median fill by week from NVE (optional).
+        sweden_reservoir_weekly: Weekly Sweden reservoir data from ENTSO-E (optional).
 
     Returns:
         Daily DataFrame ready for model training.
@@ -502,6 +602,7 @@ def build_training_data(
     else:
         merged["ttf_price_lag1"] = 0.0
         merged["ttf_rolling_7d"] = 0.0
+    merged = add_reservoir_features(merged, norway_reservoir_weekly, norway_reservoir_median, sweden_reservoir_weekly)
     merged = add_time_features(merged)
     merged = merged.dropna().reset_index(drop=True)
 
@@ -515,6 +616,9 @@ def build_forecast_features(
     nuclear_forecast_daily: pd.DataFrame,
     training_daily: pd.DataFrame = None,
     ttf_daily: pd.DataFrame = None,
+    norway_reservoir_weekly: pd.DataFrame = None,
+    norway_reservoir_median: pd.DataFrame = None,
+    sweden_reservoir_weekly: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
@@ -531,6 +635,9 @@ def build_forecast_features(
                                    current volatility regime.
         ttf_daily:                 Daily TTF gas prices from Yahoo Finance (optional).
                                    Most recent price is used for all forecast days.
+        norway_reservoir_weekly:   Weekly Norway reservoir data from NVE (optional).
+        norway_reservoir_median:   20-year median fill by week from NVE (optional).
+        sweden_reservoir_weekly:   Weekly Sweden reservoir data from ENTSO-E (optional).
 
     Returns:
         Daily DataFrame with feature columns ready for inference.
@@ -605,6 +712,46 @@ def build_forecast_features(
     else:
         forecast_daily["ttf_price_lag1"] = 0.0
         forecast_daily["ttf_rolling_7d"] = 0.0
+
+    # Reservoir levels — use the most recent known weekly value for all forecast days.
+    # Reservoir levels change slowly (~0.3%/day) so the latest value is a good proxy.
+    if norway_reservoir_weekly is not None and not norway_reservoir_weekly.empty:
+        latest_no = norway_reservoir_weekly.sort_values("date").iloc[-1]
+        forecast_daily["reservoir_norway_fill_pct"] = latest_no["fill_pct"]
+        forecast_daily["reservoir_norway_change"] = latest_no["weekly_change"]
+        current_week = int(latest_no["week_number"])
+        if norway_reservoir_median is not None and not norway_reservoir_median.empty:
+            median_row = norway_reservoir_median[norway_reservoir_median["week_number"] == current_week]
+            median_val = median_row["median_fill_pct"].iloc[0] if not median_row.empty else 0.0
+            forecast_daily["reservoir_norway_deviation"] = latest_no["fill_pct"] - median_val
+        else:
+            forecast_daily["reservoir_norway_deviation"] = 0.0
+    elif training_daily is not None and "reservoir_norway_fill_pct" in training_daily.columns:
+        forecast_daily["reservoir_norway_fill_pct"] = training_daily["reservoir_norway_fill_pct"].iloc[-1]
+        forecast_daily["reservoir_norway_deviation"] = training_daily["reservoir_norway_deviation"].iloc[-1]
+        forecast_daily["reservoir_norway_change"] = training_daily["reservoir_norway_change"].iloc[-1]
+    else:
+        forecast_daily["reservoir_norway_fill_pct"] = 0.0
+        forecast_daily["reservoir_norway_deviation"] = 0.0
+        forecast_daily["reservoir_norway_change"] = 0.0
+
+    if sweden_reservoir_weekly is not None and not sweden_reservoir_weekly.empty:
+        latest_se = sweden_reservoir_weekly.sort_values("date").iloc[-1]
+        forecast_daily["reservoir_sweden_gwh"] = latest_se["reservoir_sweden_gwh"]
+        # Compute last known change if at least 2 data points
+        se_sorted = sweden_reservoir_weekly.sort_values("date")
+        if len(se_sorted) >= 2:
+            forecast_daily["reservoir_sweden_change"] = (
+                se_sorted["reservoir_sweden_gwh"].iloc[-1] - se_sorted["reservoir_sweden_gwh"].iloc[-2]
+            )
+        else:
+            forecast_daily["reservoir_sweden_change"] = 0.0
+    elif training_daily is not None and "reservoir_sweden_gwh" in training_daily.columns:
+        forecast_daily["reservoir_sweden_gwh"] = training_daily["reservoir_sweden_gwh"].iloc[-1]
+        forecast_daily["reservoir_sweden_change"] = training_daily["reservoir_sweden_change"].iloc[-1]
+    else:
+        forecast_daily["reservoir_sweden_gwh"] = 0.0
+        forecast_daily["reservoir_sweden_change"] = 0.0
 
     forecast_daily = add_time_features(forecast_daily)
 
