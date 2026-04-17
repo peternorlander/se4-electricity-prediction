@@ -55,6 +55,11 @@ FEATURE_COLUMNS = [
     # regime indicator complementing the more reactive TTF signal.
     "co2_price_lag1",    # Yesterday's EUA close — current carbon cost regime
     "co2_rolling_7d",    # 7-day rolling mean — smoothed medium-term trend
+    # Synthetic gas-fired marginal cost — TTF + 0.35 × CO₂ (EUR/MWh)
+    # Approximates the short-run marginal cost of a CCGT plant in Germany
+    # (0.35 tCO₂/MWh × EUA price + gas cost). Combines two correlated signals
+    # into a single economically grounded interaction term.
+    "gas_marginal_cost",
     # Hydropower reservoir levels — weekly data forward-filled to daily
     # Nordic hydro (~45% of Sweden's electricity) drives price levels: low reservoirs → higher prices
     "reservoir_norway_deviation",  # Fill % minus 20-year median for same week — seasonal anomaly signal
@@ -535,6 +540,33 @@ def add_co2_features(df: pd.DataFrame, eua_daily: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_gas_marginal_cost(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute a synthetic gas-fired marginal cost feature from TTF and CO₂ prices.
+
+    A combined-cycle gas turbine (CCGT) has two fuel-chain costs:
+      1. Gas cost:    ttf_price_lag1           (EUR/MWh thermal → electrical)
+      2. Carbon cost: 0.35 * co2_price_lag1    (0.35 tCO₂/MWh_el × EUR/tCO₂)
+
+    The sum approximates the short-run marginal cost of the marginal gas plant
+    in Germany, which sets the electricity price during gas-fired hours. TTF and
+    CO₂ are partially correlated (~0.5–0.7), so their individual features carry
+    some overlap; this interaction term captures the combined effect explicitly
+    and lets the model learn the gas-fired marginal cost as a single regime signal.
+
+    Requires ttf_price_lag1 and co2_price_lag1 to already be present in df.
+
+    Args:
+        df: Daily DataFrame already containing ttf_price_lag1 and co2_price_lag1.
+
+    Returns:
+        df with added column: gas_marginal_cost.
+    """
+    df = df.copy()
+    df["gas_marginal_cost"] = df["ttf_price_lag1"] + 0.35 * df["co2_price_lag1"]
+    return df
+
+
 def add_reservoir_features(
     df: pd.DataFrame,
     norway_weekly: pd.DataFrame,
@@ -681,6 +713,7 @@ def build_training_data(
     else:
         merged["co2_price_lag1"] = 0.0
         merged["co2_rolling_7d"] = 0.0
+    merged = add_gas_marginal_cost(merged)
     merged = add_reservoir_features(merged, norway_reservoir_weekly, norway_reservoir_median, sweden_reservoir_weekly)
     merged = add_workday_feature(merged, non_workdays or set())
     merged = add_time_features(merged)
@@ -809,6 +842,9 @@ def build_forecast_features(
     else:
         forecast_daily["co2_price_lag1"] = 0.0
         forecast_daily["co2_rolling_7d"] = 0.0
+
+    # Gas-fired marginal cost interaction — computed from already-set TTF and CO₂ values
+    forecast_daily = add_gas_marginal_cost(forecast_daily)
 
     # Reservoir levels — use the most recent known weekly value for all forecast days.
     # Reservoir levels change slowly (~0.3%/day) so the latest value is a good proxy.
