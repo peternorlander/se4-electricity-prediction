@@ -20,6 +20,7 @@ from sources.open_meteo import (
 )
 from sources.nordpool import get_dates_with_known_prices
 from sources.yahoo_finance import fetch_ttf_prices
+from sources.eua_carbon import fetch_eua_prices
 from features import (
     build_training_data,
     build_forecast_features,
@@ -87,6 +88,13 @@ def main():
     )
     print(f"  → {len(ttf_daily)} TTF price records")
 
+    print(f"Fetching EU ETS carbon prices {historical_start} → {today}...")
+    eua_daily = fetch_eua_prices(
+        str(historical_start),
+        str(today)
+    )
+    print(f"  → {len(eua_daily)} EUA price records")
+
     print(f"Fetching SE3 nuclear outages {historical_start} → {today}...")
     nuclear_outages = fetch_nuclear_outages_se3(
         historical_start.strftime("%Y%m%d"),
@@ -132,7 +140,7 @@ def main():
     training_data = build_training_data(
         prices_hourly, weather_hourly, wind_intl_hourly, market_prices_hourly,
         nuclear_outages, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
-        non_workdays,
+        non_workdays, eua_daily,
     )
     print(f"  → {len(training_data)} days of merged data")
 
@@ -151,7 +159,7 @@ def main():
     forecast_features = build_forecast_features(
         forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast,
         training_data, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
-        non_workdays,
+        non_workdays, eua_daily,
     )
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)

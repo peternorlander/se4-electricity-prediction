@@ -48,6 +48,13 @@ FEATURE_COLUMNS = [
     # appear in lagged electricity prices.
     "ttf_price_lag1",    # Yesterday's TTF close — current gas cost regime
     "ttf_rolling_7d",    # 7-day rolling mean — smoothed medium-term trend
+    # EU ETS carbon allowance (EUA) price — EUR/tonne CO₂
+    # Directly affects the marginal cost of fossil-fuel power: a CCGT plant emits
+    # ~0.35 tCO₂/MWh, so a 10 EUR/t move in EUA shifts gas-fired marginal cost by
+    # ~3.5 EUR/MWh. CO₂ moves slowly (monthly/quarterly trends), making it a stable
+    # regime indicator complementing the more reactive TTF signal.
+    "co2_price_lag1",    # Yesterday's EUA close — current carbon cost regime
+    "co2_rolling_7d",    # 7-day rolling mean — smoothed medium-term trend
     # Hydropower reservoir levels — weekly data forward-filled to daily
     # Nordic hydro (~45% of Sweden's electricity) drives price levels: low reservoirs → higher prices
     "reservoir_norway_deviation",  # Fill % minus 20-year median for same week — seasonal anomaly signal
@@ -484,6 +491,50 @@ def add_ttf_features(df: pd.DataFrame, ttf_daily: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_co2_features(df: pd.DataFrame, eua_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge EU ETS carbon (EUA) price features into a daily DataFrame.
+
+    The CO₂ price directly affects the marginal cost of fossil-fuel power
+    generation (coal, gas). A CCGT plant emits ~0.35 tCO₂/MWh and a coal
+    plant ~0.9 tCO₂/MWh, so a 10 EUR/t move in EUA shifts the gas-fired
+    marginal cost by ~3.5 EUR/MWh and coal-fired by ~9 EUR/MWh. This
+    propagates to SE4 via market coupling with Germany.
+
+    Uses lag-1 to avoid lookahead bias. CO₂ prices move slowly
+    (typically <2% per day) so the current level is a reliable regime
+    indicator for the entire near-term forecast horizon.
+
+    Args:
+        df:        Daily DataFrame with a 'date' column (date objects).
+        eua_daily: DataFrame from fetch_eua_prices() with date and eua_close columns.
+
+    Returns:
+        df with added columns: co2_price_lag1, co2_rolling_7d.
+        Missing values (weekends/holidays when ICE is closed) are forward-filled
+        from the most recent trading day, then any remaining NaNs filled with 0.
+    """
+    df = df.copy()
+    eua = eua_daily[["date", "eua_close"]].copy()
+
+    # Build a full date range and forward-fill weekends/holidays
+    all_dates = pd.DataFrame({"date": df["date"]})
+    eua = pd.merge(all_dates, eua, on="date", how="left")
+    eua["eua_close"] = eua["eua_close"].ffill()
+
+    # Lag-1: shift so that day D gets the price from day D-1
+    eua["co2_price_lag1"] = eua["eua_close"].shift(1)
+
+    # Rolling 7-day mean of the raw (non-lagged) close — medium-term regime signal
+    eua["co2_rolling_7d"] = eua["eua_close"].rolling(7, min_periods=3).mean().shift(1)
+
+    df = pd.merge(df, eua[["date", "co2_price_lag1", "co2_rolling_7d"]], on="date", how="left")
+    df["co2_price_lag1"] = df["co2_price_lag1"].fillna(0.0)
+    df["co2_rolling_7d"] = df["co2_rolling_7d"].fillna(0.0)
+
+    return df
+
+
 def add_reservoir_features(
     df: pd.DataFrame,
     norway_weekly: pd.DataFrame,
@@ -584,6 +635,7 @@ def build_training_data(
     norway_reservoir_median: pd.DataFrame = None,
     sweden_reservoir_weekly: pd.DataFrame = None,
     non_workdays: set = None,
+    eua_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Merge and prepare the full training dataset.
@@ -595,6 +647,7 @@ def build_training_data(
         market_prices_hourly:   Hourly DE/LU + DK2 prices from ENTSO-E.
         nuclear_daily:          Daily SE3 nuclear outage counts from ENTSO-E.
         ttf_daily:              Daily TTF gas prices from Yahoo Finance (optional).
+        eua_daily:              Daily EU ETS carbon prices from Yahoo Finance (optional).
         norway_reservoir_weekly: Weekly Norway reservoir data from NVE (optional).
         norway_reservoir_median: 20-year median fill by week from NVE (optional).
         sweden_reservoir_weekly: Weekly Sweden reservoir data from ENTSO-E (optional).
@@ -623,6 +676,11 @@ def build_training_data(
     else:
         merged["ttf_price_lag1"] = 0.0
         merged["ttf_rolling_7d"] = 0.0
+    if eua_daily is not None and not eua_daily.empty:
+        merged = add_co2_features(merged, eua_daily)
+    else:
+        merged["co2_price_lag1"] = 0.0
+        merged["co2_rolling_7d"] = 0.0
     merged = add_reservoir_features(merged, norway_reservoir_weekly, norway_reservoir_median, sweden_reservoir_weekly)
     merged = add_workday_feature(merged, non_workdays or set())
     merged = add_time_features(merged)
@@ -642,6 +700,7 @@ def build_forecast_features(
     norway_reservoir_median: pd.DataFrame = None,
     sweden_reservoir_weekly: pd.DataFrame = None,
     non_workdays: set = None,
+    eua_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
@@ -735,6 +794,21 @@ def build_forecast_features(
     else:
         forecast_daily["ttf_price_lag1"] = 0.0
         forecast_daily["ttf_rolling_7d"] = 0.0
+
+    # EU ETS carbon (EUA) price — use the most recent known price for all forecast days.
+    # CO₂ prices move slowly (typically <2% per day), so the current level is a stable
+    # regime indicator for the 8-day forecast horizon.
+    if eua_daily is not None and not eua_daily.empty:
+        last_eua = eua_daily.sort_values("date").iloc[-1]["eua_close"]
+        rolling_eua = eua_daily.sort_values("date").tail(7)["eua_close"].mean()
+        forecast_daily["co2_price_lag1"] = last_eua
+        forecast_daily["co2_rolling_7d"] = rolling_eua
+    elif training_daily is not None and "co2_price_lag1" in training_daily.columns:
+        forecast_daily["co2_price_lag1"] = training_daily["co2_price_lag1"].iloc[-1]
+        forecast_daily["co2_rolling_7d"] = training_daily["co2_rolling_7d"].iloc[-1]
+    else:
+        forecast_daily["co2_price_lag1"] = 0.0
+        forecast_daily["co2_rolling_7d"] = 0.0
 
     # Reservoir levels — use the most recent known weekly value for all forecast days.
     # Reservoir levels change slowly (~0.3%/day) so the latest value is a good proxy.
