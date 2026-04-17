@@ -152,7 +152,7 @@ def main():
     feature_importance = get_feature_importance(models)
     print("  → Done")
 
-    print("\n=== Feature importance ===")
+    print("\n=== Feature importance (min & avg models only) ===")
     for feature, importance in feature_importance.items():
         print(f"  {feature:<30} {importance:.4f}")
 

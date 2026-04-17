@@ -79,13 +79,13 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
     mae_min_arr = np.array(mae_min_list)
     mae_avg_arr = np.array(mae_avg_list)
     mae_max_arr = np.array(mae_max_list)
-    mae_overall_arr = (mae_min_arr + mae_avg_arr + mae_max_arr) / 3
+    mae_overall_arr = (mae_min_arr + mae_avg_arr) / 2  # overall = min+avg only; max excluded
 
     print(f"\n  Overall MAE:  "
           f"min={mae_min_arr.mean():.2f} ± {mae_min_arr.std():.2f}  "
           f"avg={mae_avg_arr.mean():.2f} ± {mae_avg_arr.std():.2f}  "
           f"max={mae_max_arr.mean():.2f} ± {mae_max_arr.std():.2f}  "
-          f"overall={mae_overall_arr.mean():.2f} ± {mae_overall_arr.std():.2f}")
+          f"overall (min+avg)={mae_overall_arr.mean():.2f} ± {mae_overall_arr.std():.2f}")
 
     return {
         "mae_min":     {"value": round(float(mae_min_arr.mean()), 4), "std": round(float(mae_min_arr.std()), 4)},
@@ -97,9 +97,10 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
 
 def get_feature_importance(models: tuple) -> dict:
     """
-    Compute average feature importance across the three models.
+    Compute average feature importance across the min and avg models only.
 
-    Importances are averaged over min/avg/max models and sorted descending.
+    Max model is excluded since prediction accuracy for max prices is not
+    a priority. Importances are averaged over min/avg and sorted descending.
     Each value represents the feature's relative contribution to prediction
     accuracy — higher means the model relies more heavily on that feature.
 
@@ -109,12 +110,11 @@ def get_feature_importance(models: tuple) -> dict:
     Returns:
         Dict of {feature_name: importance} sorted by importance descending.
     """
-    model_min, model_avg, model_max = models
+    model_min, model_avg, _ = models
     avg_importance = (
         model_min.feature_importances_ +
-        model_avg.feature_importances_ +
-        model_max.feature_importances_
-    ) / 3
+        model_avg.feature_importances_
+    ) / 2
 
     importance = {
         feature: round(float(imp), 4)
