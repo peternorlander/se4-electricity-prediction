@@ -96,7 +96,6 @@ def push_predictions(
         "predictions_raw": _to_list(predictions_raw),
         "predictions_with_addon": _to_list(predictions_with_addon),
         "friendly_name": "Electricity Price Predictions",
-        "unit_of_measurement": "SEK/kWh"
     }
 
     if model_metrics is not None:
