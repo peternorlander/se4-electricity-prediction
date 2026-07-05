@@ -6,7 +6,7 @@ A machine learning pipeline that predicts day-ahead electricity prices for the S
 
 The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg prices up to 8–10 days ahead, giving automation rules enough lead time to act.
 
-The pipeline runs once daily via GitHub Actions and updates a Home Assistant sensor with predictions in SEK/kWh, including a configurable distribution cost addon.
+The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, and updates a Home Assistant sensor with predictions in SEK/kWh, including a configurable distribution cost addon.
 
 ## Architecture
 
@@ -179,7 +179,7 @@ python predict.py
 
 ### GitHub Actions
 
-The pipeline runs daily via `.github/workflows/`. Secrets are configured in the repository settings matching the environment variables above.
+The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `workflow_dispatch` — triggered via the GitHub API from a Node-RED flow in Home Assistant (no fixed schedule). Secrets are configured in the repository settings matching the environment variables above.
 
 ## Home Assistant Integration
 

@@ -1,10 +1,7 @@
 name: Daily Electricity Price Prediction
 
 on:
-  schedule:
-    # 14:00 UTC = 15:00/16:00 CET — Nordpool publishes day-ahead prices around 13:00 CET
-    - cron: '0 14 * * *'
-  # Allows manual trigger from the GitHub Actions tab for testing
+  # Triggered externally (e.g. from Node-RED/Home Assistant) via the GitHub API
   workflow_dispatch:
 
 jobs:
