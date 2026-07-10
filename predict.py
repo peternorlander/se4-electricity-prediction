@@ -152,8 +152,12 @@ def main():
     feature_importance = get_feature_importance(models)
     print("  → Done")
 
-    print("\n=== Feature importance (min & avg models only) ===")
-    for feature, importance in feature_importance.items():
+    print("\n=== Feature importance (min model) ===")
+    for feature, importance in feature_importance["min"].items():
+        print(f"  {feature:<30} {importance:.4f}")
+
+    print("\n=== Feature importance (avg model) ===")
+    for feature, importance in feature_importance["avg"].items():
         print(f"  {feature:<30} {importance:.4f}")
 
     forecast_features = build_forecast_features(

@@ -88,7 +88,7 @@ def push_predictions(
         predictions_raw:        Dict keyed by date string with min/avg/max in SEK/kWh.
         predictions_with_addon: Same structure with 5% markup and addon applied.
         model_metrics:          Walk-forward MAE stats from walk_forward_validate().
-        feature_importance:     Feature importance dict from get_feature_importance().
+        feature_importance:     Dict with "min"/"avg" keys from get_feature_importance().
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
@@ -105,7 +105,8 @@ def push_predictions(
         attributes["mae_max"] = model_metrics["mae_max"]
 
     if feature_importance is not None:
-        attributes["feature_importance"] = feature_importance
+        attributes["feature_importance_min"] = feature_importance["min"]
+        attributes["feature_importance_avg"] = feature_importance["avg"]
 
     payload = {
         "state": predicted_at,

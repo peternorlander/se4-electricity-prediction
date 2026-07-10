@@ -97,27 +97,30 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
 
 def get_feature_importance(models: tuple) -> dict:
     """
-    Compute average feature importance across the min and avg models only.
+    Compute feature importance for the min and avg models separately.
 
     Max model is excluded since prediction accuracy for max prices is not
-    a priority. Importances are averaged over min/avg and sorted descending.
-    Each value represents the feature's relative contribution to prediction
-    accuracy — higher means the model relies more heavily on that feature.
+    a priority. Each value represents the feature's relative contribution to
+    prediction accuracy — higher means the model relies more heavily on that
+    feature.
 
     Args:
         models: Tuple of (model_min, model_avg, model_max).
 
     Returns:
-        Dict of {feature_name: importance} sorted by importance descending.
+        Dict with "min" and "avg" keys, each a {feature_name: importance}
+        dict sorted by importance descending.
     """
     model_min, model_avg, _ = models
-    avg_importance = (
-        model_min.feature_importances_ +
-        model_avg.feature_importances_
-    ) / 2
 
-    importance = {
-        feature: round(float(imp), 4)
-        for feature, imp in zip(FEATURE_COLUMNS, avg_importance)
+    def _importance(model) -> dict:
+        importance = {
+            feature: round(float(imp), 4)
+            for feature, imp in zip(FEATURE_COLUMNS, model.feature_importances_)
+        }
+        return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
+
+    return {
+        "min": _importance(model_min),
+        "avg": _importance(model_avg),
     }
-    return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))

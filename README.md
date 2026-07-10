@@ -187,6 +187,7 @@ The pipeline creates/updates `sensor.electricity_price_predictions` with attribu
 - `predictions_raw` — EUR-to-SEK converted prices, indexed by date
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
 - `model_metrics` — current MAE values from walk-forward validation
-- `feature_importance` — top features from min+avg models (for debugging)
+- `feature_importance_min` — top features from the min model (for debugging)
+- `feature_importance_avg` — top features from the avg model (for debugging)
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.
