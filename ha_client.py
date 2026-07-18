@@ -42,7 +42,8 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
     Formula: adjusted = raw * 1.05 + addon_value
 
     Args:
-        predictions_raw: Dict keyed by date string with min/avg/max in SEK/kWh.
+        predictions_raw: Dict keyed by date string with price targets in SEK/kWh
+                         (min/avg/max/cheap2h).
         addon_value: Fixed addon in SEK/kWh from input_number.electricity_price_addon.
 
     Returns:
@@ -52,9 +53,8 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
 
     for day, values in predictions_raw.items():
         adjusted[day] = {
-            "min": round(values["min"] * 1.05 + addon_value, 4),
-            "avg": round(values["avg"] * 1.05 + addon_value, 4),
-            "max": round(values["max"] * 1.05 + addon_value, 4)
+            target: round(price * 1.05 + addon_value, 4)
+            for target, price in values.items()
         }
 
     return adjusted
@@ -62,12 +62,7 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
 
 def _to_list(predictions: dict) -> list:
     return [
-        {
-            "date": date_str,
-            "min": values["min"],
-            "avg": values["avg"],
-            "max": values["max"]
-        }
+        {"date": date_str, **values}
         for date_str, values in predictions.items()
     ]
 
@@ -85,10 +80,11 @@ def push_predictions(
     the UTC timestamp of when the prediction was made.
 
     Args:
-        predictions_raw:        Dict keyed by date string with min/avg/max in SEK/kWh.
+        predictions_raw:        Dict keyed by date string with min/avg/max/cheap2h in SEK/kWh.
         predictions_with_addon: Same structure with 5% markup and addon applied.
-        model_metrics:          Walk-forward MAE stats from walk_forward_validate().
-        feature_importance:     Dict with "min"/"avg" keys from get_feature_importance().
+        model_metrics:          Walk-forward MAE stats from walk_forward_validate()
+                                (mae_min/mae_avg/mae_max/mae_cheap2h/mae_overall).
+        feature_importance:     Dict keyed by target name from get_feature_importance().
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
@@ -99,14 +95,11 @@ def push_predictions(
     }
 
     if model_metrics is not None:
-        attributes["mae_overall"] = model_metrics["mae_overall"]
-        attributes["mae_min"] = model_metrics["mae_min"]
-        attributes["mae_avg"] = model_metrics["mae_avg"]
-        attributes["mae_max"] = model_metrics["mae_max"]
+        attributes.update(model_metrics)
 
     if feature_importance is not None:
-        attributes["feature_importance_min"] = feature_importance["min"]
-        attributes["feature_importance_avg"] = feature_importance["avg"]
+        for target, importances in feature_importance.items():
+            attributes[f"feature_importance_{target}"] = importances
 
     payload = {
         "state": predicted_at,

@@ -2,8 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error
 
-from features import FEATURE_COLUMNS
-from model import _fit_models
+from model import _fit_models, TARGETS
 
 
 # Target number of walk-forward iterations for evaluation.
@@ -11,6 +10,10 @@ from model import _fit_models
 # so the window expands each iteration and the final iteration trains on nearly
 # all available data — closely matching what the production model uses.
 _EVAL_ITERATIONS = 35
+
+# Targets whose feature importance is reported. Max is excluded since
+# prediction accuracy for max prices is not a priority.
+_IMPORTANCE_TARGETS = ("min", "avg", "cheap2h")
 
 
 def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
@@ -31,12 +34,16 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
     means performance will be slightly optimistic compared to live predictions,
     since actual archive data is more accurate than a real forecast would be.
 
+    Each target is reported individually — min, avg, max and cheap2h have
+    different physical drivers, so a blended metric would hide the per-target
+    movement that matters when tuning.
+
     Args:
         training_data: Full cleaned daily DataFrame from build_training_data().
         step:          Number of days per test window (default 7, matching forecast horizon).
 
     Returns:
-        Dict with mean and std of MAE for min, avg, max and overall (EUR/MWh).
+        Dict with mean and std of MAE for each target (EUR/MWh).
     """
     data = training_data.reset_index(drop=True)
     n = len(data)
@@ -48,7 +55,7 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
             f"need at least {_EVAL_ITERATIONS * step + 1} days, got {n}."
         )
 
-    mae_min_list, mae_avg_list, mae_max_list = [], [], []
+    mae_lists = {name: [] for name in TARGETS}
 
     print("\n=== Walk-forward validation ===")
 
@@ -59,45 +66,41 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
         train_slice = data.iloc[:train_end]
         test_slice  = data.iloc[train_end:test_end]
 
-        model_min, model_avg, model_max = _fit_models(train_slice)
-        X_test = test_slice[FEATURE_COLUMNS].values
+        models = _fit_models(train_slice)
 
-        mae_min = mean_absolute_error(test_slice["price_min"].values, model_min.predict(X_test))
-        mae_avg = mean_absolute_error(test_slice["price_avg"].values, model_avg.predict(X_test))
-        mae_max = mean_absolute_error(test_slice["price_max"].values, model_max.predict(X_test))
-
-        mae_min_list.append(mae_min)
-        mae_avg_list.append(mae_avg)
-        mae_max_list.append(mae_max)
+        for name, (target_col, feature_cols) in TARGETS.items():
+            mae = mean_absolute_error(
+                test_slice[target_col].values,
+                models[name].predict(test_slice[feature_cols].values),
+            )
+            mae_lists[name].append(mae)
 
         start_date = pd.to_datetime(test_slice["date"].iloc[0]).strftime("%Y-%m-%d")
         end_date   = pd.to_datetime(test_slice["date"].iloc[-1]).strftime("%Y-%m-%d")
         print(f"  Iteration {iteration + 1:>2} ({start_date} – {end_date}):  "
-              f"MAE min={mae_min:.2f}  avg={mae_avg:.2f}  max={mae_max:.2f}"
+              f"MAE min={mae_lists['min'][-1]:.2f}  avg={mae_lists['avg'][-1]:.2f}  "
+              f"max={mae_lists['max'][-1]:.2f}  cheap2h={mae_lists['cheap2h'][-1]:.2f}"
               f"  [train={train_end} days]")
 
-    mae_min_arr = np.array(mae_min_list)
-    mae_avg_arr = np.array(mae_avg_list)
-    mae_max_arr = np.array(mae_max_list)
-    mae_overall_arr = (mae_min_arr + mae_avg_arr) / 2  # overall = min+avg only; max excluded
+    mae_arrays = {name: np.array(values) for name, values in mae_lists.items()}
 
-    print(f"\n  Overall MAE:  "
-          f"min={mae_min_arr.mean():.2f} ± {mae_min_arr.std():.2f}  "
-          f"avg={mae_avg_arr.mean():.2f} ± {mae_avg_arr.std():.2f}  "
-          f"max={mae_max_arr.mean():.2f} ± {mae_max_arr.std():.2f}  "
-          f"overall (min+avg)={mae_overall_arr.mean():.2f} ± {mae_overall_arr.std():.2f}")
+    print("\n  Mean MAE across windows (EUR/MWh):")
+    for name in TARGETS:
+        arr = mae_arrays[name]
+        print(f"    {name:<8} {arr.mean():.2f} ± {arr.std():.2f}")
 
     return {
-        "mae_min":     {"value": round(float(mae_min_arr.mean()), 4), "std": round(float(mae_min_arr.std()), 4)},
-        "mae_avg":     {"value": round(float(mae_avg_arr.mean()), 4), "std": round(float(mae_avg_arr.std()), 4)},
-        "mae_max":     {"value": round(float(mae_max_arr.mean()), 4), "std": round(float(mae_max_arr.std()), 4)},
-        "mae_overall": {"value": round(float(mae_overall_arr.mean()), 4), "std": round(float(mae_overall_arr.std()), 4)},
+        f"mae_{name}": {
+            "value": round(float(arr.mean()), 4),
+            "std": round(float(arr.std()), 4),
+        }
+        for name, arr in mae_arrays.items()
     }
 
 
-def get_feature_importance(models: tuple) -> dict:
+def get_feature_importance(models: dict) -> dict:
     """
-    Compute feature importance for the min and avg models separately.
+    Compute feature importance for the min, avg and cheap2h models.
 
     Max model is excluded since prediction accuracy for max prices is not
     a priority. Each value represents the feature's relative contribution to
@@ -105,22 +108,20 @@ def get_feature_importance(models: tuple) -> dict:
     feature.
 
     Args:
-        models: Tuple of (model_min, model_avg, model_max).
+        models: Dict of fitted models keyed by target name.
 
     Returns:
-        Dict with "min" and "avg" keys, each a {feature_name: importance}
+        Dict keyed by target name, each a {feature_name: importance}
         dict sorted by importance descending.
     """
-    model_min, model_avg, _ = models
-
-    def _importance(model) -> dict:
+    def _importance(model, feature_cols) -> dict:
         importance = {
             feature: round(float(imp), 4)
-            for feature, imp in zip(FEATURE_COLUMNS, model.feature_importances_)
+            for feature, imp in zip(feature_cols, model.feature_importances_)
         }
         return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
     return {
-        "min": _importance(model_min),
-        "avg": _importance(model_avg),
+        name: _importance(models[name], TARGETS[name][1])
+        for name in _IMPORTANCE_TARGETS
     }

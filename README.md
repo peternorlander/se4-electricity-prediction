@@ -21,11 +21,11 @@ Data sources (API)
          │
          ▼
 Feature engineering (features.py)
-    → 47 features, daily resolution, 3-year training window
+    → 47 shared features (+1 cheap2h-specific lag), daily resolution, 3-year training window
          │
          ▼
 Model training (model.py)
-    → 3 separate XGBoost regressors: price_min, price_avg, price_max
+    → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
     → Walk-forward validation: 35 windows × 7 days (evaluate.py)
          │
          ▼
@@ -34,16 +34,40 @@ Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (ha_client.py)
 
 ## Current MAE Baseline
 
-Evaluation uses 35-window walk-forward validation on 3 years of training data. **Overall is min+avg only** — max prediction accuracy is not a priority for the use case.
+Evaluation uses 35-window walk-forward validation on 3 years of training data. Each target is reported **individually** — min, avg, max and cheap2h have different physical drivers, so a blended metric would hide the per-target movement that matters when tuning. `cheap2h` and `min` are the numbers to watch for scheduling; `max` is not a priority.
 
-| Target | MAE (EUR/MWh) | Std |
-|--------|--------------|-----|
-| min    | ~11.7        | ±3.8 |
-| avg    | ~15.3        | ±5.2 |
-| max    | ~39–40       | ±17–18 |
-| **overall (min+avg)** | **~13.5** | |
+Post-harmonization baseline (first measured 2026-07, targets computed on hourly means):
 
-Feature importance is also reported for **min and avg models only** — including max would dilute the signal for what actually matters for scheduling decisions.
+| Target  | MAE (EUR/MWh) | Std |
+|---------|--------------|------|
+| min     | 13.66        | ±4.84 |
+| avg     | 15.88        | ±6.16 |
+| max     | 31.97        | ±13.88 |
+| cheap2h | 13.56        | ±4.77 |
+
+**Note:** min/max are not comparable to the pre-2026-07 figures (old min ~11.7). The harmonization changed the target itself — min is now the cheapest *hour* (hourly mean), removing the systematic high bias that inflated apparent accuracy on post-Oct-2025 windows. 13.66 is the honest error against the consistent target; compare future runs against this, not the old values.
+
+Feature importance is reported for **min, avg and cheap2h models only** — including max would dilute the signal for what actually matters for scheduling decisions.
+
+## Target Definition
+
+The SDAC day-ahead auction switched from hourly to 15-minute MTU on **delivery day 2025-10-01**. ENTSO-E returns 24 points/day before that date and 96 points/day after. This matters because a min over 96 quarter-hours is systematically lower than a min over 24 hours — mixing both in one training window teaches the model the wrong level for exactly the period it is evaluated on.
+
+**Current definitions (since 2026-07): all price targets are computed on hourly means.** 15-minute data is resampled to hourly before daily aggregation (`aggregate_prices_daily`), so every target has one consistent definition across the whole 3-year window:
+
+- `price_min` / `price_max` — cheapest / most expensive hour of the day
+- `price_avg` — daily mean (numerically unaffected by resampling)
+- `price_cheap2h` — mean of the day's **two cheapest hours, not necessarily adjacent**. This is the decision-relevant target for EV charging: a ~2h charging session picks the cheapest points of the day wherever they are. It is also statistically smoother than the pointwise min (average of 2 values instead of an extremum).
+
+**Backtracking plan — when to switch to native 15-minute targets:**
+
+| Date | 15-min share of 3-year window | Action |
+|------|------------------------------|--------|
+| 2025-10-01 | 0% → growing | 15-min MTU go-live (delivery day) |
+| ~2027-10 | ~67% (2 years) | Run the experiment: walk-forward compare (a) hourly-harmonized targets on the full window vs (b) native 15-min targets (`price_cheap2h` = mean of 8 cheapest quarters) on a 15-min-only window (`TRAINING_DAYS ≈ 730`). Switch only if (b) wins on min/cheap2h MAE. |
+| 2028-10-01 | 100% | Hourly era has left the window — mixing ends by itself; native 15-min targets become a pure definition choice with no data-quality downside. |
+
+Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds noise and may never be the right target. The natural evolution is `cheap2h` computed on the 15-min curve (8 cheapest quarters), which the charging schedule can exploit since it can use individual non-contiguous 15-min MTUs.
 
 ## Data Sources
 
@@ -55,7 +79,7 @@ Feature importance is also reported for **min and avg models only** — includin
 | [NVE](https://biapi.nve.no/magasinstatistikk) | Norwegian hydro reservoir fill levels + 20-year min/max/median by week | None |
 | [Nordpool](https://www.nordpoolgroup.com) | Published SE4 prices (used to exclude already-known days from predictions) | None |
 
-## Features (47 total)
+## Features (47 shared + 1 cheap2h-specific)
 
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
@@ -79,6 +103,7 @@ Captures wind and solar generation in coupled markets that flow into SE4.
 - `price_se4_avg_lag2`, `price_se4_avg_lag7` — momentum and weekly seasonality
 - `price_se4_min_lag1` — yesterday's min (direct signal for min model)
 - `price_se4_max_lag1` — yesterday's max
+- `price_se4_cheap2h_lag1` — yesterday's cheap2h (**cheap2h model only** via `CHEAP2H_FEATURE_COLUMNS`; kept out of min/avg/max to avoid perturbing their baseline with a correlated lag)
 - `price_momentum` — lag1 minus lag2 (rising vs falling trend)
 - `price_volatility_7d` — rolling 7-day std (market regime stability)
 
@@ -121,7 +146,7 @@ Engineered composite feature: demand proxy minus weighted wind/solar supply.
 
 ## Model
 
-Three separate XGBoost regressors (min/avg/max targets):
+Four separate XGBoost regressors (min/avg/max/cheap2h targets):
 
 ```python
 XGBRegressor(
@@ -136,7 +161,7 @@ XGBRegressor(
 )
 ```
 
-Separate models per target because min/avg/max have different physical drivers: min occurs at renewable oversupply moments, avg smooths out noise, max occurs at peak demand/scarcity.
+Separate models per target because the targets have different physical drivers: min occurs at renewable oversupply moments, avg smooths out noise, max occurs at peak demand/scarcity, and cheap2h tracks the depth of the daily price trough. All models share `FEATURE_COLUMNS`; cheap2h additionally gets `price_se4_cheap2h_lag1`.
 
 ## Features Tested and Rejected
 
@@ -155,7 +180,7 @@ Keep this list updated — it prevents re-testing things that didn't work.
 ## Known Limitations
 
 - **3-year training window**: Unusual market periods (e.g. energy crisis 2021–2022) have outsized weight. Reservoir features will become more valuable as more data accumulates.
-- **Daily resolution**: The model predicts daily min/avg/max, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering.
+- **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
 - **Forecast horizon**: All forecast days (1–8) use the same features. Day+8 weather forecasts are less accurate than day+1 but the model doesn't distinguish between them. A `forecast_horizon` feature (1–8) is a candidate improvement.
 - **Max prediction accuracy** (~39 EUR/MWh MAE): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
 - **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale.
@@ -184,10 +209,11 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `wo
 ## Home Assistant Integration
 
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
-- `predictions_raw` — EUR-to-SEK converted prices, indexed by date
+- `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day)
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
-- `model_metrics` — current MAE values from walk-forward validation
-- `feature_importance_min` — top features from the min model (for debugging)
-- `feature_importance_avg` — top features from the avg model (for debugging)
+- `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from walk-forward validation
+- `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
+
+For charging decisions ("charge today or wait for cheaper days"), compare `cheap2h` across days — it is the expected price of a ~2h session picking the day's cheapest hours, which is what the schedule can actually achieve.
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.

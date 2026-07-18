@@ -73,6 +73,11 @@ FEATURE_COLUMNS = [
     "dow_sin", "dow_cos",
 ]
 
+# The cheap2h model gets one extra target-specific lag (yesterday's cheap2h).
+# min/avg/max models keep the original feature set so their MAE baseline is
+# not perturbed by a new correlated lag feature.
+CHEAP2H_FEATURE_COLUMNS = FEATURE_COLUMNS + ["price_se4_cheap2h_lag1"]
+
 
 def _to_swedish_date(timestamps: pd.Series) -> pd.Series:
     """
@@ -113,21 +118,44 @@ def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
 
 def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Aggregate hourly ENTSO-E prices to daily min/avg/max.
+    Aggregate ENTSO-E prices to daily min/avg/max/cheap2h.
+
+    Prices are resampled to hourly means before aggregation. Since the SDAC
+    15-minute MTU go-live (delivery day 2025-10-01) ENTSO-E returns 96
+    quarter-hourly points per day, while earlier history is hourly (24 points).
+    Aggregating raw points would give min/max a different definition on either
+    side of that boundary — the cheapest of 96 quarters is systematically lower
+    than the cheapest of 24 hourly means — biasing the models high on recent
+    data. Resampling keeps one target definition across the whole training
+    window. See README "Target Definition" for the planned migration to native
+    15-minute targets once enough 15-minute history has accumulated.
+
+    price_cheap2h is the mean of the day's two cheapest hours (not necessarily
+    adjacent) — the price a ~2-hour charging session can achieve by picking
+    the cheapest points of the day.
 
     Args:
         df: DataFrame with columns: timestamp (UTC), price_eur_mwh.
 
     Returns:
-        DataFrame with one row per day and price_min/avg/max columns.
+        DataFrame with one row per day and price_min/avg/max/cheap2h columns.
     """
     df = df.copy()
-    df["date"] = _to_swedish_date(df["timestamp"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 
-    return df.groupby("date").agg(
+    hourly = (
+        df.set_index("timestamp")["price_eur_mwh"]
+        .resample("1h").mean()
+        .dropna()
+        .reset_index()
+    )
+    hourly["date"] = _to_swedish_date(hourly["timestamp"])
+
+    return hourly.groupby("date").agg(
         price_min=("price_eur_mwh", "min"),
         price_avg=("price_eur_mwh", "mean"),
-        price_max=("price_eur_mwh", "max")
+        price_max=("price_eur_mwh", "max"),
+        price_cheap2h=("price_eur_mwh", lambda s: s.nsmallest(2).mean()),
     ).reset_index()
 
 
@@ -403,8 +431,10 @@ def add_se4_price_lags(df: pd.DataFrame) -> pd.DataFrame:
 
     - Lag-1/lag-2 avg: short-term momentum and mean reversion.
     - Lag-7 avg: weekly seasonality (same weekday last week).
-    - Lag-1 min/max: target-specific signals — yesterday's min predicts today's
-      min far better than yesterday's average does, and vice versa for max.
+    - Lag-1 min/max/cheap2h: target-specific signals — yesterday's min predicts
+      today's min far better than yesterday's average does, and vice versa for
+      max. The cheap2h lag is only used by the cheap2h model (see
+      CHEAP2H_FEATURE_COLUMNS).
     - Momentum (lag1 - lag2): captures whether prices are rising or falling.
     - Volatility (7-day rolling std): high-volatility regimes have wider
       min-max spreads and less predictable averages.
@@ -426,6 +456,7 @@ def add_se4_price_lags(df: pd.DataFrame) -> pd.DataFrame:
     # Target-specific lags
     df["price_se4_min_lag1"] = df["price_min"].shift(1)
     df["price_se4_max_lag1"] = df["price_max"].shift(1)
+    df["price_se4_cheap2h_lag1"] = df["price_cheap2h"].shift(1)
 
     # Momentum: positive = prices rising, negative = falling
     df["price_momentum"] = df["price_se4_avg_lag1"] - df["price_se4_avg_lag2"]
@@ -780,6 +811,7 @@ def build_forecast_features(
         # Target-specific lags
         forecast_daily["price_se4_min_lag1"] = sorted_train["price_min"].iloc[-1]
         forecast_daily["price_se4_max_lag1"] = sorted_train["price_max"].iloc[-1]
+        forecast_daily["price_se4_cheap2h_lag1"] = sorted_train["price_cheap2h"].iloc[-1]
 
         # Momentum: last known trend direction
         forecast_daily["price_momentum"] = tail_avg.iloc[-1] - tail_avg.iloc[-2] if len(tail_avg) >= 2 else 0.0
@@ -792,6 +824,7 @@ def build_forecast_features(
         forecast_daily["price_se4_avg_lag7"] = 0.0
         forecast_daily["price_se4_min_lag1"] = 0.0
         forecast_daily["price_se4_max_lag1"] = 0.0
+        forecast_daily["price_se4_cheap2h_lag1"] = 0.0
         forecast_daily["price_momentum"] = 0.0
         forecast_daily["price_volatility_7d"] = 0.0
 

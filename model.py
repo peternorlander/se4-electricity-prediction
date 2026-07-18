@@ -1,6 +1,19 @@
 import pandas as pd
 from xgboost import XGBRegressor
-from features import FEATURE_COLUMNS
+from features import FEATURE_COLUMNS, CHEAP2H_FEATURE_COLUMNS
+
+
+# Target name → (training column, feature columns).
+# cheap2h predicts the mean of the day's two cheapest hours — the price a
+# ~2-hour charging session can achieve by picking the cheapest points of the
+# day. It gets one extra feature (its own lag-1); min/avg/max keep the
+# original feature set so their MAE baseline is not perturbed.
+TARGETS = {
+    "min":     ("price_min",     FEATURE_COLUMNS),
+    "avg":     ("price_avg",     FEATURE_COLUMNS),
+    "max":     ("price_max",     FEATURE_COLUMNS),
+    "cheap2h": ("price_cheap2h", CHEAP2H_FEATURE_COLUMNS),
+}
 
 
 def _make_regressor() -> XGBRegressor:
@@ -17,57 +30,51 @@ def _make_regressor() -> XGBRegressor:
     )
 
 
-def _fit_models(data: pd.DataFrame) -> tuple:
-    """Fit three XGBoost regressors (min/avg/max) on the given data."""
-    X = data[FEATURE_COLUMNS].values
-    model_min = _make_regressor()
-    model_avg = _make_regressor()
-    model_max = _make_regressor()
-    model_min.fit(X, data["price_min"].values)
-    model_avg.fit(X, data["price_avg"].values)
-    model_max.fit(X, data["price_max"].values)
-    return model_min, model_avg, model_max
+def _fit_models(data: pd.DataFrame) -> dict:
+    """Fit one XGBoost regressor per target (min/avg/max/cheap2h) on the given data."""
+    models = {}
+    for name, (target_col, feature_cols) in TARGETS.items():
+        model = _make_regressor()
+        model.fit(data[feature_cols].values, data[target_col].values)
+        models[name] = model
+    return models
 
 
-def train(training_data: pd.DataFrame) -> tuple:
+def train(training_data: pd.DataFrame) -> dict:
     """
-    Train three XGBoost regressors for daily price min, avg and max.
+    Train one XGBoost regressor per daily price target.
 
     Args:
         training_data: Daily DataFrame with feature columns and price targets.
 
     Returns:
-        Tuple of (model_min, model_avg, model_max).
+        Dict keyed by target name (min/avg/max/cheap2h) with fitted models.
     """
     return _fit_models(training_data)
 
 
-def predict(models: tuple, forecast_features: pd.DataFrame) -> dict:
+def predict(models: dict, forecast_features: pd.DataFrame) -> dict:
     """
     Run inference on forecast features.
 
     Args:
-        models: Tuple of (model_min, model_avg, model_max).
+        models: Dict of fitted models keyed by target name.
         forecast_features: Daily DataFrame with feature columns.
 
     Returns:
-        Dict keyed by date string (YYYY-MM-DD) with min/avg/max in EUR/MWh.
+        Dict keyed by date string (YYYY-MM-DD) with min/avg/max/cheap2h in EUR/MWh.
     """
-    model_min, model_avg, model_max = models
-    X = forecast_features[FEATURE_COLUMNS].values
-
-    pred_min = model_min.predict(X)
-    pred_avg = model_avg.predict(X)
-    pred_max = model_max.predict(X)
+    preds = {
+        name: models[name].predict(forecast_features[TARGETS[name][1]].values)
+        for name in TARGETS
+    }
 
     dates = pd.to_datetime(forecast_features["date"]).dt.strftime("%Y-%m-%d").values
     predictions = {}
 
     for i in range(len(dates)):
         predictions[dates[i]] = {
-            "min": round(float(pred_min[i]), 4),
-            "avg": round(float(pred_avg[i]), 4),
-            "max": round(float(pred_max[i]), 4)
+            name: round(float(preds[name][i]), 4) for name in TARGETS
         }
 
     return predictions
