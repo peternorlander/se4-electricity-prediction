@@ -15,13 +15,6 @@ _EVAL_ITERATIONS = 35
 # prediction accuracy for max prices is not a priority.
 _IMPORTANCE_TARGETS = ("min", "avg", "cheap2h")
 
-# Headline evaluation freezes the price-lag anchor at the freshest known price
-# (staleness 0), matching freshened production. The reference staleness
-# approximates the pre-freshening pipeline, where the weather-archive join left
-# the SE4 anchor ~5 days behind; the fresh-vs-stale gap is the freshening win.
-_HEADLINE_STALENESS = 0
-_STALE_ANCHOR_REFERENCE = 5
-
 
 def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
     """
@@ -55,17 +48,13 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
     is also reported, since the whole point of the freeze is to expose how
     accuracy decays with forecast distance.
 
-    A second, staler anchor (_STALE_ANCHOR_REFERENCE) is scored with the same
-    fitted models to quantify the price-lag freshening: the fresh-vs-stale MAE
-    gap is what freshening the SE4 anchor saves in production.
-
     Args:
         training_data: Full cleaned daily DataFrame from build_training_data().
         step:          Number of days per test window (default 7, matching forecast horizon).
 
     Returns:
-        Dict with mean and std of MAE for each target (EUR/MWh) at the freshened
-        anchor, plus a nested "mae_by_horizon" mapping target → {horizon: MAE}.
+        Dict with mean and std of MAE for each target (EUR/MWh), plus a nested
+        "mae_by_horizon" mapping target → {horizon: MAE}.
     """
     data = training_data.reset_index(drop=True)
     n = len(data)
@@ -77,14 +66,13 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
             f"need at least {_EVAL_ITERATIONS * step + 1} days, got {n}."
         )
 
-    staleness_levels = (_HEADLINE_STALENESS, _STALE_ANCHOR_REFERENCE)
-    # Per-window mean MAE per staleness level.
-    mae_lists = {s: {name: [] for name in TARGETS} for s in staleness_levels}
-    # Per-horizon absolute errors at the headline (fresh) anchor: target →
-    # horizon (1..step) → list of errors, one per window.
+    # Per-window mean MAE per target.
+    mae_lists = {name: [] for name in TARGETS}
+    # Per-horizon absolute errors: target → horizon (1..step) → list of errors,
+    # one per window.
     horizon_errs = {name: {h: [] for h in range(1, step + 1)} for name in TARGETS}
 
-    print("\n=== Walk-forward validation (horizon-honest: lags frozen as in production) ===")
+    print("\n=== Walk-forward validation ===")
 
     for iteration in range(_EVAL_ITERATIONS):
         train_end  = min_train + iteration * step
@@ -94,51 +82,37 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
         raw_test    = data.iloc[train_end:test_end]
         models      = _fit_models(train_slice)
 
-        frozen_by_staleness = {
-            s: apply_forecast_freeze(raw_test, train_slice, anchor_staleness_days=s)
-            for s in staleness_levels
-        }
+        frozen = apply_forecast_freeze(raw_test, train_slice)
 
         for name, (target_col, feature_cols) in TARGETS.items():
             actual = raw_test[target_col].values
-            for s in staleness_levels:
-                errors = np.abs(models[name].predict(frozen_by_staleness[s][feature_cols].values) - actual)
-                mae_lists[s][name].append(float(errors.mean()))
-                if s == _HEADLINE_STALENESS:
-                    for i, err in enumerate(errors):
-                        horizon_errs[name][i + 1].append(float(err))
+            errors = np.abs(models[name].predict(frozen[feature_cols].values) - actual)
+            mae_lists[name].append(float(errors.mean()))
+            for i, err in enumerate(errors):
+                horizon_errs[name][i + 1].append(float(err))
 
         start_date = pd.to_datetime(raw_test["date"].iloc[0]).strftime("%Y-%m-%d")
         end_date   = pd.to_datetime(raw_test["date"].iloc[-1]).strftime("%Y-%m-%d")
-        head = mae_lists[_HEADLINE_STALENESS]
         print(f"  Iteration {iteration + 1:>2} ({start_date} – {end_date}):  "
-              f"MAE min={head['min'][-1]:.2f}  avg={head['avg'][-1]:.2f}  "
-              f"max={head['max'][-1]:.2f}  cheap2h={head['cheap2h'][-1]:.2f}"
+              f"MAE min={mae_lists['min'][-1]:.2f}  avg={mae_lists['avg'][-1]:.2f}  "
+              f"max={mae_lists['max'][-1]:.2f}  cheap2h={mae_lists['cheap2h'][-1]:.2f}"
               f"  [train={train_end} days]")
 
-    mae_arrays = {name: np.array(values) for name, values in mae_lists[_HEADLINE_STALENESS].items()}
+    mae_arrays = {name: np.array(values) for name, values in mae_lists.items()}
     horizon_mae = {
         name: {h: float(np.mean(errs)) for h, errs in per_h.items()}
         for name, per_h in horizon_errs.items()
     }
 
-    print("\n  Mean MAE across windows (EUR/MWh) — freshened anchor:")
+    print("\n  Mean MAE across windows (EUR/MWh):")
     for name in TARGETS:
         arr = mae_arrays[name]
         print(f"    {name:<8} {arr.mean():.2f} ± {arr.std():.2f}")
 
-    print("\n  MAE by forecast horizon (EUR/MWh) — freshened anchor:")
+    print("\n  MAE by forecast horizon (EUR/MWh):")
     print("    horizon " + "".join(f"{name:>9}" for name in TARGETS))
     for h in range(1, step + 1):
         print(f"      d+{h:<4} " + "".join(f"{horizon_mae[name][h]:>9.2f}" for name in TARGETS))
-
-    print(f"\n  Anchor-staleness sensitivity (mean MAE, EUR/MWh) — "
-          f"fresh (d{_HEADLINE_STALENESS}) vs stale (d{_STALE_ANCHOR_REFERENCE} ~ old pipeline):")
-    print(f"    {'target':<8}{'fresh':>9}{'stale':>9}{'saved':>10}")
-    for name in TARGETS:
-        fresh = float(np.mean(mae_lists[_HEADLINE_STALENESS][name]))
-        stale = float(np.mean(mae_lists[_STALE_ANCHOR_REFERENCE][name]))
-        print(f"    {name:<8}{fresh:>9.2f}{stale:>9.2f}{stale - fresh:>10.2f}")
 
     metrics = {
         f"mae_{name}": {
