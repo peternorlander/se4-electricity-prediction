@@ -38,14 +38,16 @@ Evaluation uses 35-window walk-forward validation on 3 years of training data. E
 
 The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
 
-Baseline (freshened price anchor; wiggles ~±0.5 run-to-run as the window rolls):
+Baseline (freshened price anchor + intraday trough features; wiggles ~±0.5 run-to-run as the window rolls):
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|
-| min     | 17.24        | ±7.41 |
-| avg     | 18.80        | ±8.33 |
-| max     | 34.41        | ±17.69 |
-| cheap2h | 17.40        | ±7.07 |
+| min     | 17.07        | ±7.06 |
+| avg     | 18.83        | ±8.29 |
+| max     | 34.13        | ±17.39 |
+| cheap2h | 16.74        | ±7.22 |
+
+**Intraday trough features (2026-07):** the daily min/cheap2h is set at a specific intraday trough (overnight wind or midday solar) that the daily-mean `residual_load` diluted. Exposing the trough directly — chiefly `residual_load_min` (daily minimum of hourly residual load) — cut cheap2h ~0.66 EUR/MWh and held min, with `residual_load_min` landing as a top-4 feature in all three priority models. See the [Intraday Trough Features](#intraday-trough-features) section.
 
 **Price-lag anchor freshening (2026-07):** the SE4 price lags — the dominant min/cheap2h features — are now frozen at the freshest *known* ENTSO-E price (`se4_prices_daily`), not the training frame's last row. The training frame ends ~`WEATHER_ARCHIVE_LAG_DAYS` behind because it inner-joins prices with the lagging weather archive, so production was previously anchoring the price lags ~5 days stale (the DE/DK2 lags were already fresh — this closes the same gap for SE4's own lags). The walk-forward reports an **anchor-staleness sensitivity** (fresh d0 vs stale d5 ≈ old pipeline). Measured saving from freshening: **~1.1 EUR/MWh (min/cheap2h), ~2.3 (avg)** — real and free, but modest, because yesterday's min and six-days-ago min are similar.
 
@@ -83,7 +85,7 @@ Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds
 | [NVE](https://biapi.nve.no/magasinstatistikk) | Norwegian hydro reservoir fill levels + 20-year min/max/median by week | None |
 | [Nordpool](https://www.nordpoolgroup.com) | Published SE4 prices (used to exclude already-known days from predictions) | None |
 
-## Features (47 shared + 1 cheap2h-specific)
+## Features (51 shared + 1 cheap2h-specific)
 
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
@@ -114,9 +116,16 @@ Captures wind and solar generation in coupled markets that flow into SE4.
 ### Residual Load
 Engineered composite feature: demand proxy minus weighted wind/solar supply.
 - Demand proxy: `15 - mean_temp` (heating-based)
-- Wind: cubic power curve `(v/13)³` applied per location, weighted by interconnection capacity to SE4
-- Solar: `radiation / 500` per location, same weights
+- Wind: cubic power curve `(v/13)³` applied per location, weighted by interconnection capacity to SE4. Weights: SE4/Malmö 1.0, **Karlskrona 0.5** (also SE4 — southern Baltic offshore wind), DK2 0.4, DK1 0.2, DE-north 0.3 (normaliser 2.4). Karlskrona was previously fetched but missing from the blend.
+- Solar: `radiation / 500` per location, same weights minus Karlskrona (normaliser 1.9)
 - Also exposed as `residual_load_lag1` for momentum
+
+### Intraday Trough Features
+The daily price minimum (and `cheap2h`) is set at a specific intraday trough — the hour of highest renewable supply / lowest net demand — which the daily-*mean* `residual_load` dilutes. These expose that trough directly from the hourly weather forecast, using the same power curve and interconnection weights (`aggregate_intraday_features`). All four are per-day forecastable (not lagged, not frozen), so they help at every horizon.
+- `residual_load_min` — daily **minimum** of hourly residual load: the physical driver of the daily price min
+- `residual_load_range` — daily max − min of hourly residual load: proxy for the intraday min↔peak spread (drives the min–avg gap)
+- `wind_night` — interconnection-weighted wind power, 00–06 local mean (overnight wind-driven trough)
+- `radiation_midday` — interconnection-weighted solar supply, 10–16 local mean (midday negative-price window)
 
 ### Heating Degree Days
 - `hdd_linear` — `max(0, 17 - temp)`: standard Nordic HDD, a key heating-demand signal (`residual_load` and `max_temp` usually rank higher)

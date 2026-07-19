@@ -33,6 +33,14 @@ FEATURE_COLUMNS = [
     "residual_load_lag1",
     # Residual load: demand proxy minus renewable supply — indicates conventional generation need
     "residual_load",
+    # Intraday trough features — the daily price minimum (and cheap2h) is set at a
+    # specific intraday trough (overnight wind or midday solar) that the daily-mean
+    # residual_load dilutes. These expose that trough directly from the hourly
+    # weather forecast, so they help at every horizon. See aggregate_intraday_features().
+    "residual_load_min",     # daily MINIMUM of hourly residual load — physical driver of the price min
+    "residual_load_range",   # daily max−min of hourly residual load — proxy for the intraday min↔peak spread
+    "wind_night",            # interconnection-weighted wind power, 00–06 local mean (overnight trough)
+    "radiation_midday",      # interconnection-weighted solar, 10–16 local mean (midday negative-price window)
     # Non-linear heating degree days — captures accelerating demand below 0°C
     "hdd_linear",          # max(0, 17 - temp): standard HDD
     "hdd_cold_boost",      # extra quadratic term below 0°C: captures non-linear demand surge
@@ -245,6 +253,31 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# Regional wind interconnection weights toward SE4 (approx NTC-based). SE4 is
+# represented by Malmö (mean_wind, the primary local proxy) plus Karlskrona
+# (southern Baltic offshore wind, increasingly material for SE4 and previously
+# missing from the blend). Shared by the daily residual-load feature and the
+# intraday trough features so the hourly and daily residual load stay consistent.
+WIND_SE4_W = 1.0
+WIND_KARLSKRONA_W = 0.5
+WIND_DK2_W = 0.4
+WIND_DK1_W = 0.2
+WIND_DE_W = 0.3
+WIND_WEIGHT_SUM = WIND_SE4_W + WIND_KARLSKRONA_W + WIND_DK2_W + WIND_DK1_W + WIND_DE_W  # 2.4
+
+# Regional solar weights (Karlskrona omitted — Malmö radiation already proxies
+# SE4 solar). Unchanged from the original residual-load blend (normaliser 1.9).
+SOLAR_SE4_W = 1.0
+SOLAR_DK2_W = 0.4
+SOLAR_DK1_W = 0.2
+SOLAR_DE_W = 0.3
+SOLAR_WEIGHT_SUM = SOLAR_SE4_W + SOLAR_DK2_W + SOLAR_DK1_W + SOLAR_DE_W  # 1.9
+
+# Local-time (Europe/Stockholm) windows for the intraday trough features.
+_NIGHT_HOURS = range(0, 6)     # 00:00–06:00 — overnight low-demand, wind-driven price trough
+_MIDDAY_HOURS = range(10, 16)  # 10:00–16:00 — midday solar window where SE4 increasingly goes negative
+
+
 def _wind_power_curve(wind_speed: pd.Series, rated_speed: float = 13.0) -> pd.Series:
     """
     Approximate wind turbine power output using a cubic power curve.
@@ -280,10 +313,13 @@ def add_residual_load(df: pd.DataFrame) -> pd.DataFrame:
        exposed as separate features so the model can learn non-linear interactions.
 
     Interconnection weights (approximate, based on NTC capacity towards SE4):
-    - SE4 local:  1.0  (direct)
-    - DK2:        0.4  (Øresund link ~1700 MW, significant for SE4)
-    - DK1:        0.2  (indirect via DK2 or DE)
-    - DE (north): 0.3  (Baltic Cable ~600 MW + indirect via DK)
+    - SE4 (Malmö):    1.0  (direct)
+    - Karlskrona:     0.5  (also SE4 — southern Baltic offshore wind)
+    - DK2:            0.4  (Øresund link ~1700 MW, significant for SE4)
+    - DK1:            0.2  (indirect via DK2 or DE)
+    - DE (north):     0.3  (Baltic Cable ~600 MW + indirect via DK)
+    Weights are shared with aggregate_intraday_features() via the WIND_*_W /
+    SOLAR_*_W module constants.
 
     Args:
         df: Daily DataFrame with weather and international weather columns.
@@ -296,13 +332,17 @@ def add_residual_load(df: pd.DataFrame) -> pd.DataFrame:
     # --- Demand proxy: heating degree days (higher when cold) ---
     demand_proxy = 15 - df["mean_temp"]
 
-    # --- Wind supply: cubic power curve, regionally weighted ---
+    # --- Wind supply: cubic power curve, regionally weighted (incl. Karlskrona) ---
     wind_se4 = _wind_power_curve(df["mean_wind"])
+    wind_karlskrona = _wind_power_curve(df["mean_wind_karlskrona"]) if "mean_wind_karlskrona" in df.columns else 0
     wind_dk1 = _wind_power_curve(df["mean_wind_dk1"]) if "mean_wind_dk1" in df.columns else 0
     wind_dk2 = _wind_power_curve(df["mean_wind_dk2"]) if "mean_wind_dk2" in df.columns else 0
     wind_de  = _wind_power_curve(df["mean_wind_de_north"]) if "mean_wind_de_north" in df.columns else 0
 
-    wind_supply_total = (1.0 * wind_se4 + 0.4 * wind_dk2 + 0.2 * wind_dk1 + 0.3 * wind_de) / 1.9
+    wind_supply_total = (
+        WIND_SE4_W * wind_se4 + WIND_KARLSKRONA_W * wind_karlskrona
+        + WIND_DK2_W * wind_dk2 + WIND_DK1_W * wind_dk1 + WIND_DE_W * wind_de
+    ) / WIND_WEIGHT_SUM
 
     # --- Solar supply: regionally weighted ---
     solar_se4 = df["mean_radiation"] / 500
@@ -310,12 +350,108 @@ def add_residual_load(df: pd.DataFrame) -> pd.DataFrame:
     solar_dk2 = df["mean_radiation_dk2"] / 500 if "mean_radiation_dk2" in df.columns else 0
     solar_de  = df["mean_radiation_de_north"] / 500 if "mean_radiation_de_north" in df.columns else 0
 
-    solar_supply_total = (1.0 * solar_se4 + 0.4 * solar_dk2 + 0.2 * solar_dk1 + 0.3 * solar_de) / 1.9
+    solar_supply_total = (
+        SOLAR_SE4_W * solar_se4 + SOLAR_DK2_W * solar_dk2
+        + SOLAR_DK1_W * solar_dk1 + SOLAR_DE_W * solar_de
+    ) / SOLAR_WEIGHT_SUM
 
     # --- Composite residual load ---
     df["residual_load"] = demand_proxy - wind_supply_total - solar_supply_total
 
     return df
+
+
+def aggregate_intraday_features(
+    weather_hourly: pd.DataFrame,
+    wind_intl_hourly: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Derive daily intraday-trough features from the hourly weather.
+
+    The daily price minimum (and the two-cheapest-hours mean, cheap2h) is set at
+    a specific intraday trough — the hour of highest renewable supply / lowest net
+    demand — which the daily-mean residual_load feature dilutes. These features
+    expose that trough directly:
+
+    - residual_load_min:   daily MINIMUM of hourly residual load — the physical
+                           driver of the daily price minimum.
+    - residual_load_range: daily max − min of hourly residual load — proxy for the
+                           intraday min↔peak spread (drives the min–avg gap).
+    - wind_night:          interconnection-weighted wind power, 00–06 local mean —
+                           the overnight low-demand, wind-driven trough.
+    - radiation_midday:    interconnection-weighted solar supply, 10–16 local mean —
+                           the midday window where SE4 increasingly goes negative.
+
+    The hourly residual load reuses the same cubic wind power curve and the shared
+    WIND_*_W / SOLAR_*_W interconnection weights as add_residual_load(), so it is
+    consistent with the daily feature. All inputs come from the weather forecast,
+    so every feature is available across the full multi-day horizon (not just day+1),
+    and none are frozen in build_forecast_features()/apply_forecast_freeze().
+
+    Args:
+        weather_hourly:   Hourly SE4 weather (timestamp UTC, temperature, windspeed, radiation).
+        wind_intl_hourly: Hourly international wind/solar (timestamp UTC, windspeed_{key},
+                          radiation_{key}, ...) for all WIND_LOCATIONS.
+
+    Returns:
+        DataFrame with one row per Swedish date and columns: date,
+        residual_load_min, residual_load_range, wind_night, radiation_midday.
+    """
+    w = weather_hourly[["timestamp", "temperature", "windspeed", "radiation"]].copy()
+    w["timestamp"] = pd.to_datetime(w["timestamp"], utc=True)
+
+    intl = wind_intl_hourly.copy()
+    intl["timestamp"] = pd.to_datetime(intl["timestamp"], utc=True)
+
+    m = pd.merge(w, intl, on="timestamp", how="inner")
+
+    # Hourly interconnection-weighted wind power and solar supply — identical
+    # weights and normalisers to the daily add_residual_load (incl. Karlskrona).
+    wind_power = (
+        WIND_SE4_W * _wind_power_curve(m["windspeed"])
+        + WIND_KARLSKRONA_W * _wind_power_curve(m["windspeed_karlskrona"])
+        + WIND_DK2_W * _wind_power_curve(m["windspeed_dk2"])
+        + WIND_DK1_W * _wind_power_curve(m["windspeed_dk1"])
+        + WIND_DE_W * _wind_power_curve(m["windspeed_de_north"])
+    ) / WIND_WEIGHT_SUM
+
+    solar_supply = (
+        SOLAR_SE4_W * m["radiation"]
+        + SOLAR_DK2_W * m["radiation_dk2"]
+        + SOLAR_DK1_W * m["radiation_dk1"]
+        + SOLAR_DE_W * m["radiation_de_north"]
+    ) / (SOLAR_WEIGHT_SUM * 500)
+
+    demand_proxy = 15 - m["temperature"]
+    m["_residual_load"] = demand_proxy - wind_power - solar_supply
+    m["_wind_power"] = wind_power
+    m["_solar_supply"] = solar_supply
+
+    # Swedish local time — the intraday windows and daily boundaries must match
+    # the market day and the other daily aggregations (all Europe/Stockholm).
+    local = m["timestamp"].dt.tz_convert("Europe/Stockholm")
+    m["date"] = local.dt.date
+    hour = local.dt.hour
+
+    daily = m.groupby("date").agg(
+        residual_load_min=("_residual_load", "min"),
+        _residual_load_max=("_residual_load", "max"),
+    )
+    daily["residual_load_range"] = daily["_residual_load_max"] - daily["residual_load_min"]
+    daily = daily.drop(columns=["_residual_load_max"])
+
+    # Window means, aligned back on date. Fall back to the day's all-hours mean so
+    # a partial boundary day (missing the 00–06 or 10–16 window after the UTC→local
+    # shift) never yields a NaN feature at forecast time.
+    all_wind = m.groupby("date")["_wind_power"].mean()
+    all_solar = m.groupby("date")["_solar_supply"].mean()
+    night_wind = m[hour.isin(_NIGHT_HOURS)].groupby("date")["_wind_power"].mean()
+    midday_solar = m[hour.isin(_MIDDAY_HOURS)].groupby("date")["_solar_supply"].mean()
+
+    daily["wind_night"] = night_wind.reindex(daily.index).fillna(all_wind)
+    daily["radiation_midday"] = midday_solar.reindex(daily.index).fillna(all_solar)
+
+    return daily.reset_index()
 
 
 def add_hdd_and_temp_gradient(df: pd.DataFrame) -> pd.DataFrame:
@@ -763,8 +899,11 @@ def build_training_data(
     wind_intl_daily = aggregate_international_weather_daily(wind_intl_hourly)
     market_daily = aggregate_market_prices_daily(market_prices_hourly)
 
+    intraday_daily = aggregate_intraday_features(weather_hourly, wind_intl_hourly)
+
     merged = pd.merge(prices_daily, weather_daily, on="date")
     merged = pd.merge(merged, wind_intl_daily, on="date")
+    merged = pd.merge(merged, intraday_daily, on="date", how="left")
     merged = add_se4_price_lags(merged)
     merged = add_market_lag_features(merged, market_daily)
     merged = add_nuclear_outage(merged, nuclear_daily)
@@ -837,8 +976,10 @@ def build_forecast_features(
     """
     forecast_daily = aggregate_weather_daily(forecast_hourly)
     wind_intl_daily = aggregate_international_weather_daily(wind_intl_forecast_hourly)
+    intraday_daily = aggregate_intraday_features(forecast_hourly, wind_intl_forecast_hourly)
 
     forecast_daily = pd.merge(forecast_daily, wind_intl_daily, on="date")
+    forecast_daily = pd.merge(forecast_daily, intraday_daily, on="date", how="left")
 
     # Future DE/DK2 prices are unknown — we use the most recent known price
     # as a "market regime indicator" for the entire forecast horizon.
