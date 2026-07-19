@@ -180,6 +180,8 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | `^ICEEUA` (ICE EUA index) | Returns empty via yfinance. Use `CO2.L` instead. |
 | `ECF=F` (NYMEX EUA futures) | Not reliably available on Yahoo Finance. |
 | Svenska Kraftnät hydro API | No public REST API for reservoir data. Use ENTSO-E A72 instead. |
+| `objective="reg:absoluteerror"` (vs default `reg:squarederror`) | Drift-free same-slice A/B: worse on both priority targets — cheap2h +0.61, min +0.14, avg +0.78 EUR/MWh; only max (non-priority) improved (2026-07). Squared error stays. |
+| Seed ensembling (3-seed avg per target) | No improvement, 3× the train compute. The reported MAE std is between-window regime dispersion, which averaging seeds cannot reduce — it slightly *raised* std on min/avg/cheap2h (2026-07). |
 
 ## Known Limitations
 
