@@ -4,7 +4,7 @@ A machine learning pipeline that predicts day-ahead electricity prices for the S
 
 ## Purpose
 
-The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg prices up to 8–10 days ahead, giving automation rules enough lead time to act.
+The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg/cheap2h prices up to 8–10 days ahead, giving automation rules enough lead time to act.
 
 The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, and updates a Home Assistant sensor with predictions in SEK/kWh, including a configurable distribution cost addon.
 
@@ -36,16 +36,20 @@ Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (ha_client.py)
 
 Evaluation uses 35-window walk-forward validation on 3 years of training data. Each target is reported **individually** — min, avg, max and cheap2h have different physical drivers, so a blended metric would hide the per-target movement that matters when tuning. `cheap2h` and `min` are the numbers to watch for scheduling; `max` is not a priority.
 
-Post-harmonization baseline (first measured 2026-07, targets computed on hourly means):
+The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
+
+Baseline (freshened price anchor; wiggles ~±0.5 run-to-run as the window rolls):
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|
-| min     | 13.66        | ±4.84 |
-| avg     | 15.88        | ±6.16 |
-| max     | 31.97        | ±13.88 |
-| cheap2h | 13.56        | ±4.77 |
+| min     | 17.24        | ±7.41 |
+| avg     | 18.80        | ±8.33 |
+| max     | 34.41        | ±17.69 |
+| cheap2h | 17.40        | ±7.07 |
 
-**Note:** min/max are not comparable to the pre-2026-07 figures (old min ~11.7). The harmonization changed the target itself — min is now the cheapest *hour* (hourly mean), removing the systematic high bias that inflated apparent accuracy on post-Oct-2025 windows. 13.66 is the honest error against the consistent target; compare future runs against this, not the old values.
+**Price-lag anchor freshening (2026-07):** the SE4 price lags — the dominant min/cheap2h features — are now frozen at the freshest *known* ENTSO-E price (`se4_prices_daily`), not the training frame's last row. The training frame ends ~`WEATHER_ARCHIVE_LAG_DAYS` behind because it inner-joins prices with the lagging weather archive, so production was previously anchoring the price lags ~5 days stale (the DE/DK2 lags were already fresh — this closes the same gap for SE4's own lags). The walk-forward reports an **anchor-staleness sensitivity** (fresh d0 vs stale d5 ≈ old pipeline). Measured saving from freshening: **~1.1 EUR/MWh (min/cheap2h), ~2.3 (avg)** — real and free, but modest, because yesterday's min and six-days-ago min are similar.
+
+**Per-horizon MAE (`mae_by_horizon`) is weekday-confounded — do not read it as pure horizon decay.** The walk-forward steps by 7 days with 7-day windows, so horizon ≡ weekday (d+1 is always the same weekday as the window start). The curve mixes horizon and day-of-week and is non-monotonic. The clean measure of horizon/lag-staleness cost is the anchor-staleness sensitivity above (~1 EUR), **not** the per-horizon spread. This is why horizon-aware modeling (a `forecast_horizon` feature / per-horizon models) was evaluated and **shelved**: the true stale-lag headroom is ~1 EUR, and the bulk of the ~17 EUR error is regime-driven (winter cold-snap volatility, spring solar/negative-price ramp), not horizon-driven.
 
 Feature importance is reported for **min, avg and cheap2h models only** — including max would dilute the signal for what actually matters for scheduling decisions.
 
@@ -88,7 +92,7 @@ Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds
 
 ### Regional Wind & Solar (5 locations, 100m hub-height)
 Captures wind and solar generation in coupled markets that flow into SE4.
-- **Karlskrona** — Baltic offshore wind patterns (strongest importance in this group)
+- **Karlskrona** — Baltic offshore wind patterns
 - **DK2** — directly coupled to SE4 via Øresund (~1700 MW)
 - **Stockholm** — SE3 load centre (also used for temperature gradient)
 - **DK1** — western Denmark/Jutland
@@ -99,9 +103,9 @@ Captures wind and solar generation in coupled markets that flow into SE4.
 - Only lag-1 is valid: day-ahead auction clears all zones simultaneously
 
 ### SE4 Own Price Lags (autoregressive)
-- `price_se4_avg_lag1` — strongest single feature (~0.14–0.16 importance)
+- `price_se4_avg_lag1` — strongest feature for the **avg** model (~0.24 importance)
 - `price_se4_avg_lag2`, `price_se4_avg_lag7` — momentum and weekly seasonality
-- `price_se4_min_lag1` — yesterday's min (direct signal for min model)
+- `price_se4_min_lag1` — yesterday's min; **strongest feature for both min and cheap2h (~0.23–0.25)** — a better predictor of today's cheap2h than yesterday's cheap2h is
 - `price_se4_max_lag1` — yesterday's max
 - `price_se4_cheap2h_lag1` — yesterday's cheap2h (**cheap2h model only** via `CHEAP2H_FEATURE_COLUMNS`; kept out of min/avg/max to avoid perturbing their baseline with a correlated lag)
 - `price_momentum` — lag1 minus lag2 (rising vs falling trend)
@@ -115,7 +119,7 @@ Engineered composite feature: demand proxy minus weighted wind/solar supply.
 - Also exposed as `residual_load_lag1` for momentum
 
 ### Heating Degree Days
-- `hdd_linear` — `max(0, 17 - temp)`: standard Nordic HDD (**consistently top-3 feature**)
+- `hdd_linear` — `max(0, 17 - temp)`: standard Nordic HDD, a key heating-demand signal (`residual_load` and `max_temp` usually rank higher)
 - `hdd_cold_boost` — quadratic term below 0°C: captures non-linear demand surge during extreme cold
 
 ### Temperature Gradient (SE3↔SE4)
@@ -181,8 +185,9 @@ Keep this list updated — it prevents re-testing things that didn't work.
 
 - **3-year training window**: Unusual market periods (e.g. energy crisis 2021–2022) have outsized weight. Reservoir features will become more valuable as more data accumulates.
 - **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
-- **Forecast horizon**: All forecast days (1–8) use the same features. Day+8 weather forecasts are less accurate than day+1 but the model doesn't distinguish between them. A `forecast_horizon` feature (1–8) is a candidate improvement.
-- **Max prediction accuracy** (~39 EUR/MWh MAE): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
+- **Forecast horizon**: All forecast days (1–8) use the same features and a single model that doesn't distinguish horizon. Horizon-aware modelling was **evaluated and shelved** (2026-07): the anchor-staleness sensitivity showed the true stale-lag cost is only ~1 EUR/MWh for min/cheap2h, so a `forecast_horizon` feature has little headroom. The scary-looking per-horizon curve is a weekday artifact of the step-7 walk-forward (see Current MAE Baseline), not real horizon decay. The price-lag anchor is kept fresh regardless, since that was a free win.
+- **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis — real day+7 weather forecasts are worse than archive. This optimism grows at far horizons and is not captured by the anchor-staleness or per-horizon metrics.
+- **Max prediction accuracy** (~34 EUR/MWh MAE, the highest of the four targets): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
 - **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale.
 
 ## Setup
@@ -211,7 +216,8 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `wo
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
 - `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day)
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
-- `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from walk-forward validation
+- `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from horizon-honest walk-forward validation
+- `mae_by_horizon` — per-target MAE broken down by forecast horizon (day+1 … day+7); shows how accuracy decays with forecast distance
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
 
 For charging decisions ("charge today or wait for cheaper days"), compare `cheap2h` across days — it is the expected price of a ~2h session picking the day's cheapest hours, which is what the schedule can actually achieve.

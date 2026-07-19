@@ -79,6 +79,45 @@ FEATURE_COLUMNS = [
 CHEAP2H_FEATURE_COLUMNS = FEATURE_COLUMNS + ["price_se4_cheap2h_lag1"]
 
 
+# Features that build_forecast_features() holds constant across the entire
+# forecast horizon: their future values are unknown, so every forecast day (D+1
+# … D+8) receives the same last-known value. Everything else in the feature set
+# is recomputed per day from the (known) weather forecast, calendar and planned
+# nuclear outages, so it legitimately varies by forecast day.
+#
+# The walk-forward evaluator uses this list to reproduce production's stale-lag
+# behaviour: without it, each test day is fed its TRUE previous-day price as
+# lag1, which the live model never has beyond D+1 — making days 2–8 look far
+# more accurate in evaluation than they are in production.
+FORECAST_FROZEN_FEATURES = [
+    # Neighbouring-zone day-ahead price lags
+    "price_de_lag1", "price_dk2_lag1",
+    # SE4 own price lags (avg/min/max/cheap2h) and derived momentum
+    "price_se4_avg_lag1", "price_se4_avg_lag2", "price_se4_avg_lag7",
+    "price_se4_min_lag1", "price_se4_max_lag1", "price_se4_cheap2h_lag1",
+    "price_momentum",
+    # Residual-load momentum
+    "residual_load_lag1",
+    # Fuel / carbon regime
+    "ttf_price_lag1", "ttf_rolling_7d",
+    "co2_price_lag1", "co2_rolling_7d",
+    "gas_marginal_cost",
+    # Hydro reservoir levels (slow weekly signals)
+    "reservoir_norway_deviation", "reservoir_sweden_gwh", "reservoir_sweden_change",
+    # Rolling regime signals — frozen too (see _FORECAST_FROZEN_ROLLING)
+    "price_volatility_7d", "wind_variability", "radiation_variability",
+]
+
+# Subset of FORECAST_FROZEN_FEATURES that are rolling windows WITHOUT a lag
+# shift, so a row's value includes that same day. In evaluation these must be
+# frozen from the last *training* row (not the first test row) to avoid leaking
+# the test day into the frozen value — matching production, which seeds them
+# from the last known training value.
+_FORECAST_FROZEN_ROLLING = frozenset(
+    {"price_volatility_7d", "wind_variability", "radiation_variability"}
+)
+
+
 def _to_swedish_date(timestamps: pd.Series) -> pd.Series:
     """
     Convert a Series of timestamps to Swedish (Europe/Stockholm) date objects.
@@ -765,6 +804,7 @@ def build_forecast_features(
     sweden_reservoir_weekly: pd.DataFrame = None,
     non_workdays: set = None,
     eua_daily: pd.DataFrame = None,
+    se4_prices_daily: pd.DataFrame = None,
 ) -> pd.DataFrame:
     """
     Prepare forecast weather data as model input features.
@@ -778,12 +818,19 @@ def build_forecast_features(
                                    so this is available for multi-day forecasting.
         training_daily:            Completed training DataFrame; used to seed the rolling
                                    weather variability so that forecast days inherit the
-                                   current volatility regime.
+                                   current volatility regime, and as a fallback source for
+                                   the SE4 price lags when se4_prices_daily is not given.
         ttf_daily:                 Daily TTF gas prices from Yahoo Finance (optional).
                                    Most recent price is used for all forecast days.
         norway_reservoir_weekly:   Weekly Norway reservoir data from NVE (optional).
         norway_reservoir_median:   20-year median fill by week from NVE (optional).
         sweden_reservoir_weekly:   Weekly Sweden reservoir data from ENTSO-E (optional).
+        se4_prices_daily:          Raw daily SE4 price aggregates from
+                                   aggregate_prices_daily() (optional). These extend to
+                                   the latest published day-ahead price, so they carry a
+                                   fresher price-lag anchor than training_daily, whose last
+                                   row trails ~WEATHER_ARCHIVE_LAG_DAYS behind because of the
+                                   weather-archive join. Preferred source for the SE4 lags.
 
     Returns:
         Daily DataFrame with feature columns ready for inference.
@@ -799,25 +846,36 @@ def build_forecast_features(
     forecast_daily["price_de_lag1"] = last_known["price_de"]
     forecast_daily["price_dk2_lag1"] = last_known["price_dk2"]
 
-    # SE4 own price lags — use the last known prices from training data.
-    # For multi-day forecasts, the most recent known price is the best available proxy.
-    if training_daily is not None and "price_avg" in training_daily.columns:
-        sorted_train = training_daily.sort_values("date")
-        tail_avg = sorted_train.tail(7)["price_avg"]
-        forecast_daily["price_se4_avg_lag1"] = tail_avg.iloc[-1]
-        forecast_daily["price_se4_avg_lag2"] = tail_avg.iloc[-2] if len(tail_avg) >= 2 else tail_avg.iloc[-1]
-        forecast_daily["price_se4_avg_lag7"] = tail_avg.iloc[0] if len(tail_avg) >= 7 else tail_avg.iloc[-1]
+    # SE4 own price lags — frozen at the most recent KNOWN SE4 price for the
+    # whole horizon. Prefer se4_prices_daily (raw daily aggregates, which extend
+    # to the latest published day-ahead price) over training_daily, whose last
+    # row lags ~WEATHER_ARCHIVE_LAG_DAYS behind due to the weather-archive join.
+    # The SE4 price lags are the dominant min/cheap2h features, so freshening
+    # this anchor is the highest-value single improvement for those targets.
+    price_source = None
+    if se4_prices_daily is not None and not se4_prices_daily.empty:
+        price_source = se4_prices_daily.sort_values("date")
+    elif training_daily is not None and "price_avg" in training_daily.columns:
+        price_source = training_daily.sort_values("date")
+
+    if price_source is not None and len(price_source) > 0:
+        avg = price_source["price_avg"].reset_index(drop=True)
+        n_src = len(avg)
+        forecast_daily["price_se4_avg_lag1"] = avg.iloc[-1]
+        forecast_daily["price_se4_avg_lag2"] = avg.iloc[-2] if n_src >= 2 else avg.iloc[-1]
+        forecast_daily["price_se4_avg_lag7"] = avg.iloc[-7] if n_src >= 7 else avg.iloc[0]
 
         # Target-specific lags
-        forecast_daily["price_se4_min_lag1"] = sorted_train["price_min"].iloc[-1]
-        forecast_daily["price_se4_max_lag1"] = sorted_train["price_max"].iloc[-1]
-        forecast_daily["price_se4_cheap2h_lag1"] = sorted_train["price_cheap2h"].iloc[-1]
+        forecast_daily["price_se4_min_lag1"] = price_source["price_min"].iloc[-1]
+        forecast_daily["price_se4_max_lag1"] = price_source["price_max"].iloc[-1]
+        forecast_daily["price_se4_cheap2h_lag1"] = price_source["price_cheap2h"].iloc[-1]
 
         # Momentum: last known trend direction
-        forecast_daily["price_momentum"] = tail_avg.iloc[-1] - tail_avg.iloc[-2] if len(tail_avg) >= 2 else 0.0
+        forecast_daily["price_momentum"] = (avg.iloc[-1] - avg.iloc[-2]) if n_src >= 2 else 0.0
 
-        # Volatility: use last known rolling volatility from training data
-        forecast_daily["price_volatility_7d"] = sorted_train["price_volatility_7d"].iloc[-1] if "price_volatility_7d" in sorted_train.columns else tail_avg.std()
+        # Volatility: rolling 7-day std of the freshest known avg prices
+        vol = avg.rolling(7, min_periods=3).std().iloc[-1]
+        forecast_daily["price_volatility_7d"] = float(vol) if pd.notna(vol) else 0.0
     else:
         forecast_daily["price_se4_avg_lag1"] = 0.0
         forecast_daily["price_se4_avg_lag2"] = 0.0
@@ -923,3 +981,71 @@ def build_forecast_features(
     forecast_daily = add_time_features(forecast_daily)
 
     return forecast_daily
+
+
+def apply_forecast_freeze(
+    test_slice: pd.DataFrame,
+    train_slice: pd.DataFrame,
+    anchor_staleness_days: int = 0,
+) -> pd.DataFrame:
+    """
+    Reproduce production's frozen-lag behaviour on a walk-forward test window.
+
+    build_forecast_features() holds every price/market/fuel/carbon lag, reservoir
+    level and rolling regime signal (FORECAST_FROZEN_FEATURES) constant across
+    the whole forecast horizon, because their future values are unknown at
+    prediction time. Raw walk-forward test rows instead carry each day's TRUE
+    previous-day values — knowledge the live model only has for the first
+    forecast day. This overwrites those features with a single frozen value so
+    that evaluation measures the same stale-lag degradation production suffers
+    on days 2–8.
+
+    Freezing sources (with anchor_staleness_days = 0, the freshened default):
+    - Lag features are frozen at the FIRST test row's values. That row's lag-1 is
+      the last training day's actual price — exactly what freshened production
+      freezes — and every lag depends only on training-period data, so this
+      leaks nothing.
+    - The non-shifted rolling features (_FORECAST_FROZEN_ROLLING) are frozen at
+      the LAST TRAINING row instead, since the first test row's rolling window
+      would include the test day itself.
+
+    anchor_staleness_days > 0 moves the frozen anchor that many days earlier,
+    modelling a price-lag anchor that trails the forecast (as the pre-freshening
+    pipeline did, where the weather-archive join left the SE4 anchor ~5 days
+    stale). This is used to quantify the freshening benefit: comparing staleness
+    0 vs ~5 shows the MAE cost of a stale anchor.
+
+    Per-day features (weather, HDD, residual load, calendar, planned nuclear
+    outages) are left untouched — production legitimately recomputes them per
+    forecast day from the known forecast.
+
+    Args:
+        test_slice:            Contiguous test-window rows from the merged frame.
+        train_slice:           All training rows preceding the window.
+        anchor_staleness_days: Days the frozen anchor trails the first test day
+                               (0 = freshest known price, matching freshened
+                               production).
+
+    Returns:
+        Copy of test_slice with FORECAST_FROZEN_FEATURES overwritten.
+    """
+    frozen = test_slice.copy()
+
+    # Clamp so we never index past the start of the training slice.
+    stale = max(0, min(anchor_staleness_days, len(train_slice) - 1))
+
+    # Lag features: freshest anchor (stale=0) is the first test row, whose lag-1
+    # is the last training day's actual price. Older anchors step back into the
+    # training slice.
+    lag_source = frozen.iloc[0] if stale == 0 else train_slice.iloc[-stale]
+    # Rolling regime signals: last known TRAINING row at the (stale-adjusted)
+    # anchor — never the test row, to avoid leaking the test day.
+    rolling_source = train_slice.iloc[-1 - stale]
+
+    for col in FORECAST_FROZEN_FEATURES:
+        if col not in frozen.columns:
+            continue
+        source = rolling_source if col in _FORECAST_FROZEN_ROLLING else lag_source
+        frozen[col] = source[col]
+
+    return frozen

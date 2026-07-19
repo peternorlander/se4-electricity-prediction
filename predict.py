@@ -25,6 +25,7 @@ from features import (
     build_training_data,
     build_forecast_features,
     aggregate_market_prices_daily,
+    aggregate_prices_daily,
 )
 from model import train, predict
 from evaluate import walk_forward_validate, get_feature_importance
@@ -157,10 +158,14 @@ def main():
         for feature, importance in importances.items():
             print(f"  {feature:<30} {importance:.4f}")
 
+    # Freshest known SE4 daily prices (extend past the weather-limited training
+    # frame) — used to anchor the SE4 price lags at the most recent price.
+    se4_prices_daily = aggregate_prices_daily(prices_hourly)
+
     forecast_features = build_forecast_features(
         forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast,
         training_data, ttf_daily, norway_reservoir, norway_reservoir_median, sweden_reservoir,
-        non_workdays, eua_daily,
+        non_workdays, eua_daily, se4_prices_daily=se4_prices_daily,
     )
     forecast_features = forecast_features[
         ~forecast_features["date"].dt.date.isin(known_price_dates)
