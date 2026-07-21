@@ -112,7 +112,9 @@ FORECAST_FROZEN_FEATURES = [
     "gas_marginal_cost",
     # Hydro reservoir levels (slow weekly signals)
     "reservoir_norway_deviation", "reservoir_sweden_gwh", "reservoir_sweden_change",
-    # Rolling regime signals — frozen too (see _FORECAST_FROZEN_ROLLING)
+    # Rolling regime signals — frozen too. price_volatility_7d is shift(1)ed so
+    # it behaves like a lag (frozen at the first test row); the weather
+    # variabilities are unshifted (see _FORECAST_FROZEN_ROLLING).
     "price_volatility_7d", "wind_variability", "radiation_variability",
 ]
 
@@ -120,9 +122,12 @@ FORECAST_FROZEN_FEATURES = [
 # shift, so a row's value includes that same day. In evaluation these must be
 # frozen from the last *training* row (not the first test row) to avoid leaking
 # the test day into the frozen value — matching production, which seeds them
-# from the last known training value.
+# from the last known training value. price_volatility_7d is deliberately NOT
+# here: it is shift(1)ed, so its first-test-row value covers the last seven
+# training days (leak-safe) and matches production's freshest-known-7-days
+# anchor, so it is frozen like the other lags.
 _FORECAST_FROZEN_ROLLING = frozenset(
-    {"price_volatility_7d", "wind_variability", "radiation_variability"}
+    {"wind_variability", "radiation_variability"}
 )
 
 
@@ -636,8 +641,12 @@ def add_se4_price_lags(df: pd.DataFrame) -> pd.DataFrame:
     # Momentum: positive = prices rising, negative = falling
     df["price_momentum"] = df["price_se4_avg_lag1"] - df["price_se4_avg_lag2"]
 
-    # Volatility: rolling 7-day standard deviation of average price
-    df["price_volatility_7d"] = df["price_avg"].rolling(7, min_periods=3).std()
+    # Volatility: rolling 7-day standard deviation of average price. Shifted by 1
+    # day so a row's value covers the seven days ENDING yesterday and never
+    # includes its own (unknown-at-prediction) price_avg. Without the shift this
+    # leaks the target day's average into training; production already computes it
+    # leak-free from the freshest known prices (see build_forecast_features).
+    df["price_volatility_7d"] = df["price_avg"].rolling(7, min_periods=3).std().shift(1)
 
     return df
 

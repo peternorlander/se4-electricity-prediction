@@ -5,11 +5,15 @@ from features import apply_forecast_freeze
 from model import _fit_models, TARGETS
 
 
-# Target number of walk-forward iterations for evaluation.
+# Target number of walk-forward iterations for evaluation. 52 weekly windows
+# span a full year (52 * 7 = 364 days), so the reported MAE averages over a
+# complete seasonal cycle rather than a single ~8-month stretch.
 # The minimum training window is derived dynamically as n - EVAL_ITERATIONS * step,
 # so the window expands each iteration and the final iteration trains on nearly
-# all available data — closely matching what the production model uses.
-_EVAL_ITERATIONS = 35
+# all available data — closely matching what the production model uses. (More
+# iterations means the *earliest* windows train on less data than production, so
+# the headline is marginally more pessimistic than the deployed full-data model.)
+_EVAL_ITERATIONS = 52
 
 # Targets whose feature importance is reported. Max is excluded since
 # prediction accuracy for max prices is not a priority.

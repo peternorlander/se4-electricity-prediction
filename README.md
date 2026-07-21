@@ -34,18 +34,18 @@ Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (ha_client.py)
 
 ## Current MAE Baseline
 
-Evaluation uses 35-window walk-forward validation on 3 years of training data. Each target is reported **individually** — min, avg, max and cheap2h have different physical drivers, so a blended metric would hide the per-target movement that matters when tuning. `cheap2h` and `min` are the numbers to watch for scheduling; `max` is not a priority.
+Evaluation uses **52-window (1-year) walk-forward validation** on 3 years of training data. Each target is reported **individually** — min, avg, max and cheap2h have different physical drivers, so a blended metric would hide the per-target movement that matters when tuning. `cheap2h` and `min` are the numbers to watch for scheduling; `max` is not a priority.
 
 The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
 
-Baseline (freshened price anchor + intraday trough features; wiggles ~±0.5 run-to-run as the window rolls):
+Baseline (52-window/1-year eval, volatility leak fix; wiggles ~±0.5 run-to-run as the window rolls). **The 1-year eval is not comparable to the previous 35-window/8-month numbers** — the mean is lower mainly because it now includes the easy low-price summer 2025 weeks (per-window MAE 3–9), not because accuracy improved:
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|
-| min     | 17.07        | ±7.06 |
-| avg     | 18.83        | ±8.29 |
-| max     | 34.13        | ±17.39 |
-| cheap2h | 16.74        | ±7.22 |
+| min     | 16.11        | ±7.15 |
+| avg     | 17.83        | ±7.63 |
+| max     | 36.15        | ±19.13 |
+| cheap2h | 15.93        | ±7.29 |
 
 **Intraday trough features (2026-07):** the daily min/cheap2h is set at a specific intraday trough (overnight wind or midday solar) that the daily-mean `residual_load` diluted. Exposing the trough directly — chiefly `residual_load_min` (daily minimum of hourly residual load) — cut cheap2h ~0.66 EUR/MWh and held min, with `residual_load_min` landing as a top-4 feature in all three priority models. See the [Intraday Trough Features](#intraday-trough-features) section.
 
@@ -191,6 +191,7 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | Svenska Kraftnät hydro API | No public REST API for reservoir data. Use ENTSO-E A72 instead. |
 | `objective="reg:absoluteerror"` (vs default `reg:squarederror`) | Drift-free same-slice A/B: worse on both priority targets — cheap2h +0.61, min +0.14, avg +0.78 EUR/MWh; only max (non-priority) improved (2026-07). Squared error stays. |
 | Seed ensembling (3-seed avg per target) | No improvement, 3× the train compute. The reported MAE std is between-window regime dispersion, which averaging seeds cannot reduce — it slightly *raised* std on min/avg/cheap2h (2026-07). |
+| `min ≤ cheap2h ≤ avg ≤ max` coherence clamp (avg-anchored) | Drift-free same-slice A/B (8-month and 1-year): only ever clipped cheap2h (min/avg/max deltas exactly 0.00; fired 99–128×, all on cheap2h) and made cheap2h *worse* (+0.05 to +0.11). When predicted cheap2h > predicted avg the incoherence means avg was too low, not cheap2h too high, so clipping toward avg moves it away from truth; it also erased the volatility-leak-fix's cheap2h gain (2026-07). Zero upside, reverted. |
 
 ## Known Limitations
 
