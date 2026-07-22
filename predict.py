@@ -132,7 +132,7 @@ def main():
     print(f"  → {len(non_workdays)} non-workdays in range")
 
     print("Deriving EUR/SEK exchange rate...")
-    eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly)
+    eur_to_sek_rate = calculate_eur_to_sek_rate(prices_hourly, today)
 
     print("Checking which dates already have official Nordpool prices...")
     known_price_dates = get_dates_with_known_prices()
