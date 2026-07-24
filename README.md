@@ -176,6 +176,114 @@ XGBRegressor(
 
 Separate models per target because the targets have different physical drivers: min occurs at renewable oversupply moments, avg smooths out noise, max occurs at peak demand/scarcity, and cheap2h tracks the depth of the daily price trough. All models share `FEATURE_COLUMNS`; cheap2h additionally gets `price_se4_cheap2h_lag1`.
 
+## A/B Backtest Flow
+
+`ab_test.py` is the tool for evaluating any candidate feature or model change before
+committing it. It exists because MAE effects on the priority targets are small
+(often < 0.3 EUR/MWh) and **period-dependent**: the same change can look like an
+improvement on one day's data and a regression on the next. Historically that forced
+re-running an experiment across several real calendar days to tell signal from noise
+— one change every few days. The A/B flow simulates those different run-days from a
+single data snapshot, so a verdict takes one sitting.
+
+### How it works
+
+**Key insight — one shift axis.** `walk_forward_validate` derives its 52-window grid
+backwards from the *end* of the data (`min_train = n - iterations*step`). So
+truncating the last `s` rows of the merged frame reproduces the eval exactly as it
+would have run `s` days earlier — window placement **and** the training tail both
+move together, the same way a real earlier run would differ. One knob (`shift`)
+captures the whole between-day axis; running shifts `0..5` gives six simulated
+run-days from one fetch.
+
+**The pieces:**
+- `fetch_data.py::fetch_training_inputs(today)` — the training-side fetch, shared
+  with `predict.py`. `ab_test.py fetch` calls it and caches the result.
+- `ab/snapshot.py` — saves/loads a fetched-inputs snapshot under `ab_cache/<date>/`
+  (pickled, gitignored, local-only; pickle rather than parquet because pyarrow is
+  not a dependency). Snapshots accumulate — one directory per `fetch` day, a few MB
+  each; nothing prunes them automatically.
+- `ab/harness.py` — `run_walk_forward()`, a copy of the `evaluate.py` loop
+  parameterized by a variant, plus `apply_shift()` (tail truncation). It deliberately
+  does **not** import or modify `evaluate.walk_forward_validate`, so the headline eval
+  and every recorded baseline stay untouched; the two are pinned together by an
+  acceptance test (shift-0 `BASELINE` must reproduce `walk_forward_validate`'s
+  per-window MAE exactly).
+- `ab/variants.py` — a `Variant` dataclass and the two instances the harness runs:
+  `BASELINE` (mirrors production) and `CANDIDATE` (the only thing you edit per
+  experiment).
+- `ab/verdict.py` — runs both variants across the shifts and classifies each target.
+
+**The verdict rule** (`ab/verdict.py::classify`), applied per target on the list of
+per-shift deltas (`candidate_MAE − baseline_MAE`, negative = candidate better):
+- **`NO_CHANGE`** — every delta is exactly 0 (candidate ≡ baseline).
+- **`NOISE`** — the delta's sign flips across shifts. The effect is smaller than the
+  between-day variability → reject.
+- **`REAL`** — sign is consistent across all shifts **and** `|mean delta| ≥` the
+  between-shift spread (`max − min`) → adopt.
+- **`BORDERLINE`** — sign-consistent but the effect is smaller than the spread →
+  replay on a **different real-day snapshot** before deciding.
+
+This never touches the headline eval (`evaluate.walk_forward_validate`, still
+step=7 / 52 windows) or production (`predict.py` always fetches fresh, never reads
+`ab_cache/`).
+
+### How to run an experiment (agent playbook)
+
+Follow this whenever testing a feature or model change from the improvement plan:
+
+1. **Get a snapshot.** `python ab_test.py fetch` (needs `ENTSO_E_TOKEN`; runnable
+   locally from VS Code). Reuse an existing one with `python ab_test.py list` if a
+   recent snapshot is already cached — a snapshot a few days old is fine for
+   iterating.
+2. **Express the change as `CANDIDATE`** in `ab/variants.py`. This is the only file
+   you edit, usually a handful of lines. A `Variant` has:
+   - `transform(data) -> data` — adds or modifies **columns** on the merged daily
+     frame (e.g. scale a feature, add a derived feature). **Must not add, drop, or
+     reorder rows** — `BASELINE` and `CANDIDATE` are compared on identical slices, and
+     the harness asserts the row count and `date` column are unchanged.
+   - `fit_fn(train_slice) -> models` — override to change training (objective, sample
+     weights, hyperparameters). Default: `model._fit_models` (production).
+   - `targets` — a `{name: (target_col, feature_cols)}` dict; override to add a new
+     feature column to the models' feature lists (a `transform` that only *creates* a
+     column has no effect until the column is added to `feature_cols` here).
+   - `frozen_features` / `frozen_rolling` — override only if the change adds a
+     lag-type feature that must be frozen in the horizon-honest eval (default `None` =
+     production lists).
+3. **Run it.** `python ab_test.py run` (add `--snapshot YYYY-MM-DD` to pick a
+   specific one, `--shifts 0-5` to change the grid). Read the per-target verdict
+   table. **Priority order is cheap2h first, then min**; `avg` is welcome, `max` is
+   not a priority.
+4. **Decide by the verdict**, weighing cheap2h/min and checking std isn't inflated:
+   - `REAL` → adopt: implement the change properly in the real modules, then revert
+     `CANDIDATE` to the no-op `Variant(name="candidate")`.
+   - `NOISE` / `NO_CHANGE` → reject: record it in the **Features Tested and Rejected**
+     table below with the numbers, and revert `CANDIDATE`.
+   - `BORDERLINE` → fetch a snapshot on a later real day (`ab_test.py fetch` again
+     after a day or two) and `python ab_test.py run --snapshot <older>` vs the new
+     one; adopt only if the sign agrees. The cross-snapshot replay is the *only* case
+     that needs multiple caches — it covers real data revisions (weather backfill,
+     price corrections) that tail-truncation alone can't simulate.
+5. **Confirm on the next real Actions run.** An `ab_test.py` verdict is for fast
+   pre-commit iteration; an adopted change is still confirmed against the production
+   run's `Walk-forward validation` output before it's considered done.
+
+**Worked example** — testing whether scaling a radiation feature by an installed-solar
+index helps (as a `transform`; revert after):
+
+```python
+def _scale_radiation(data):
+    out = data.copy()
+    years = (pd.to_datetime(out["date"]) - pd.Timestamp("2023-01-01")).dt.days / 365.0
+    out["radiation_midday"] = out["radiation_midday"] * (1 + years / 3)
+    return out
+
+CANDIDATE = Variant(name="solar_scaled", transform=_scale_radiation)
+```
+
+Because it scales an existing feature in place, no `targets` override is needed. Run
+`python ab_test.py run` and read the cheap2h row.
+
 ## Features Tested and Rejected
 
 Keep this list updated — it prevents re-testing things that didn't work.

@@ -15,3 +15,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# A/B backtest snapshot cache (local-only fetched data, see README "A/B Backtest Flow")
+ab_cache/

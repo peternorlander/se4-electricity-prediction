@@ -1137,6 +1137,8 @@ def apply_forecast_freeze(
     test_slice: pd.DataFrame,
     train_slice: pd.DataFrame,
     anchor_staleness_days: int = 0,
+    frozen_features: list = None,
+    frozen_rolling: frozenset = None,
 ) -> pd.DataFrame:
     """
     Reproduce production's frozen-lag behaviour on a walk-forward test window.
@@ -1175,10 +1177,20 @@ def apply_forecast_freeze(
         anchor_staleness_days: Days the frozen anchor trails the first test day
                                (0 = freshest known price, matching freshened
                                production).
+        frozen_features:       Override for FORECAST_FROZEN_FEATURES (None =
+                               use the module-level list). Lets an A/B variant
+                               that adds a new lag-type feature freeze it too,
+                               without touching the production list. See the
+                               README "A/B Backtest Flow" section.
+        frozen_rolling:        Override for _FORECAST_FROZEN_ROLLING (None =
+                               use the module-level set).
 
     Returns:
-        Copy of test_slice with FORECAST_FROZEN_FEATURES overwritten.
+        Copy of test_slice with the frozen feature columns overwritten.
     """
+    features_to_freeze = FORECAST_FROZEN_FEATURES if frozen_features is None else frozen_features
+    rolling_cols = _FORECAST_FROZEN_ROLLING if frozen_rolling is None else frozen_rolling
+
     frozen = test_slice.copy()
 
     # Clamp so we never index past the start of the training slice.
@@ -1192,10 +1204,10 @@ def apply_forecast_freeze(
     # anchor — never the test row, to avoid leaking the test day.
     rolling_source = train_slice.iloc[-1 - stale]
 
-    for col in FORECAST_FROZEN_FEATURES:
+    for col in features_to_freeze:
         if col not in frozen.columns:
             continue
-        source = rolling_source if col in _FORECAST_FROZEN_ROLLING else lag_source
+        source = rolling_source if col in rolling_cols else lag_source
         frozen[col] = source[col]
 
     return frozen
