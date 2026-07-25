@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from features import apply_forecast_freeze
-from model import _fit_models, TARGETS
+from model import _fit_models, TARGETS, HURDLE_TARGETS, HURDLE_PROBA_FEATURE_NAME
 
 
 # Target number of walk-forward iterations for evaluation. 52 weekly windows
@@ -148,14 +148,18 @@ def get_feature_importance(models: dict) -> dict:
         Dict keyed by target name, each a {feature_name: importance}
         dict sorted by importance descending.
     """
-    def _importance(model, feature_cols) -> dict:
+    def _importance(model, feature_cols, extra_names=()) -> dict:
+        names = list(feature_cols) + list(extra_names)
         importance = {
             feature: round(float(imp), 4)
-            for feature, imp in zip(feature_cols, model.feature_importances_)
+            for feature, imp in zip(names, model.feature_importances_)
         }
         return dict(sorted(importance.items(), key=lambda x: x[1], reverse=True))
 
     return {
-        name: _importance(models[name], TARGETS[name][1])
+        name: _importance(
+            models[name], TARGETS[name][1],
+            extra_names=[HURDLE_PROBA_FEATURE_NAME] if name in HURDLE_TARGETS else (),
+        )
         for name in _IMPORTANCE_TARGETS
     }

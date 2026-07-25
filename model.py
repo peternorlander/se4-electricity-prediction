@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from xgboost import XGBRegressor
+from sklearn.model_selection import KFold, cross_val_predict
+from xgboost import XGBClassifier, XGBRegressor
 from features import FEATURE_COLUMNS, CHEAP2H_FEATURE_COLUMNS
 
 
@@ -48,6 +49,97 @@ def _make_regressor() -> XGBRegressor:
     )
 
 
+# Negative-price hurdle (step 5 — regime handling). Negative-price days are a
+# distinct physical regime (renewable oversupply + low/weekend demand) that a
+# plain regressor has to infer implicitly from the same weather/calendar
+# features; a classifier for "will tomorrow's price_min be negative" feeds its
+# probability into the regressor as an extra feature to make that regime
+# signal explicit.
+#
+# Validated via a drift-free A/B (ab_test.py, 2026-07-24 snapshot, shifts 0-5):
+# cheap2h REAL (mean -0.44 EUR/MWh, all 6 shifts improved) -- the largest,
+# cleanest single-run win recorded for the top-priority target. min was
+# NOISE by the strict sign-consistency rule (5/6 shifts improved, one
+# near-zero flip) -- promising but not confirmed, so HURDLE_TARGETS is
+# deliberately cheap2h-only for now. See IMPROVEMENT_PLAN.md step 5 and
+# MIN_HURDLE_FOLLOWUP.md (re-test min once more training data accumulates).
+NEG_PRICE_THRESHOLD = 0.0  # EUR/MWh
+HURDLE_PROBA_FEATURE_NAME = "neg_price_proba"
+HURDLE_TARGETS = {"cheap2h"}
+
+
+def _make_hurdle_classifier() -> XGBClassifier:
+    return XGBClassifier(
+        n_estimators=200,
+        max_depth=3,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_weight=3,
+        reg_alpha=0.1,
+        reg_lambda=1.5,
+        random_state=42,
+        eval_metric="logloss",
+    )
+
+
+class HurdleAugmentedModel:
+    """
+    Wraps a negative-price classifier + a price regressor: predict(X) appends
+    the classifier's P(price_min < NEG_PRICE_THRESHOLD) as an extra feature
+    before calling the regressor. Drop-in replacement for a plain XGBRegressor
+    everywhere a fitted model is used (predict.py, evaluate.py) -- both only
+    call .predict(X) with the target's normal feature_cols, and
+    feature_importances_ is forwarded so get_feature_importance keeps working.
+    """
+    def __init__(self, classifier: XGBClassifier, regressor: XGBRegressor):
+        self.classifier = classifier
+        self.regressor = regressor
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        proba = self.classifier.predict_proba(X)[:, 1]
+        return self.regressor.predict(np.column_stack([X, proba]))
+
+    @property
+    def feature_importances_(self):
+        return self.regressor.feature_importances_
+
+
+def _fit_hurdle_model(data: pd.DataFrame, feature_cols: list, target_col: str,
+                       half_life_days=None) -> HurdleAugmentedModel:
+    """
+    Fit target_col with an out-of-fold negative-price-probability feature
+    appended.
+
+    The regressor trains on OUT-OF-FOLD probabilities (5-fold), not the
+    in-sample predictions of a classifier fit on the whole `data` -- an
+    in-sample classifier has seen each row's own label, so its probabilities
+    would be near-perfect and leak an optimistic signal production can never
+    get (the classifier never knows tomorrow's actual label at serving time).
+    The classifier stored in the returned HurdleAugmentedModel (fit on the
+    full `data`) has genuinely not seen the row it predicts for at serving
+    time either, so no leakage there.
+    """
+    X = data[feature_cols].values
+    y = data[target_col].values
+    neg_label = (data["price_min"] < NEG_PRICE_THRESHOLD).astype(int).values
+
+    oof_proba = cross_val_predict(
+        _make_hurdle_classifier(), X, neg_label,
+        cv=KFold(n_splits=5, shuffle=True, random_state=42),
+        method="predict_proba",
+    )[:, 1]
+
+    classifier = _make_hurdle_classifier()
+    classifier.fit(X, neg_label)
+
+    weights = _sample_weights(data, half_life_days)
+    regressor = _make_regressor()
+    regressor.fit(np.column_stack([X, oof_proba]), y, sample_weight=weights)
+
+    return HurdleAugmentedModel(classifier, regressor)
+
+
 def _sample_weights(data: pd.DataFrame, half_life_days) -> np.ndarray | None:
     """
     Exponential time-decay weights for the training rows.
@@ -80,6 +172,10 @@ def _fit_models(data: pd.DataFrame, half_life_days=HALF_LIFE_DAYS) -> dict:
 
     models = {}
     for name, (target_col, feature_cols) in TARGETS.items():
+        if name in HURDLE_TARGETS:
+            models[name] = _fit_hurdle_model(data, feature_cols, target_col,
+                                              half_life_days=_hl_for(name))
+            continue
         weights = _sample_weights(data, _hl_for(name))
         model = _make_regressor()
         model.fit(data[feature_cols].values, data[target_col].values,

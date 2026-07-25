@@ -26,7 +26,9 @@ Feature engineering (features.py)
          ▼
 Model training (model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
-    → Walk-forward validation: 35 windows × 7 days (evaluate.py)
+    → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
+      classifier's P(price_min < 0) feeds the regressor as an extra feature
+    → Walk-forward validation: 52 windows × 7 days (evaluate.py)
          │
          ▼
 Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (ha_client.py)
@@ -50,6 +52,8 @@ Baseline (52-window/1-year eval, volatility leak fix; wiggles ~±0.5 run-to-run 
 **Intraday trough features (2026-07):** the daily min/cheap2h is set at a specific intraday trough (overnight wind or midday solar) that the daily-mean `residual_load` diluted. Exposing the trough directly — chiefly `residual_load_min` (daily minimum of hourly residual load) — cut cheap2h ~0.66 EUR/MWh and held min, with `residual_load_min` landing as a top-4 feature in all three priority models. See the [Intraday Trough Features](#intraday-trough-features) section.
 
 **Price-lag anchor freshening (2026-07):** the SE4 price lags — the dominant min/cheap2h features — are now frozen at the freshest *known* ENTSO-E price (`se4_prices_daily`), not the training frame's last row. The training frame ends ~`WEATHER_ARCHIVE_LAG_DAYS` behind because it inner-joins prices with the lagging weather archive, so production was previously anchoring the price lags ~5 days stale (the DE/DK2 lags were already fresh — this closes the same gap for SE4's own lags). The walk-forward reports an **anchor-staleness sensitivity** (fresh d0 vs stale d5 ≈ old pipeline). Measured saving from freshening: **~1.1 EUR/MWh (min/cheap2h), ~2.3 (avg)** — real and free, but modest, because yesterday's min and six-days-ago min are similar.
+
+**Negative-price hurdle (2026-07-24, cheap2h only):** an XGBoost classifier predicts P(tomorrow's `price_min` < 0 EUR/MWh) — a distinct physical regime (renewable oversupply + low/weekend demand) a plain regressor otherwise has to infer implicitly from the same weather/calendar features. Its out-of-fold probability feeds into the `cheap2h` regressor as an extra feature (`neg_price_proba`, now the #1 feature for cheap2h at ~0.25 importance). Validated via `ab_test.py` on a real cached snapshot, shifts 0–5: **REAL, all 6 shifts improved, mean −0.44 EUR/MWh** — the largest, cleanest single-run win recorded for the top-priority target; local reproduction via `evaluate.walk_forward_validate` matched the A/B exactly (14.74 vs the same run's min/avg/max, which were unaffected). The table above predates this change; expect cheap2h to drop roughly this much once confirmed on the next Actions run. `min` showed the same direction on 5 of 6 shifts but didn't clear the strict sign-consistency bar (one near-zero flip) — **not yet productionized for `min`**, see [MIN_HURDLE_FOLLOWUP.md](MIN_HURDLE_FOLLOWUP.md) for the re-test plan once more training data accumulates.
 
 **Per-horizon MAE (`mae_by_horizon`) is weekday-confounded — do not read it as pure horizon decay.** The walk-forward steps by 7 days with 7-day windows, so horizon ≡ weekday (d+1 is always the same weekday as the window start). The curve mixes horizon and day-of-week and is non-monotonic. The clean measure of horizon/lag-staleness cost is the anchor-staleness sensitivity above (~1 EUR), **not** the per-horizon spread. This is why horizon-aware modeling (a `forecast_horizon` feature / per-horizon models) was evaluated and **shelved**: the true stale-lag headroom is ~1 EUR, and the bulk of the ~17 EUR error is regime-driven (winter cold-snap volatility, spring solar/negative-price ramp), not horizon-driven.
 
@@ -86,6 +90,11 @@ Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds
 | [Nordpool](https://www.nordpoolgroup.com) | Published SE4 prices (used to exclude already-known days from predictions) | None |
 
 ## Features (51 shared + 1 cheap2h-specific)
+
+(cheap2h's model also gets a `neg_price_proba` input computed at fit/serve time by
+the negative-price hurdle classifier — see [Negative-Price Hurdle](#negative-price-hurdle-cheap2h-only).
+It's not a column in `FEATURE_COLUMNS`/`CHEAP2H_FEATURE_COLUMNS` below, since it's
+model-internal rather than fetched/engineered by `features.py`.)
 
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
@@ -175,6 +184,34 @@ XGBRegressor(
 ```
 
 Separate models per target because the targets have different physical drivers: min occurs at renewable oversupply moments, avg smooths out noise, max occurs at peak demand/scarcity, and cheap2h tracks the depth of the daily price trough. All models share `FEATURE_COLUMNS`; cheap2h additionally gets `price_se4_cheap2h_lag1`.
+
+### Negative-Price Hurdle (cheap2h only)
+
+`model.HURDLE_TARGETS = {"cheap2h"}` routes the cheap2h target through
+`HurdleAugmentedModel` instead of a plain `XGBRegressor`: a shallow XGBoost
+classifier (`max_depth=3`, 200 trees) predicts P(`price_min` < 0 EUR/MWh tomorrow —
+`model.NEG_PRICE_THRESHOLD`), and that probability is appended as an extra feature
+(`neg_price_proba`) before the regressor runs. Negative-price days are a distinct
+physical regime — renewable oversupply plus low/weekend demand — that the regressor
+otherwise has to infer implicitly from the same weather/calendar inputs; making the
+regime signal explicit was the bet, and it paid off (`neg_price_proba` is now the
+**#1 feature for cheap2h**, ~0.25 importance).
+
+**Leak-safety is the subtle part.** The regressor trains on **out-of-fold** (5-fold)
+classifier probabilities (`model._fit_hurdle_model`), not the in-sample predictions
+of a classifier fit on the whole training slice — an in-sample classifier has seen
+each row's own label, so its probabilities would be near-perfect and would leak an
+optimistic signal that production can never actually get (at serving time nobody
+knows tomorrow's true label). The classifier stored inside `HurdleAugmentedModel`
+for serving is fit on the *full* training slice and has genuinely never seen the row
+it predicts for, so no leakage at inference time either — the same asymmetry
+(OOF-for-training, full-fit-for-serving) walk-forward validation and production
+inference already rely on for every other feature.
+
+Validated 2026-07-24 via `ab_test.py` — cheap2h REAL (mean −0.44 EUR/MWh across 6
+simulated shifts, see "Current MAE Baseline"). `min` showed the same direction but
+didn't clear the strict A/B bar, so it stays on a plain regressor for now — see
+[MIN_HURDLE_FOLLOWUP.md](MIN_HURDLE_FOLLOWUP.md).
 
 ## A/B Backtest Flow
 
