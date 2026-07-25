@@ -66,8 +66,12 @@ def run_walk_forward(
         data:              Full merged daily frame, already shifted and
                            transformed by the caller. Must be date-sorted;
                            reset_index(drop=True) is applied here.
-        fit_fn:            train_slice -> {target_name: fitted model}.
-        targets:           {target_name: (target_col, feature_cols)}.
+        fit_fn:            fit_fn(train_slice, targets) -> {target_name: fitted
+                           model}. Receives the same `targets` used for prediction
+                           so fitting and prediction share feature lists (see the
+                           fit call below). model._fit_models is the default.
+        targets:           {target_name: (target_col, feature_cols)}. Drives both
+                           fitting (passed to fit_fn) and prediction.
         step:              Days per test window. Must stay 7 to match the
                            headline eval / production forecast horizon.
         iterations:        Number of windows. Must stay 52 to match the
@@ -98,7 +102,11 @@ def run_walk_forward(
 
         train_slice = data.iloc[:train_end]
         raw_test = data.iloc[train_end:test_end]
-        models = fit_fn(train_slice)
+        # Fit over the SAME `targets` used for prediction below, so a variant that
+        # changes feature_cols (e.g. an ablation) trains and predicts on identical
+        # feature lists. model._fit_models (the default fit_fn) accepts `targets`;
+        # any custom fit_fn must too (signature: fit_fn(train_slice, targets)).
+        models = fit_fn(train_slice, targets=targets)
 
         frozen = apply_forecast_freeze(
             raw_test, train_slice,

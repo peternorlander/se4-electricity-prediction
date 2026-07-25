@@ -157,21 +157,32 @@ def _sample_weights(data: pd.DataFrame, half_life_days) -> np.ndarray | None:
     return 0.5 ** (age_days / float(half_life_days))
 
 
-def _fit_models(data: pd.DataFrame, half_life_days=HALF_LIFE_DAYS) -> dict:
+def _fit_models(data: pd.DataFrame, half_life_days=HALF_LIFE_DAYS, targets=None) -> dict:
     """Fit one XGBoost regressor per target (min/avg/max/cheap2h) on the given data.
 
     `half_life_days` may be a per-target dict (production; None entries = uniform
     weights), or a single value/None applied to every target (used by A/B sweeps
     that vary one half-life across all targets). Rows are weighted by exponential
     time decay where a half-life is set (see HALF_LIFE_DAYS / _sample_weights).
+
+    `targets` selects the {name: (target_col, feature_cols)} map to fit over;
+    default (None) uses the production TARGETS. The A/B harness passes a variant's
+    own targets so the SAME feature lists drive fitting AND prediction -- without
+    this, a variant that changes feature_cols (e.g. an ablation) would train on the
+    production set but predict on the variant set and mismatch. Production callers
+    (model.train, evaluate.walk_forward_validate) pass nothing, so behaviour is
+    unchanged.
     """
+    if targets is None:
+        targets = TARGETS
+
     def _hl_for(name):
         if isinstance(half_life_days, dict):
             return half_life_days.get(name)
         return half_life_days
 
     models = {}
-    for name, (target_col, feature_cols) in TARGETS.items():
+    for name, (target_col, feature_cols) in targets.items():
         if name in HURDLE_TARGETS:
             models[name] = _fit_hurdle_model(data, feature_cols, target_col,
                                               half_life_days=_hl_for(name))
