@@ -21,11 +21,13 @@ Data sources (API)
          │
          ▼
 Feature engineering (features.py)
-    → 47 shared features (+1 cheap2h-specific lag), daily resolution, 3-year training window
+    → 51 engineered features, daily resolution, 3-year training window
          │
          ▼
 Model training (model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
+    → per-target feature sets: avg/max use all 51, cheap2h adds its own lag (52),
+      min uses a validated 15-feature subset (MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
     → Walk-forward validation: 52 windows × 7 days (evaluate.py)
@@ -40,20 +42,50 @@ Evaluation uses **52-window (1-year) walk-forward validation** on 3 years of tra
 
 The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
 
-Baseline (52-window/1-year eval, volatility leak fix; wiggles ~±0.5 run-to-run as the window rolls). **The 1-year eval is not comparable to the previous 35-window/8-month numbers** — the mean is lower mainly because it now includes the easy low-price summer 2025 weeks (per-window MAE 3–9), not because accuracy improved:
+Current, measured on the **2026-08-04** data snapshot with the production code as
+it stands (negative-price hurdle on cheap2h, `min` on its pruned 15-feature list):
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|
-| min     | 16.11        | ±7.15 |
-| avg     | 17.83        | ±7.63 |
-| max     | 36.15        | ±19.13 |
-| cheap2h | 15.93        | ±7.29 |
+| min     | 15.70        | ±8.16 |
+| avg     | 19.11        | ±8.73 |
+| max     | 34.39        | ±17.34 |
+| cheap2h | 16.85        | ±8.82 |
+
+**Do not compare this table against an older one to judge a change.** The headline
+number moves with the *evaluation period*, not just with the model — and the two
+control targets in this very table prove it. Against the previous table
+(min 16.11 / avg 17.83 / max 36.15 / cheap2h 15.93), measured on an earlier window:
+
+| Target | Old → new | Model changed between the two? |
+|--------|-----------|-------------------------------|
+| `avg` | 17.83 → 19.11 (**+1.28**) | **No** — pure period effect |
+| `max` | 36.15 → 34.39 (**−1.76**) | **No** — pure period effect, *opposite direction* |
+| `min` | 16.11 → 15.70 (−0.41) | yes, pruned (A/B: −1.01) |
+| `cheap2h` | 15.93 → 16.85 (+0.92) | yes, hurdle added (A/B: −0.44) |
+
+Two models that did not change at all moved **+1.28** and **−1.76** — the period
+effect is both larger than the changes we are trying to measure *and* inconsistent
+in direction across targets. So "min improved by 0.41" understates a −1.01 change
+that happened to face a period headwind, and "cheap2h got worse by 0.92" describes
+a period, not a regression. Cross-run comparison cannot separate the two.
+
+The honest measure of any change is its **drift-free A/B delta** — same data, same
+slices, one thing varied. Those are the numbers to trust:
+
+| Change | A/B delta | Replication |
+|--------|-----------|-------------|
+| `min` pruned feature list | **−1.01 EUR/MWh** | 14 measurements, 4 snapshots, all negative |
+| Negative-price hurdle (cheap2h) | **−0.44 EUR/MWh** | 6 measurements, 1 snapshot, all negative |
+
+See [How changes are validated](#how-changes-are-validated) for why this project
+reports it that way.
 
 **Intraday trough features (2026-07):** the daily min/cheap2h is set at a specific intraday trough (overnight wind or midday solar) that the daily-mean `residual_load` diluted. Exposing the trough directly — chiefly `residual_load_min` (daily minimum of hourly residual load) — cut cheap2h ~0.66 EUR/MWh and held min, with `residual_load_min` landing as a top-4 feature in all three priority models. See the [Intraday Trough Features](#intraday-trough-features) section.
 
 **Price-lag anchor freshening (2026-07):** the SE4 price lags — the dominant min/cheap2h features — are now frozen at the freshest *known* ENTSO-E price (`se4_prices_daily`), not the training frame's last row. The training frame ends ~`WEATHER_ARCHIVE_LAG_DAYS` behind because it inner-joins prices with the lagging weather archive, so production was previously anchoring the price lags ~5 days stale (the DE/DK2 lags were already fresh — this closes the same gap for SE4's own lags). The walk-forward reports an **anchor-staleness sensitivity** (fresh d0 vs stale d5 ≈ old pipeline). Measured saving from freshening: **~1.1 EUR/MWh (min/cheap2h), ~2.3 (avg)** — real and free, but modest, because yesterday's min and six-days-ago min are similar.
 
-**Negative-price hurdle (2026-07-24/25, cheap2h only):** an XGBoost classifier predicts P(tomorrow's `price_min` < 0 EUR/MWh) — a distinct physical regime (renewable oversupply + low/weekend demand) a plain regressor otherwise has to infer implicitly from the same weather/calendar features. Its out-of-fold probability feeds into the `cheap2h` regressor as an extra feature (`neg_price_proba`, now the #1 feature for cheap2h at ~0.25 importance). Validated via `ab_test.py` on a real cached snapshot, shifts 0–5: **REAL, all 6 shifts improved, mean −0.44 EUR/MWh** — the largest, cleanest single-run win recorded for the top-priority target; local reproduction via `evaluate.walk_forward_validate` matched the A/B exactly (14.74 vs the same run's min/avg/max, which were unaffected). **Confirmed on a real Actions run and committed 2026-07-25** — the table above predates this change and still shows the pre-hurdle cheap2h 15.93; it'll be updated next time a full walk-forward printout is captured. `min` showed the same direction on 5 of 6 shifts but didn't clear the strict sign-consistency bar (one near-zero flip) — **not productionized for `min`**, see [MIN_HURDLE_FOLLOWUP.md](MIN_HURDLE_FOLLOWUP.md) for the re-test plan once more training data accumulates.
+**Negative-price hurdle (2026-07-24/25, cheap2h only):** an XGBoost classifier predicts P(tomorrow's `price_min` < 0 EUR/MWh) — a distinct physical regime (renewable oversupply + low/weekend demand) a plain regressor otherwise has to infer implicitly from the same weather/calendar features. Its out-of-fold probability feeds into the `cheap2h` regressor as an extra feature (`neg_price_proba`, now the #1 feature for cheap2h at ~0.25 importance). Validated via `ab_test.py` on a real cached snapshot, shifts 0–5: **REAL, all 6 shifts improved, mean −0.44 EUR/MWh** — the largest, cleanest single-run win recorded for the top-priority target; local reproduction via `evaluate.walk_forward_validate` matched the A/B exactly (14.74 vs the same run's min/avg/max, which were unaffected). **Confirmed on a real Actions run and committed 2026-07-25**; the table above now includes it. `min` showed the same direction on 5 of 6 shifts but didn't clear the strict sign-consistency bar (one near-zero flip) — **not productionized for `min`**, see [MIN_HURDLE_FOLLOWUP.md](MIN_HURDLE_FOLLOWUP.md) for the re-test plan once more training data accumulates.
 
 **Per-horizon MAE (`mae_by_horizon`) is weekday-confounded — do not read it as pure horizon decay.** The walk-forward steps by 7 days with 7-day windows, so horizon ≡ weekday (d+1 is always the same weekday as the window start). The curve mixes horizon and day-of-week and is non-monotonic. The clean measure of horizon/lag-staleness cost is the anchor-staleness sensitivity above (~1 EUR), **not** the per-horizon spread. This is why horizon-aware modeling (a `forecast_horizon` feature / per-horizon models) was evaluated and **shelved**: the true stale-lag headroom is ~1 EUR, and the bulk of the ~17 EUR error is regime-driven (winter cold-snap volatility, spring solar/negative-price ramp), not horizon-driven.
 
@@ -89,7 +121,17 @@ Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds
 | [NVE](https://biapi.nve.no/magasinstatistikk) | Norwegian hydro reservoir fill levels + 20-year min/max/median by week | None |
 | [Nordpool](https://www.nordpoolgroup.com) | Published SE4 prices (used to exclude already-known days from predictions) | None |
 
-## Features (51 shared + 1 cheap2h-specific)
+## Features (51 engineered + 1 cheap2h-specific)
+
+The catalogue below is the full engineered set (`FEATURE_COLUMNS`), used in its
+entirety by the **avg** and **max** models. **Not every model uses every
+feature** — see [Per-Target Feature Sets](#per-target-feature-sets):
+
+| Model | Features used |
+|-------|---------------|
+| avg, max | all 51 |
+| cheap2h | all 51 + `price_se4_cheap2h_lag1` (+ `neg_price_proba` at fit/serve) |
+| **min** | **a validated 15-feature subset** (`MIN_FEATURE_COLUMNS`) |
 
 (cheap2h's model also gets a `neg_price_proba` input computed at fit/serve time by
 the negative-price hurdle classifier — see [Negative-Price Hurdle](#negative-price-hurdle-cheap2h-only).
@@ -116,8 +158,8 @@ Captures wind and solar generation in coupled markets that flow into SE4.
 ### SE4 Own Price Lags (autoregressive)
 - `price_se4_avg_lag1` — strongest feature for the **avg** model (~0.24 importance)
 - `price_se4_avg_lag2`, `price_se4_avg_lag7` — momentum and weekly seasonality
-- `price_se4_min_lag1` — yesterday's min; **strongest feature for both min and cheap2h (~0.23–0.25)** — a better predictor of today's cheap2h than yesterday's cheap2h is
-- `price_se4_max_lag1` — yesterday's max
+- `price_se4_min_lag1` — yesterday's min; historically the highest-importance feature for both min and cheap2h (~0.23–0.25). **No longer used by the `min` model** — ablation testing showed removing it (with the rest of the prune) *improves* min, since importance reflects in-sample usage rather than marginal value, and the lag is frozen stale across each forecast window anyway. Still used by avg/max/cheap2h. See [Per-Target Feature Sets](#per-target-feature-sets).
+- `price_se4_max_lag1` — yesterday's max; the **only** SE4 price lag the pruned `min` model retains
 - `price_se4_cheap2h_lag1` — yesterday's cheap2h (**cheap2h model only** via `CHEAP2H_FEATURE_COLUMNS`; kept out of min/avg/max to avoid perturbing their baseline with a correlated lag)
 - `price_momentum` — lag1 minus lag2 (rising vs falling trend)
 - `price_volatility_7d` — rolling 7-day std (market regime stability)
@@ -183,7 +225,48 @@ XGBRegressor(
 )
 ```
 
-Separate models per target because the targets have different physical drivers: min occurs at renewable oversupply moments, avg smooths out noise, max occurs at peak demand/scarcity, and cheap2h tracks the depth of the daily price trough. All models share `FEATURE_COLUMNS`; cheap2h additionally gets `price_se4_cheap2h_lag1`.
+Separate models per target because the targets have different physical drivers: min occurs at renewable oversupply moments, avg smooths out noise, max occurs at peak demand/scarcity, and cheap2h tracks the depth of the daily price trough.
+
+### Per-Target Feature Sets
+
+The same reasoning that justifies separate models also applies to their inputs: a
+feature can be load-bearing for one target and dead weight for another. `model.TARGETS`
+is therefore deliberately heterogeneous.
+
+| Model | Feature list | Count |
+|-------|--------------|-------|
+| `avg`, `max` | `FEATURE_COLUMNS` | 51 |
+| `cheap2h` | `CHEAP2H_FEATURE_COLUMNS` (= `FEATURE_COLUMNS` + `price_se4_cheap2h_lag1`), plus `neg_price_proba` appended by the hurdle at fit/serve time | 52 (+1) |
+| `min` | `MIN_FEATURE_COLUMNS` | **15** |
+
+**`min`'s pruned list (2026-08).** A systematic per-target ablation program tested
+every one of the 51 columns against all four targets, then tested combined drop sets
+per target. Only `min` produced an adoptable result: dropping 36 of its 51 features
+improved MAE by **−1.01 EUR/MWh pooled across 14 measurements spanning four
+independently-fetched data snapshots**, with every single measurement negative and
+the per-window std *decreasing* (−0.19, so the gain is not bought with extra
+variance). The 15 kept features:
+
+`max_wind`, `mean_wind_de_north`, `mean_wind_stockholm`, `price_se4_max_lag1`,
+`residual_load`, `residual_load_min`, `temp_gradient_se3_se4`, `radiation_variability`,
+`ttf_price_lag1`, `gas_marginal_cost`, `reservoir_norway_deviation`,
+`reservoir_sweden_gwh`, `reservoir_sweden_change`, `is_workday`, `dow_sin`
+
+Two findings worth flagging, because both are counter-intuitive:
+
+- **The prune removes `price_se4_min_lag1`**, documented above as min's single most
+  important feature (~0.23 importance). Feature *importance* measures in-sample
+  usage, not marginal value — with 51 correlated columns XGBoost splits on whatever
+  is convenient, and the horizon-honest evaluation freezes those lags stale across
+  each test window anyway. Removing them pushes the model onto per-day-forecastable
+  signals that stay valid at d+2…d+7.
+- **avg, max and cheap2h were tested the same way and keep everything.** avg's best
+  candidate came back a stable null (pooled +0.001 over 18 measurements, mixed sign);
+  max's and cheap2h's candidates leaned actively harmful. A prune that works for one
+  target is not evidence for another.
+
+Full evidence trail: [FEATURE_REVALIDATION_PLAN.md](FEATURE_REVALIDATION_PLAN.md)
+and [experiments/](experiments/).
 
 ### Negative-Price Hurdle (cheap2h only)
 
@@ -222,6 +305,51 @@ improvement on one day's data and a regression on the next. Historically that fo
 re-running an experiment across several real calendar days to tell signal from noise
 — one change every few days. The A/B flow simulates those different run-days from a
 single data snapshot, so a verdict takes one sitting.
+
+### How changes are validated
+
+**Standing practice (2026-08): no feature or model change is adopted on anything
+but a drift-free A/B result, and the README quotes A/B deltas — not
+before/after headline MAE — as the evidence for a change.**
+
+Why this is a rule and not just a preference:
+
+- **Headline MAE is period-dominated.** Between two evaluation windows a few weeks
+  apart, the two models that did *not* change at all moved **+1.28** (`avg`) and
+  **−1.76** (`max`) — larger than any change we have ever adopted, and in opposite
+  directions. A before/after comparison across runs cannot separate the change from
+  that, which is what makes it misleading rather than merely imprecise.
+- **A/B removes exactly that.** `BASELINE` and `CANDIDATE` are fit on identical
+  slices, so the delta isolates the change. Running several `shift`s then samples
+  different day-alignments of the same history, and re-running on a
+  separately-fetched snapshot additionally covers data revisions.
+- **Feature importance is not evidence either.** It measures in-sample usage, not
+  marginal value. `min` measurably improved when its highest-importance feature was
+  removed (see [Per-Target Feature Sets](#per-target-feature-sets)).
+
+The bar for adoption:
+
+| Verdict | Meaning | Action |
+|---------|---------|--------|
+| `REAL` | sign-consistent across shifts, and abs(mean) ≥ spread | adopt |
+| `BORDERLINE` | sign-consistent but smaller than the spread | replay on a **separately-fetched** snapshot; adopt only if the sign holds |
+| `NOISE` | sign flips across shifts | reject |
+| `NO_CHANGE` | identical to baseline | reject |
+
+Additional standing requirements: the per-window **std must not inflate**, priority
+order is **cheap2h → min → avg** (`max` is not a priority), and an adopted change is
+still confirmed on the next real Actions run before it counts as done.
+
+For *ablations* (removing a feature) use `ab/verdict.py::classify_ablation` instead
+of `classify` — the plain rule treats "unproven" as "keep the status quo", which for
+a removal means keeping dead weight forever. See the docstring for the
+magnitude-aware variant.
+
+When updating the MAE table above, quote the run it came from and the snapshot it
+was measured on, and record adopted changes as their **A/B deltas** in the table
+beside it. Full worked example of the practice: the feature re-validation program in
+[FEATURE_REVALIDATION_PLAN.md](FEATURE_REVALIDATION_PLAN.md) and
+[experiments/](experiments/).
 
 ### How it works
 

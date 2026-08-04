@@ -82,9 +82,39 @@ FEATURE_COLUMNS = [
 ]
 
 # The cheap2h model gets one extra target-specific lag (yesterday's cheap2h).
-# min/avg/max models keep the original feature set so their MAE baseline is
-# not perturbed by a new correlated lag feature.
+# avg/max models keep the original feature set so their MAE baseline is not
+# perturbed by a new correlated lag feature.
 CHEAP2H_FEATURE_COLUMNS = FEATURE_COLUMNS + ["price_se4_cheap2h_lag1"]
+
+# Pruned feature list used by the `min` model only (avg/max/cheap2h keep the full
+# FEATURE_COLUMNS). Validated at -1.01 EUR/MWh over four data snapshots; see the
+# README "Per-Target Feature Sets" section for the evidence and rationale.
+#
+# The omissions are deliberate, not oversights. In particular price_se4_min_lag1
+# — min's highest-importance feature — is left out ON PURPOSE: removing it
+# measurably improves min, because importance reflects in-sample usage rather
+# than marginal value. Do not "fix" this list by adding features back because
+# they look important; re-validate with ab_test.py first.
+MIN_FEATURE_COLUMNS = [
+    "max_wind",
+    "mean_wind_de_north",
+    "mean_wind_stockholm",
+    "price_se4_max_lag1",
+    "residual_load",
+    "residual_load_min",           # kept over the 37-drop variant on tie-break: lower
+                                    # std, physically the min-defining trough, and
+                                    # increasingly relevant as solar buildout continues
+                                    # (see FEATURE_REVALIDATION_PLAN.md round 5)
+    "temp_gradient_se3_se4",
+    "radiation_variability",
+    "ttf_price_lag1",
+    "gas_marginal_cost",
+    "reservoir_norway_deviation",
+    "reservoir_sweden_gwh",
+    "reservoir_sweden_change",
+    "is_workday",
+    "dow_sin",
+]
 
 
 # Features that build_forecast_features() holds constant across the entire

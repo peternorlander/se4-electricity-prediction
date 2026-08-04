@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, cross_val_predict
 from xgboost import XGBClassifier, XGBRegressor
-from features import FEATURE_COLUMNS, CHEAP2H_FEATURE_COLUMNS
+from features import FEATURE_COLUMNS, CHEAP2H_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS
 
 
 # Time-decay sample weighting (step 5 — regime handling). Per target: each
@@ -23,12 +23,18 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 
 
 # Target name → (training column, feature columns).
-# cheap2h predicts the mean of the day's two cheapest hours — the price a
-# ~2-hour charging session can achieve by picking the cheapest points of the
-# day. It gets one extra feature (its own lag-1); min/avg/max keep the
-# original feature set so their MAE baseline is not perturbed.
+#
+# Deliberately heterogeneous: each target uses the feature set its own ablation
+# testing validated, since a feature can be load-bearing for one target and dead
+# weight for another. `min` is pruned to 15 columns; avg/max keep all 51; cheap2h
+# adds its own lag-1 (plus neg_price_proba, appended at fit/serve time by the
+# hurdle — see HURDLE_TARGETS). README "Per-Target Feature Sets" has the evidence.
+#
+# Note for A/B work: ab/variants.py's BASELINE mirrors this dict, so it reflects
+# min's PRUNED list. Comparing against the old 51-feature min needs an explicit
+# `targets` override rather than BASELINE.
 TARGETS = {
-    "min":     ("price_min",     FEATURE_COLUMNS),
+    "min":     ("price_min",     MIN_FEATURE_COLUMNS),
     "avg":     ("price_avg",     FEATURE_COLUMNS),
     "max":     ("price_max",     FEATURE_COLUMNS),
     "cheap2h": ("price_cheap2h", CHEAP2H_FEATURE_COLUMNS),
