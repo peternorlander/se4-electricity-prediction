@@ -340,10 +340,25 @@ Additional standing requirements: the per-window **std must not inflate**, prior
 order is **cheap2h → min → avg** (`max` is not a priority), and an adopted change is
 still confirmed on the next real Actions run before it counts as done.
 
-For *ablations* (removing a feature) use `ab/verdict.py::classify_ablation` instead
-of `classify` — the plain rule treats "unproven" as "keep the status quo", which for
-a removal means keeping dead weight forever. See the docstring for the
-magnitude-aware variant.
+**For *ablations* (testing whether to remove an existing feature) use
+`ab/verdict.py::classify_ablation` instead of `classify`.** This is the
+exception, not the everyday path — day-to-day A/B work is almost always testing
+an *addition* (a new feature, a new source, a model change), where `classify`'s
+"unproven → keep the status quo" is exactly right, because rejecting an unproven
+addition already leaves the simpler model. That logic inverts for a removal:
+"unproven → keep" then means *keep the feature*, so a genuinely worthless
+feature — whose ~zero effect flips sign purely from fitting noise — gets
+classified NOISE and never leaves. `classify_ablation` fixes this by also
+weighing the *magnitude* of the effect (scaled to the target's own baseline
+MAE), distinguishing dead weight (never matters, safe to drop) from a feature
+that's large but genuinely regime-dependent (matters a lot sometimes, keep it) —
+see the function's docstring for the full verdict table. It is **not** wired
+into `ab_test.py run` / `run_ab()` — that entrypoint always uses `classify`,
+since most CANDIDATEs are additions. Reach for `classify_ablation` explicitly
+(`from ab.verdict import classify_ablation`) only when the CANDIDATE actually
+removes a column, typically during a periodic feature-set audit like the one
+that produced [Per-Target Feature Sets](#per-target-feature-sets) — not for
+routine feature-addition testing.
 
 When updating the MAE table above, quote the run it came from and the snapshot it
 was measured on, and record adopted changes as their **A/B deltas** in the table
@@ -360,6 +375,20 @@ would have run `s` days earlier — window placement **and** the training tail b
 move together, the same way a real earlier run would differ. One knob (`shift`)
 captures the whole between-day axis; running shifts `0..5` gives six simulated
 run-days from one fetch.
+
+**The shift axis is not a regime axis — don't read a NOISE verdict as "not
+regime-dependent."** All six shifts cover nearly the same ~365 days, offset by
+0-5 and overlapping 6/7 with their neighbour, so a sign flip across shifts means
+"unstable to the exact day-of-week window boundary," not "helps in winter, hurts
+in summer." Regime structure (calm vs. volatile periods) lives **within** one
+shift's 52 test windows, which span a full year and can range 3-9 EUR/MWh in
+calm stretches to 30+ in a cold snap or supply shock — averaging that into one
+per-shift MAE hides it. If a feature's mean effect looks like noise but you
+suspect it's actually large-and-regime-dependent (helps in some conditions,
+hurts in others, cancelling out on average), that needs a different analysis:
+keep the *per-window* deltas from one shift (not just their mean) and correlate
+them against window-level descriptors (price level, volatility, wind, etc.)
+instead of comparing across shifts.
 
 **The pieces:**
 - `fetch_data.py::fetch_training_inputs(today)` — the training-side fetch, shared
@@ -429,6 +458,21 @@ Follow this whenever testing a feature or model change from the improvement plan
      one; adopt only if the sign agrees. The cross-snapshot replay is the *only* case
      that needs multiple caches — it covers real data revisions (weather backfill,
      price corrections) that tail-truncation alone can't simulate.
+     **Getting the shift right on the new snapshot matters — the default `0-5`
+     range can silently duplicate windows you've already tested.** `build_training_data`
+     is a *fixed-length* sliding window (not accumulating), so a snapshot fetched
+     `N` days later is the same length, just shifted `N` rows forward. That means
+     `apply_shift(newer_data, N)` reproduces the older snapshot's shift-0 windows
+     **exactly** — the one shift value that gives a genuine "same test,
+     independently re-fetched" comparison. Any other shift on the new snapshot
+     either duplicates a window the old snapshot's `0-5` sweep already covered, or
+     (for extending coverage rather than replaying) needs checking against every
+     shift used so far, not just the immediately preceding snapshot. Verify
+     programmatically before trusting the result — don't assume: compare each
+     candidate shift's resulting last `date` against the older run's tested dates,
+     and assert no overlap (or, for a same-window replay, assert the dates match
+     exactly). Getting `N` wrong doesn't error, it just quietly reuses data and
+     inflates apparent replication.
 5. **Confirm on the next real Actions run.** An `ab_test.py` verdict is for fast
    pre-commit iteration; an adopted change is still confirmed against the production
    run's `Walk-forward validation` output before it's considered done.
@@ -468,6 +512,9 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | Time-decay sample weights on `min`/`cheap2h`/`max` (`weight = 0.5 ** (age_days / half_life)`) | Drift-free same-slice A/B, swept over **three** runs (2026-07-22, stride-3, 121 overlapping windows). On the priority targets the effect is **noise**: min's delta at hl=500 went +0.22 → −0.22 → −0.01 across the three runs and cheap2h's collapsed to ~0 — i.e. the effect (~±0.2) is smaller than the run-to-run variability (~0.4 swing). `max` was likewise noisy/mixed and is not a priority. A single favorable stride-3 run (−0.22/−0.20) did *not* replicate — the lesson being that a small effect needs replication across days, not one A/B. **`avg` is the exception and IS kept** with decay (half-life 500): it improved at *every* half-life in *all three* runs (~−0.35 EUR/MWh at hl=500), so `HALF_LIFE_DAYS` weights only the (independent) avg model and leaves min/cheap2h/max on uniform weights. |
 | Solar-capacity scaling of radiation (placeholder linear index: `mean_radiation` / `radiation_midday` × `1 + (1/3)·years_since_2023`, the "SE4 PV roughly doubled over 3 years" prior) | Drift-free same-slice A/B with internal day-alignment phases, run on two ~1-delivery-day-apart data samples (2026-07-22 and 07-23): no replicable gain on the priority targets. cheap2h was consistent *within* each run but **flipped sign between them** — all three phases −0.01…−0.13 (better) in the morning, all three +0.09…+0.15 (worse) in the evening — the classic period-noise signature (effect ~0.1 EUR/MWh < day-to-day swing). min was mixed-sign in both runs; avg looked good in the morning (−0.20, all phases) but evaporated in the evening (−0.03, mixed); max non-priority and inconsistent. Likely redundant with `price_se4_min_lag1` / `residual_load_min`, which already absorb the buildout. Real ENTSO-E A68 per-zone capacity *could* be re-tested, but the first-order interaction shows nothing so the prior is low (2026-07). |
 | Spread-decomposition for min/cheap2h (predict `avg` + `spread_down = avg − min` resp. `avg − cheap2h`, reconstruct `min`/`cheap2h = avg_pred − spread_pred`) | `ab_test.py` A/B on the 2026-07-24 snapshot across shifts 0–5: `avg`/`max` deltas were exactly 0.00 at every shift (fit_fn self-check — those two are untouched, confirming the harness wiring), but min/cheap2h were classified **NOISE** (sign flip across shifts) with a **positive (worse) mean delta** — min +0.50 (deltas +0.77/+0.57/+0.02/+0.78/−0.16/+1.00), cheap2h +0.40 (+0.76/+0.49/−0.05/+0.54/−0.37/+1.03). Reconstructing from two independently-fit models (avg error + spread error) compounds error rather than cancelling it; no shift showed a clear win. Rejected — direct min/cheap2h regression stays (2026-07-24). |
+| Conservative feature prune for `cheap2h` (drop `day_of_year_cos`, `hdd_cold_boost`, `mean_wind`, `radiation_midday`, `reservoir_sweden_gwh` — rated dead weight by single-feature leave-one-out) | Combined-drop A/B across 3 independently-fetched snapshots: mean +0.08 / +0.24 (replay) / +0.02 — never negative, leans harmful, never NOISE→REAL. Not adopted. cheap2h's own per-feature evidence is separately unreliable (37% sign-agreement between independent fetches, worse than chance), so no refined candidate was pursued from this route (2026-08). |
+| Feature-set prune for `avg` (drop 14: `co2_price_lag1`, `gas_marginal_cost`, `day_of_year_cos`, `hdd_linear`, `max_temp`, `mean_radiation_dk1`/`dk2`, `mean_temp`, `mean_wind`, `month_cos`/`sin`, `reservoir_sweden_gwh`, `wind_night`, `wind_variability`) | Combined-drop A/B: NOISE on the original snapshot (+0.03) but consistently **harmful** on the next one (all 4 shifts positive, mean +0.31) — traced to the `co2`/`gas` columns: an active 2026-07 TTF/gas price rise had made them newly load-bearing, something the original (calmer) snapshot didn't show. Re-tested with those fuel-linked columns excluded (12 features): resolved to a genuine null across **4** independently-fetched snapshots (+0.11 / +0.02 / −0.12 / −0.03, sign mixed every time, pooled ≈0) — not confidently dead weight, not harmful either. **Not pruned; do not re-test this exact 12-feature set** (2026-08). |
+| Feature-set prune for `max` (drop 19, then a fuel-excluded 15-feature refinement) | Same program as `avg`, same fuel-price mechanism: the 19-feature drop was net-harmful (all-shifts-positive on 2 of 3 snapshots, up to +1.07). The fuel-excluded 15-feature refinement reduced but did not eliminate the harm (7 of 11 pooled measurements still positive). `max` is not a priority target; not pruned (2026-08). |
 
 ## Known Limitations
 
