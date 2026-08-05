@@ -81,28 +81,44 @@ FEATURE_COLUMNS = [
     "dow_sin", "dow_cos",
 ]
 
-# The cheap2h model gets one extra target-specific lag (yesterday's cheap2h).
-# avg/max models keep the original feature set so their MAE baseline is not
-# perturbed by a new correlated lag feature.
+# NO LONGER USED IN PRODUCTION (since 2026-08-05) — cheap2h moved to
+# TROUGH_FEATURE_COLUMNS below, which beat this list on 16 of 16 A/B measurements
+# across three evaluation periods. Retained because the experiment scripts under
+# experiments/ carry it as their reference arm; it is the historical cheap2h list,
+# not a live one. price_se4_cheap2h_lag1 itself is still computed by
+# add_se4_price_lags (no model consumes it now, but the A/B reference arm does).
 CHEAP2H_FEATURE_COLUMNS = FEATURE_COLUMNS + ["price_se4_cheap2h_lag1"]
 
-# Pruned feature list used by the `min` model only (avg/max/cheap2h keep the full
-# FEATURE_COLUMNS). Validated at -1.01 EUR/MWh over four data snapshots; see the
-# README "Per-Target Feature Sets" section for the evidence and rationale.
+# Pruned feature list shared by the two TROUGH targets — `min` (the day's single
+# cheapest hour) and `cheap2h` (the mean of its two cheapest hours). avg/max keep
+# the full FEATURE_COLUMNS; a feature can be load-bearing for one target and dead
+# weight for another, which is the whole premise of the per-target lists.
 #
-# The omissions are deliberate, not oversights. In particular price_se4_min_lag1
-# — min's highest-importance feature — is left out ON PURPOSE: removing it
-# measurably improves min, because importance reflects in-sample usage rather
-# than marginal value. Do not "fix" this list by adding features back because
-# they look important; re-validate with ab_test.py first.
-MIN_FEATURE_COLUMNS = [
+# Evidence (README "Per-Target Feature Sets" has the full trail):
+#   min      adopted 2026-08 — -1.01 EUR/MWh pooled over 14 measurements, four snapshots
+#   cheap2h  adopted 2026-08-05 — the old 52-column list measured 0.86 EUR/MWh
+#            WORSE than this one, on all 16 of round 11's measurements across three
+#            evaluation periods (after 17 of 17 in round 10). Round 11 also closed
+#            both directions: adding back any of the 36 excluded columns replicated
+#            nothing, and removing any of these 15 was KEEP or INCONCLUSIVE. This
+#            list is a local optimum, not just an improvement.
+#
+# The omissions are deliberate, not oversights. In particular each target's OWN
+# price lag is left out ON PURPOSE — price_se4_min_lag1 for min, and
+# price_se4_cheap2h_lag1 for cheap2h — even though both rank as their target's
+# highest-importance feature: removing them measurably improves both, because
+# importance reflects in-sample usage rather than marginal value, and those lags
+# are frozen stale across the forecast window anyway. Do not "fix" this list by
+# adding features back because they look important; re-validate with ab_test.py
+# first (and use classify_ablation, not classify, for removals).
+TROUGH_FEATURE_COLUMNS = [
     "max_wind",
     "mean_wind_de_north",
     "mean_wind_stockholm",
     "price_se4_max_lag1",
     "residual_load",
     "residual_load_min",           # kept over the 37-drop variant on tie-break: lower
-                                    # std, physically the min-defining trough, and
+                                    # std, physically the trough-defining feature, and
                                     # increasingly relevant as solar buildout continues
                                     # (see FEATURE_REVALIDATION_PLAN.md round 5)
     "temp_gradient_se3_se4",

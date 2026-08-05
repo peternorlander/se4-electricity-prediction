@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, cross_val_predict
 from xgboost import XGBClassifier, XGBRegressor
-from features import FEATURE_COLUMNS, CHEAP2H_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS
+from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS
 
 
 # Time-decay sample weighting (step 5 — regime handling). Per target: each
@@ -26,18 +26,23 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 #
 # Deliberately heterogeneous: each target uses the feature set its own ablation
 # testing validated, since a feature can be load-bearing for one target and dead
-# weight for another. `min` is pruned to 15 columns; avg/max keep all 51; cheap2h
-# adds its own lag-1 (plus neg_price_proba, appended at fit/serve time by the
-# hurdle — see HURDLE_TARGETS). README "Per-Target Feature Sets" has the evidence.
+# weight for another. The two trough targets (`min`, `cheap2h`) share the pruned
+# 15-column list; avg/max keep all 51. cheap2h additionally gets neg_price_proba,
+# appended at fit/serve time by the hurdle — see HURDLE_TARGETS. README
+# "Per-Target Feature Sets" has the evidence.
+#
+# min and cheap2h landing on the SAME list is a measured result, not an
+# assumption: the list was selected on min's data and then tested on cheap2h,
+# which makes it a genuinely out-of-sample result for that target.
 #
 # Note for A/B work: ab/variants.py's BASELINE mirrors this dict, so it reflects
-# min's PRUNED list. Comparing against the old 51-feature min needs an explicit
-# `targets` override rather than BASELINE.
+# the PRUNED lists. Comparing against the old 51/52-column variants needs an
+# explicit `targets` override rather than BASELINE.
 TARGETS = {
-    "min":     ("price_min",     MIN_FEATURE_COLUMNS),
+    "min":     ("price_min",     TROUGH_FEATURE_COLUMNS),
     "avg":     ("price_avg",     FEATURE_COLUMNS),
     "max":     ("price_max",     FEATURE_COLUMNS),
-    "cheap2h": ("price_cheap2h", CHEAP2H_FEATURE_COLUMNS),
+    "cheap2h": ("price_cheap2h", TROUGH_FEATURE_COLUMNS),
 }
 
 
