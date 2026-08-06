@@ -18,6 +18,16 @@ from pathlib import Path
 
 DEFAULT_CACHE_ROOT = Path("ab_cache")
 
+# Long-window snapshots (ab_test.py fetch --days N, N > fetch_data.TRAINING_DAYS)
+# live in a separate root, never the default one. Grid scripts assume every
+# snapshot in DEFAULT_CACHE_ROOT is a normal-length (currently 1095-day) window
+# and load_snapshot(None) picks the newest by mtime -- mixing a 5-year fetch
+# into the same directory would let a routine `ab_test.py run` silently pick it
+# up and compare BASELINE vs CANDIDATE on the wrong window length. Keeping long
+# snapshots physically separate makes that impossible rather than merely
+# documented.
+LONG_CACHE_ROOT = DEFAULT_CACHE_ROOT / "long"
+
 
 def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT) -> Path:
     """

@@ -185,6 +185,231 @@ def classify_ablation(deltas: list, baseline_mae: float = None, replay_delta: fl
     return "INCONCLUSIVE"
 
 
+# --- Cluster-level verdicts (for the 3-period measurement grid) --------------
+#
+# WHY THESE EXIST. classify() above decides magnitude with `|mean| >= spread`,
+# where spread = max - min. That is a RANGE statistic: it grows with the number
+# of measurement points, while a real standard error shrinks. The rule therefore
+# gets STRICTER the more you measure -- backwards. Measured on round 13.1's data
+# (2026-08-05), holding the effect fixed at -0.234 and subsampling k of 8 points:
+#
+#     k =  2   4   6   8
+#     P(REAL) 96% 79% 46%  0%
+#
+# Same effect, same evidence quality; 96% -> 0% purely from point count. This is
+# not hypothetical: the cheap2h hurdle, the largest confirmed win in this repo,
+# cleared the old rule by |mean| 0.438 vs spread 0.430 -- a 2% margin on SIX
+# shifts. The identical effect measured on the 16-point grid would very likely
+# have been rejected as BORDERLINE.
+#
+# The fix is to stop treating the 16 grid points as 16 independent samples,
+# which they are not: the 8 NOW points come from four snapshots whose evaluation
+# periods overlap ~97% (see the ab-snapshot-overlap note and round 11). There
+# are really THREE quasi-independent evaluation periods -- NOW, -6M, -12M -- so
+# replication should be judged across those, with ONE VOTE EACH. Cluster means
+# are averaged unweighted for exactly that reason: pooling over points would let
+# NOW's 8 points outvote the two genuinely different periods 2:1 on count alone.
+#
+# RETROACTIVE VALIDATION (experiments/backtest_verdict_rule.py, 2026-08-05):
+# replayed against every experiment ever run on this grid -- rounds 11, 12 and
+# 13.1, 38 configs -- these functions reproduce ALL 38 existing verdicts.
+#
+# READ THIS BEFORE TRUSTING THAT NUMBER. It establishes specificity only. Not
+# one of those 38 configs is cluster-sign-consistent AND negative (10 are
+# consistently worse, 28 flip sign), so the entire testable ledger is null
+# results and a rule that rejected everything would also have scored 38/38.
+# Two consequences that must not be forgotten:
+#
+#   1. MIN_CLUSTER_EFFECT IS NOT VALIDATED. It never binds on any historical
+#      data -- sweeping it from 0.01 to 0.80 leaves all 38 verdicts unchanged.
+#      0.10 is a provisional placeholder chosen to sit just under the ~0.12
+#      resolution floor implied by the between-cluster spread. The first change
+#      that is cluster-sign-consistent and negative will be the first real test
+#      of it; decide the number then, on a concrete case, rather than defending
+#      this default.
+#   2. Sensitivity is tested separately by round 13.1b
+#      (experiments/run_round13_1b_hurdle_sensitivity.py), which re-measures the
+#      known-good cheap2h hurdle on this grid. If that comes back as anything
+#      other than REAL, these functions are too strict and should not be used.
+#
+# UNRESOLVED DESIGN QUESTION, recorded so it is not silently inherited: giving
+# -12M an equal vote also gives it a VETO, and -12M trains on ~360 rows against
+# production's ~1085. Round 12 established that this min_train confound can
+# manufacture an apparent effect; round 13.1 found the mirror image, an effect
+# that strengthens with training size (r = -0.6) and is therefore weakest in the
+# cluster least like production. Whether a confounded cluster should be able to
+# veto a change is a judgement call that has NOT been made. Until it is, check
+# the correlation between per-point delta and min_train before reading any
+# cluster table (round 12's standing instruction).
+MIN_CLUSTER_EFFECT = 0.10  # PROVISIONAL -- see point 1 above; not validated
+MIN_CLUSTERS = 3           # the standard grid: NOW / -6M / -12M
+
+
+def _cluster_means(cluster_deltas: dict) -> dict:
+    """
+    {cluster_name: [per-point deltas]} -> {cluster_name: mean delta}.
+
+    Accepts an already-averaged scalar per cluster too, so callers that have
+    only cluster means can pass those directly.
+    """
+    means = {}
+    for name, vals in cluster_deltas.items():
+        if np.ndim(vals) == 0:
+            means[name] = float(vals)
+            continue
+        arr = np.asarray(vals, dtype=float)
+        if arr.size:
+            means[name] = float(arr.mean())
+    return means
+
+
+def classify_clustered(cluster_deltas: dict, min_effect: float = MIN_CLUSTER_EFFECT,
+                        min_clusters: int = MIN_CLUSTERS) -> str:
+    """
+    Cluster-level verdict for an ADDITION. Same vocabulary as classify(), so the
+    action mapping is unchanged (adopt on REAL, nothing else).
+
+    Args:
+        cluster_deltas: {cluster_name: [candidate - baseline, per point]}.
+                        Negative = candidate better.
+        min_effect:     magnitude floor on the mean of the cluster means.
+                        See MIN_CLUSTER_EFFECT -- provisional, unvalidated.
+        min_clusters:   evaluation periods required before concluding anything.
+
+    Returns:
+        NO_CHANGE    - every delta exactly zero.
+        INSUFFICIENT - fewer than min_clusters periods measured.
+        NOISE        - the cluster means disagree in sign (no replication).
+        REAL         - one sign in every period AND |effect| >= min_effect.
+        BORDERLINE   - one sign in every period but below min_effect. This is
+                       where a genuine-but-small effect lands; it is NOT a
+                       rejection so much as "the grid cannot resolve this".
+    """
+    means = _cluster_means(cluster_deltas)
+    if len(means) < min_clusters:
+        return "INSUFFICIENT"
+
+    vals = np.array(list(means.values()), dtype=float)
+    if np.all(vals == 0):
+        return "NO_CHANGE"
+
+    nonzero = vals[vals != 0]
+    if not np.all(np.sign(nonzero) == np.sign(nonzero[0])):
+        return "NOISE"
+
+    return "REAL" if abs(float(vals.mean())) >= min_effect else "BORDERLINE"
+
+
+def classify_ablation_clustered(cluster_deltas: dict, baseline_mae: float = None,
+                                 min_effect: float = MIN_CLUSTER_EFFECT,
+                                 min_clusters: int = MIN_CLUSTERS,
+                                 dead_threshold: float = None,
+                                 swing_threshold: float = None) -> str:
+    """
+    Cluster-level verdict for a REMOVAL (candidate = feature dropped), so a
+    negative delta means removal LOWERED MAE. Mirrors classify_ablation's
+    vocabulary and its inverted burden of proof: "unproven" must not mean
+    "keep forever", or dead weight can never be retired (see the module comment
+    above classify_ablation).
+
+    WHICH TEST LOOKS AT WHICH DATA -- the subtle part, and one this function got
+    wrong on the first attempt (caught by backtest_verdict_rule.py, which flipped
+    5 round-11 verdicts to REMOVE at min_effect=0.20):
+
+      * The REPLICATION test (sign consistency, and the min_effect floor) runs on
+        CLUSTER MEANS. That is the whole point of this function -- one vote per
+        evaluation period.
+      * The MAGNITUDE tests (regime swing, dead weight) run on the RAW PER-POINT
+        deltas. Two independent reasons. First, DEAD_WEIGHT_FRACTION and
+        SCENARIO_SWING_FRACTION were calibrated against per-point spreads;
+        averaging into cluster means shrinks magnitudes, so reusing those numbers
+        on means silently reclassifies live features as dead weight. Second, the
+        swing test is asking "does this feature ever matter anywhere", which
+        averaging is precisely designed to destroy -- round 11's `price_momentum`
+        on `max` has mean -0.017 but swings to 1.588 at a single point.
+
+    Do NOT "simplify" this by running everything on one or the other.
+
+    Args:
+        cluster_deltas:  {cluster_name: [removed - baseline, per point]}.
+        baseline_mae:    scales the dead-weight and regime-swing thresholds when
+                         they are not given explicitly.
+        min_effect:      magnitude floor for a sign-consistent verdict, applied
+                         to the mean of the cluster means. Provisional -- see
+                         MIN_CLUSTER_EFFECT.
+        min_clusters:    evaluation periods required.
+        dead_threshold:  absolute override for the dead-weight cut-off.
+        swing_threshold: absolute override for the regime-swing cut-off.
+
+    Returns:
+        NOT_APPLICABLE    - every delta exactly zero (feature not in this list).
+        INSUFFICIENT      - fewer than min_clusters periods measured.
+        REMOVE_HARMFUL    - removal helped in every period, by >= min_effect.
+        KEEP_LOAD_BEARING - removal hurt in every period, by >= min_effect.
+        KEEP_SCENARIO     - periods disagree but some POINT swings hard: the
+                            feature genuinely helps somewhere, so keep it.
+        REMOVE_DEADWEIGHT - periods disagree and no point reaches
+                            dead_threshold: no measurable value anywhere.
+        INCONCLUSIVE      - sign-consistent but under min_effect, or a
+                            mid-sized flipping effect. Keep, and say why.
+    """
+    means = _cluster_means(cluster_deltas)
+    if len(means) < min_clusters:
+        return "INSUFFICIENT"
+
+    # Unlike classify_clustered, this function CANNOT work from cluster means
+    # alone -- the swing and dead-weight tests need the raw per-point spread,
+    # and means are systematically smaller than the points they average. Being
+    # permissive here produced a silent wrong answer once already (the first
+    # backtest run passed means and reclassified five live round-11 features as
+    # REMOVE_DEADWEIGHT), so refuse scalars rather than quietly degrade.
+    scalar_clusters = [k for k, v in cluster_deltas.items() if np.ndim(v) == 0]
+    if scalar_clusters:
+        raise ValueError(
+            "classify_ablation_clustered needs the per-point deltas for each "
+            f"cluster, but {scalar_clusters} were given as single numbers. The "
+            "swing/dead-weight tests are calibrated on per-point spread and are "
+            "meaningless on cluster means -- pass {cluster: [delta, ...]}."
+        )
+
+    per_point = np.array(
+        [d for vals_in in cluster_deltas.values()
+         for d in np.asarray(vals_in, dtype=float).ravel().tolist()],
+        dtype=float,
+    )
+
+    if per_point.size and np.all(per_point == 0):
+        return "NOT_APPLICABLE"
+
+    if dead_threshold is None or swing_threshold is None:
+        if baseline_mae is None:
+            raise ValueError(
+                "classify_ablation_clustered needs baseline_mae, or explicit "
+                "dead_threshold/swing_threshold, to scale the magnitude tests."
+            )
+        if dead_threshold is None:
+            dead_threshold = DEAD_WEIGHT_FRACTION * baseline_mae
+        if swing_threshold is None:
+            swing_threshold = SCENARIO_SWING_FRACTION * baseline_mae
+
+    vals = np.array(list(means.values()), dtype=float)
+    nonzero = vals[vals != 0]
+    sign_consistent = len(nonzero) > 0 and np.all(np.sign(nonzero) == np.sign(nonzero[0]))
+    effect = float(vals.mean())
+    max_abs_point = float(np.max(np.abs(per_point))) if per_point.size else 0.0
+
+    if sign_consistent:
+        if abs(effect) < min_effect:
+            return "INCONCLUSIVE"
+        return "REMOVE_HARMFUL" if effect < 0 else "KEEP_LOAD_BEARING"
+
+    if max_abs_point >= swing_threshold:
+        return "KEEP_SCENARIO"
+    if max_abs_point < dead_threshold:
+        return "REMOVE_DEADWEIGHT"
+    return "INCONCLUSIVE"
+
+
 def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES) -> dict:
     """
     Build training data once from a snapshot, then run BASELINE and

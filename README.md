@@ -523,7 +523,11 @@ Follow this whenever testing a feature or model change from the improvement plan
 1. **Get a snapshot.** `python ab_test.py fetch` (needs `ENTSO_E_TOKEN`; runnable
    locally from VS Code). Reuse an existing one with `python ab_test.py list` if a
    recent snapshot is already cached — a snapshot a few days old is fine for
-   iterating.
+   iterating. `--days N` fetches a longer/shorter window than the default ~3
+   years; a longer one auto-routes to `ab_cache/long/` (`--root` to override)
+   so it can't be picked up as "newest" by a routine run against the normal
+   snapshots — see IMPROVEMENT_PLAN.md "Round 15" for why a longer window is
+   sometimes wanted.
 2. **Express the change as `CANDIDATE`** in `ab/variants.py`. This is the only file
    you edit, usually a handful of lines. A `Variant` has:
    - `transform(data) -> data` — adds or modifies **columns** on the merged daily
@@ -587,12 +591,64 @@ CANDIDATE = Variant(name="solar_scaled", transform=_scale_radiation)
 Because it scales an existing feature in place, no `targets` override is needed. Run
 `python ab_test.py run` and read the cheap2h row.
 
+### Measurement grids: tail-truncated vs sliding (read before designing a run)
+
+`ab.harness.apply_shift` truncates the **tail** only, so a shifted point also
+loses training history: on a 3-year snapshot `min_train` falls 721 → 541 → 361
+across the NOW / −6M / −12M clusters. That confounds "different period" with
+"less data", and it is not a theoretical worry — it produced three wrong or
+grumbled readings (round 12's seasonal "gain", round 13.1's r = −0.6, and a
+verdict that nearly removed the cheap2h hurdle; see the rejected table below).
+
+**Prefer a sliding constant-length window when a long snapshot is available.**
+`ab_test.py fetch --days 1825` caches ~5 years under `ab_cache/long/`; a window
+of `rows[n-L-s : n-s]` then holds `min_train = L-364` fixed at every shift, so
+each point is "production as it would actually have run on that date".
+`experiments/run_round15_long_window.py` has the worked implementation
+(`window()`) and a four-cluster grid reaching −21M with zero calendar overlap
+against NOW.
+
+**Especially important for any component that fits something internally** — a
+classifier, cross-validation, an ensemble. Tail truncation starves it: the
+hurdle's negative-price classifier sees ~21% positives, so 361 training rows
+leave ~76 positives across a 5-fold split, and it measured as worthless when it
+is in fact worth +0.250 EUR/MWh.
+
+### Which verdict function to call
+
+| Situation | Function | Notes |
+|---|---|---|
+| Addition, shift grid (`ab_test.py run`) | `classify` | REAL / BORDERLINE / NOISE / NO_CHANGE |
+| Removal, shift grid | `classify_ablation` | needs `baseline_mae`; not wired into `run` |
+| Addition, **period-cluster grid** | `classify_clustered` | one vote per period |
+| Removal, **period-cluster grid** | `classify_ablation_clustered` | needs per-point deltas, refuses cluster means |
+
+`classify`'s magnitude test is `|mean| >= spread`, and spread is a **range**
+statistic — it grows with the number of measurement points while a real
+standard error shrinks, so the rule gets *stricter* the more you measure
+(measured: P(REAL) 96% at 2 points → 0% at 8, at a constant −0.234 effect). On
+a 16-point grid it calls the cheap2h hurdle NOISE. Use the `_clustered`
+variants whenever the grid has period clusters: they judge sign-consistency
+across NOW / −6M / −12M (…) with one unweighted vote each, since the points
+*within* a cluster overlap ~97% and would otherwise win on count alone.
+`MIN_CLUSTER_EFFECT = 0.10` is **provisional** — the historical ledger cannot
+discriminate 0.10 from 0.20; the only hard constraint is that it must stay
+below ~0.29 so the hurdle keeps passing. Self-check: `python ab/check_verdict.py`.
+
+**Always check `corr(delta, min_train)` before reading a cluster table.** A real
+effect should not care about training-set size; if it does, the grid is telling
+you about data volume, not period.
+
 ## Features Tested and Rejected
 
 Keep this list updated — it prevents re-testing things that didn't work.
 
 | Feature | Reason rejected |
 |---------|----------------|
+| Per-target hyperparameters (`max_depth`/`learning_rate`/`min_child_weight`/`colsample_bytree`), min & cheap2h | Round 13.1, 2026-08-05. `min`: no config even directionally consistent on the screen (best −0.031, 5/8). `cheap2h`: `colsample_bytree=0.6` and a `+min_child_weight=5` combo confirmed on 16 points — both NOISE, killed by −12M (combo NOW −0.234 / −6M −0.190 / −12M +0.001). Deltas correlate r=−0.6 with `min_train`, so the far clusters may understate them; recorded, not adopted. |
+| Longer training window (4y / 4.4y / 4.8y vs 3y) | Round 15a/15c/15d, 2026-08-06, on a 5-year snapshot. Longer won 24/24 at the NOW period (cheap2h −0.73, min −0.61, avg −0.61) but NOISE across three periods — the gain tracks how crisis-heavy the added year is (mean TTF 92 → 124 → 129). |
+| Shorter training window (2.0y / 2.5y vs 3y) | Round 15d, 2026-08-06. NOISE on all four period clusters for both priority targets, sign-flipping (cheap2h 2.0y: NOW +0.404 but −12M −0.467). Together with the row above this closes window length in BOTH directions: it is not a lever, and 15c's single-period 24/24 was a period effect. Keep `TRAINING_DAYS = 1095`. |
+| Removing the cheap2h negative-price hurdle | Round 15b, 2026-08-06 — **tested and REJECTED, the hurdle stays.** Removal costs **+0.250 EUR/MWh**, positive in all four period clusters → `KEEP_LOAD_BEARING`. An earlier reading (13.1b/c) called it worthless; that was a `min_train` artefact — the old tail-truncated grid trained the far clusters on 361–541 rows, starving the hurdle's classifier of negative-price days. |
 | `price_se4_min_lag7` | Importance 0.009, added variance to min/avg MAE. With only 3 years training data, insufficient weekly-min samples. |
 | `reservoir_norway_fill_pct` (raw) | Redundant with `reservoir_norway_deviation` which is the more informative signal. Removed to reduce noise. |
 | `reservoir_norway_change` | Low importance (0.009), already captured implicitly by `reservoir_sweden_change`. Removed to reduce noise. |
