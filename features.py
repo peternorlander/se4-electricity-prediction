@@ -751,10 +751,41 @@ def add_ttf_features(df: pd.DataFrame, ttf_daily: pd.DataFrame) -> pd.DataFrame:
     ttf["ttf_rolling_7d"] = ttf["ttf_close"].rolling(7, min_periods=3).mean().shift(1)
 
     df = pd.merge(df, ttf[["date", "ttf_price_lag1", "ttf_rolling_7d"]], on="date", how="left")
-    df["ttf_price_lag1"] = df["ttf_price_lag1"].fillna(0.0)
-    df["ttf_rolling_7d"] = df["ttf_rolling_7d"].fillna(0.0)
+    _warn_uncovered(df, ["ttf_price_lag1", "ttf_rolling_7d"], "TTF gas (Yahoo)")
 
     return df
+
+
+def _warn_uncovered(df: pd.DataFrame, columns: list, source_label: str) -> None:
+    """
+    Print a loud warning for any day a price source does not cover, and leave
+    the gap as NaN.
+
+    WHY NOT fillna(0.0), which is what this replaced (2026-08-06). A price of
+    zero is not a neutral placeholder -- it is a valid-looking number that
+    XGBoost will happily split on, and it is physically wrong (EUA was ~60
+    EUR/t during the window it was being written as 0). NaN is the honest
+    encoding and XGBoost handles it natively, learning a default direction for
+    missing values; at serving time these columns are never missing, so that
+    branch is simply never taken.
+
+    Found via a 5-year fetch (IMPROVEMENT_PLAN.md Round 15): EUA data starts
+    2021-10-18, so a window opening earlier got 65 days of 0.00 EUR/t, silently
+    propagated into gas_marginal_cost -- a TROUGH_FEATURE_COLUMNS member. The
+    normal ~3-year window is unaffected (both sources cover it completely), so
+    this is a no-op for production today; the point is that the NEXT gap
+    announces itself instead of being trained on.
+    """
+    n = len(df)
+    for col in columns:
+        missing = int(df[col].isna().sum())
+        if not missing:
+            continue
+        gap_dates = pd.to_datetime(df.loc[df[col].isna(), "date"])
+        print(f"  WARNING: {source_label} does not cover {missing} of {n} days "
+              f"({gap_dates.min().date()} -> {gap_dates.max().date()}); "
+              f"'{col}' left as NaN. Check the source's history range before "
+              f"training on this window.")
 
 
 def add_co2_features(df: pd.DataFrame, eua_daily: pd.DataFrame) -> pd.DataFrame:
@@ -795,8 +826,7 @@ def add_co2_features(df: pd.DataFrame, eua_daily: pd.DataFrame) -> pd.DataFrame:
     eua["co2_rolling_7d"] = eua["eua_close"].rolling(7, min_periods=3).mean().shift(1)
 
     df = pd.merge(df, eua[["date", "co2_price_lag1", "co2_rolling_7d"]], on="date", how="left")
-    df["co2_price_lag1"] = df["co2_price_lag1"].fillna(0.0)
-    df["co2_rolling_7d"] = df["co2_rolling_7d"].fillna(0.0)
+    _warn_uncovered(df, ["co2_price_lag1", "co2_rolling_7d"], "EU ETS carbon (EUA)")
 
     return df
 
