@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(ls C:source-codese4-electricity-prediction*.py)"
-    ]
-  }
-}
