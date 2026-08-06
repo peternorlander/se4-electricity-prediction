@@ -89,10 +89,14 @@ FEATURE_COLUMNS = [
 # add_se4_price_lags (no model consumes it now, but the A/B reference arm does).
 CHEAP2H_FEATURE_COLUMNS = FEATURE_COLUMNS + ["price_se4_cheap2h_lag1"]
 
-# Pruned feature list shared by the two TROUGH targets — `min` (the day's single
-# cheapest hour) and `cheap2h` (the mean of its two cheapest hours). avg/max keep
-# the full FEATURE_COLUMNS; a feature can be load-bearing for one target and dead
-# weight for another, which is the whole premise of the per-target lists.
+# Pruned feature list for the TROUGH targets — `min` (the day's single cheapest
+# hour) and `cheap2h` (the mean of its two cheapest hours). avg/max keep the full
+# FEATURE_COLUMNS; a feature can be load-bearing for one target and dead weight
+# for another, which is the whole premise of the per-target lists.
+#
+# NOTE (2026-08-06): `min` no longer uses this list directly — it runs
+# MIN_FEATURE_COLUMNS below, which is this list minus `price_se4_max_lag1`. This
+# list is cheap2h's, and the shared base the two are defined from.
 #
 # Evidence (README "Per-Target Feature Sets" has the full trail):
 #   min      adopted 2026-08 — -1.01 EUR/MWh pooled over 14 measurements, four snapshots
@@ -131,6 +135,38 @@ TROUGH_FEATURE_COLUMNS = [
     "is_workday",
     "dow_sin",
 ]
+
+# `min`'s list: TROUGH_FEATURE_COLUMNS minus `price_se4_max_lag1`.
+#
+# WHY min AND cheap2h DIVERGED AGAIN (round 14a/17, 2026-08-06). The two shared
+# one list from 2026-08-05 because cheap2h borrowed min's — convenience, not a
+# principle. Round 14a ran the first feature audit ever done ON min, on round
+# 15b's confound-free sliding grid (16 points, four evaluation periods, constant
+# min_train=731), and dropping `price_se4_max_lag1` came back:
+#
+#   min      -0.552 EUR/MWh, REMOVE_HARMFUL, negative in ALL FOUR period
+#            clusters (-0.365 / -0.390 / -0.917 / -0.538), 14 of 16 points, and
+#            per-window std FELL 1.07 on 15 of 16 — the gain is not bought with
+#            variance. Corroborated on a second data vintage (round 17b, the
+#            four normal caches): -0.241, 7 of 8.
+#   cheap2h  -0.439 pooled and 14 of 16 favourable, but KEEP_SCENARIO: the -6M
+#            cluster came back +0.019 on one genuinely bad point (+0.869, and
+#            not a single-window artefact — three windows at +9.7/+9.7/+5.5).
+#            The column earns its place there in some regimes.
+#
+# Same column, same grid, opposite verdicts — so removing it from the shared
+# constant would have changed cheap2h on evidence that says keep. Hence the
+# split. Do NOT re-merge the two lists without re-measuring both targets.
+#
+# CONSEQUENCE WORTH KNOWING: this leaves `min` with no electricity-price feature
+# at all — it is now purely weather / fuel / hydro / calendar. That is the
+# logical end of a finding this repo has now reproduced three times (a target's
+# own frozen price lag hurts it: price_se4_min_lag1 for min, cheap2h_lag1 for
+# cheap2h, the whole 8-lag price block at +0.74 on min), but it is a strong
+# structural statement. Whether min wants a DIFFERENT, non-stale price signal is
+# an open question with its own designed round — see IMPROVEMENT_PLAN.md
+# "Round 18". Do not answer it by adding a frozen lag back.
+MIN_FEATURE_COLUMNS = [c for c in TROUGH_FEATURE_COLUMNS if c != "price_se4_max_lag1"]
 
 
 # Features that build_forecast_features() holds constant across the entire

@@ -27,7 +27,8 @@ Feature engineering (features.py)
 Model training (model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
     → per-target feature sets: avg/max use all 51, while the two trough targets
-      (min, cheap2h) share a validated 15-feature subset (TROUGH_FEATURE_COLUMNS)
+      (cheap2h, min) run validated pruned subsets of 15 / 14 columns
+      (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
     → Walk-forward validation: 52 windows × 7 days (evaluate.py)
@@ -43,24 +44,35 @@ Evaluation uses **52-window (1-year) walk-forward validation** on 3 years of tra
 The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
 
 Current, measured on the **2026-08-04** data snapshot with the production code as
-it stands (negative-price hurdle on cheap2h, `min` and `cheap2h` both on the
-pruned 15-feature trough list):
+it stands (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
+trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06):
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|
-| min     | 15.70        | ±8.16 |
-| avg     | 19.11        | ±8.73 |
-| max     | 34.39        | ±17.34 |
-| cheap2h | **15.94**    | ±7.98 |
+| min     | 15.52        | ±7.97 |
+| avg     | 19.18        | ±8.36 |
+| max     | 34.01        | ±17.45 |
+| cheap2h | **15.90**    | ±8.01 |
 
-The cheap2h row is the only one that moved when the trough list was adopted
-(2026-08-05): re-measuring the *same snapshot* before and after gives
-**16.85 → 15.94 (−0.91)**, while `min`, `avg` and `max` reproduced their previous
-values to the last digit. That exact reproduction of three untouched targets is
-what makes this particular before/after meaningful — same snapshot, same windows,
-same code path, one thing changed. It is **not** the evidence for the change
-(that is the A/B, −0.86 pooled over 16 measurements); it is a consistency check
-on the wiring.
+Measured with `OMP_NUM_THREADS=4`. **Pin the thread count before comparing this
+table with anything.** XGBoost's floating-point reduction order depends on it, so
+the same unchanged model lands a few hundredths apart at 4 vs 16 threads — which
+is the size of a small real effect.
+
+Each of the last two adoptions was checked the same way: re-measure the *same*
+snapshot before and after, and require the untouched targets to reproduce exactly.
+
+- **`min` dropping `price_se4_max_lag1` (2026-08-06):** min 15.680 → 15.516
+  (−0.165) while `avg`, `max` and `cheap2h` were **bit-identical per window**.
+- **cheap2h adopting the trough list (2026-08-05):** 16.85 → 15.94 (−0.91), the
+  other three unchanged.
+
+That exact reproduction of the untouched targets is what makes such a before/after
+meaningful — same snapshot, same windows, same code path, one thing changed. It is
+**not** the evidence for either change (that is the A/B: −0.55 and −0.86
+respectively); it is a consistency check on the wiring. Note also how much a
+single period understates the A/B: min's −0.165 here against −0.55 pooled over
+four evaluation periods.
 
 **Do not compare this table against an older one to judge a change.** The headline
 number moves with the *evaluation period*, not just with the model. Against the
@@ -88,7 +100,8 @@ slices, one thing varied. Those are the numbers to trust:
 
 | Change | A/B delta | Replication |
 |--------|-----------|-------------|
-| `min` pruned feature list | **−1.01 EUR/MWh** | 14 measurements, 4 snapshots, all negative |
+| `min` pruned feature list | **−0.64 EUR/MWh** | 16 measurements, **4 evaluation periods**, all negative. (The originally recorded −1.01 came from 14 measurements taken partly on the list's own selection windows; this is the confound-free re-measurement.) |
+| `min` drops `price_se4_max_lag1` | **−0.55 EUR/MWh** | 16 measurements, **4 evaluation periods**, all negative; per-window std also −1.07. Corroborated at −0.24 (7 of 8) on a second data vintage |
 | `cheap2h` pruned feature list | **−0.86 EUR/MWh** | 16 measurements, **3 evaluation periods**, all negative (after 17/17 in an earlier round) |
 | Negative-price hurdle (cheap2h) | **−0.44 EUR/MWh** | 6 measurements, 1 snapshot, all negative |
 
@@ -99,7 +112,7 @@ reports it that way.
 
 **Price-lag anchor freshening (2026-07):** the SE4 price lags — the dominant min/cheap2h features — are now frozen at the freshest *known* ENTSO-E price (`se4_prices_daily`), not the training frame's last row. The training frame ends ~`WEATHER_ARCHIVE_LAG_DAYS` behind because it inner-joins prices with the lagging weather archive, so production was previously anchoring the price lags ~5 days stale (the DE/DK2 lags were already fresh — this closes the same gap for SE4's own lags). The walk-forward reports an **anchor-staleness sensitivity** (fresh d0 vs stale d5 ≈ old pipeline). Measured saving from freshening: **~1.1 EUR/MWh (min/cheap2h), ~2.3 (avg)** — real and free, but modest, because yesterday's min and six-days-ago min are similar.
 
-**Negative-price hurdle (2026-07-24/25, cheap2h only):** an XGBoost classifier predicts P(tomorrow's `price_min` < 0 EUR/MWh) — a distinct physical regime (renewable oversupply + low/weekend demand) a plain regressor otherwise has to infer implicitly from the same weather/calendar features. Its out-of-fold probability feeds into the `cheap2h` regressor as an extra feature (`neg_price_proba`, now the #1 feature for cheap2h at ~0.25 importance). Validated via `ab_test.py` on a real cached snapshot, shifts 0–5: **REAL, all 6 shifts improved, mean −0.44 EUR/MWh** — the largest, cleanest single-run win recorded for the top-priority target; local reproduction via `evaluate.walk_forward_validate` matched the A/B exactly (14.74 vs the same run's min/avg/max, which were unaffected). **Confirmed on a real Actions run and committed 2026-07-25**; the table above now includes it. `min` showed the same direction on 5 of 6 shifts but didn't clear the strict sign-consistency bar (one near-zero flip) — **not productionized for `min`**, see [MIN_HURDLE_FOLLOWUP.md](MIN_HURDLE_FOLLOWUP.md) for the re-test plan once more training data accumulates.
+**Negative-price hurdle (2026-07-24/25, cheap2h only):** an XGBoost classifier predicts P(tomorrow's `price_min` < 0 EUR/MWh) — a distinct physical regime (renewable oversupply + low/weekend demand) a plain regressor otherwise has to infer implicitly from the same weather/calendar features. Its out-of-fold probability feeds into the `cheap2h` regressor as an extra feature (`neg_price_proba`, now the #1 feature for cheap2h at ~0.25 importance). Validated via `ab_test.py` on a real cached snapshot, shifts 0–5: **REAL, all 6 shifts improved, mean −0.44 EUR/MWh** — the largest, cleanest single-run win recorded for the top-priority target; local reproduction via `evaluate.walk_forward_validate` matched the A/B exactly (14.74 vs the same run's min/avg/max, which were unaffected). **Confirmed on a real Actions run and committed 2026-07-25**; the table above now includes it. `min` showed the same direction on 5 of 6 shifts but didn't clear the strict sign-consistency bar (one near-zero flip) — **not productionized for `min`** — re-tested on the confound-free four-period grid in 2026-08 and rejected again (NOISE: −0.10 on average but *worse* in the period closest to production, and min's own data refutes the obvious explanation — that period has the most negative-price days to learn from, not the fewest).
 
 **Per-horizon MAE (`mae_by_horizon`) is weekday-confounded — do not read it as pure horizon decay.** The walk-forward steps by 7 days with 7-day windows, so horizon ≡ weekday (d+1 is always the same weekday as the window start). The curve mixes horizon and day-of-week and is non-monotonic. The clean measure of horizon/lag-staleness cost is the anchor-staleness sensitivity above (~1 EUR), **not** the per-horizon spread. This is why horizon-aware modeling (a `forecast_horizon` feature / per-horizon models) was evaluated and **shelved**: the true stale-lag headroom is ~1 EUR, and the bulk of the ~17 EUR error is regime-driven (winter cold-snap volatility, spring solar/negative-price ramp), not horizon-driven.
 
@@ -144,17 +157,18 @@ feature** — see [Per-Target Feature Sets](#per-target-feature-sets):
 | Model | Features used |
 |-------|---------------|
 | avg, max | all 51 |
-| **min, cheap2h** | **a validated 15-feature subset** (`TROUGH_FEATURE_COLUMNS`) — cheap2h additionally gets `neg_price_proba` at fit/serve |
+| **cheap2h** | **a validated 15-feature subset** (`TROUGH_FEATURE_COLUMNS`), plus `neg_price_proba` at fit/serve |
+| **min** | **the same list minus `price_se4_max_lag1`** (`MIN_FEATURE_COLUMNS`, 14) |
 
 (cheap2h's model also gets a `neg_price_proba` input computed at fit/serve time by
 the negative-price hurdle classifier — see [Negative-Price Hurdle](#negative-price-hurdle-cheap2h-only).
 It's not a column in `FEATURE_COLUMNS` below, since it's model-internal rather
 than fetched/engineered by `features.py`.)
 
-Note that **36 of the 51 columns below are not used by the two priority targets**.
-They are not dead code — avg and max use all of them — but if you are reading this
-to understand what drives the cheap-price forecast, the 15 in
-[Per-Target Feature Sets](#per-target-feature-sets) are the list that matters.
+Note that **36 of the 51 columns below are not used by the two priority targets**
+(37 for `min`). They are not dead code — avg and max use all of them — but if you
+are reading this to understand what drives the cheap-price forecast, the lists in
+[Per-Target Feature Sets](#per-target-feature-sets) are what matters.
 
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
@@ -177,7 +191,7 @@ Captures wind and solar generation in coupled markets that flow into SE4.
 - `price_se4_avg_lag1` — strongest feature for the **avg** model (~0.24 importance)
 - `price_se4_avg_lag2`, `price_se4_avg_lag7` — momentum and weekly seasonality
 - `price_se4_min_lag1` — yesterday's min; historically the highest-importance feature for both min and cheap2h (~0.23–0.25). **No longer used by either trough model** — ablation testing showed removing it (with the rest of the prune) *improves* both, since importance reflects in-sample usage rather than marginal value, and the lag is frozen stale across each forecast window anyway. Still used by avg/max. See [Per-Target Feature Sets](#per-target-feature-sets).
-- `price_se4_max_lag1` — yesterday's max; the **only** SE4 price lag the pruned trough list retains
+- `price_se4_max_lag1` — yesterday's max. **Used by `cheap2h` (and avg/max), not by `min`** (2026-08-06): on one 16-point / four-period grid, removing it is `REMOVE_HARMFUL` for min (−0.552, favourable in every period, per-window std also −1.07) but `KEEP_SCENARIO` for cheap2h (−0.439 on average, yet one period genuinely positive). Same column, same grid, opposite answers — which is why the two trough lists are no longer identical. It is the last SE4 price lag either trough model carries, so **`min` now has no electricity-price feature at all**.
 - `price_se4_cheap2h_lag1` — yesterday's cheap2h. **No longer used by any model** (2026-08-05). It was built for the cheap2h model and was that model's highest-importance feature, but a direct A/B found it *actively harmful* once the rest of the list was pruned — worse on 13 of 13 directly-comparable measurements. The same lesson as `price_se4_min_lag1`: a target's own lag looks essential by importance and is frozen stale across the forecast window in practice. Still computed by `add_se4_price_lags` because the A/B experiment scripts use it as their reference arm.
 - `price_momentum` — lag1 minus lag2 (rising vs falling trend)
 - `price_volatility_7d` — rolling 7-day std (market regime stability)
@@ -254,20 +268,59 @@ is therefore deliberately heterogeneous.
 | Model | Feature list | Count |
 |-------|--------------|-------|
 | `avg`, `max` | `FEATURE_COLUMNS` | 51 |
-| `min`, `cheap2h` | `TROUGH_FEATURE_COLUMNS` — cheap2h also gets `neg_price_proba` appended by the hurdle at fit/serve time | **15** (+1 for cheap2h) |
+| `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `neg_price_proba`, appended by the hurdle at fit/serve time | **15** (+1) |
+| `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1` | **14** |
 
-The 15 kept features:
+The 15 kept features (cheap2h's list):
 
 `max_wind`, `mean_wind_de_north`, `mean_wind_stockholm`, `price_se4_max_lag1`,
 `residual_load`, `residual_load_min`, `temp_gradient_se3_se4`, `radiation_variability`,
 `ttf_price_lag1`, `gas_marginal_cost`, `reservoir_norway_deviation`,
 `reservoir_sweden_gwh`, `reservoir_sweden_change`, `is_workday`, `dow_sin`
 
+**`min` runs 14 of those — everything except `price_se4_max_lag1` (2026-08-06).**
+The two targets shared one list for a single day, because cheap2h had borrowed
+min's; the first feature audit ever run *on min* then measured that column and got
+the opposite answer for each target on the same grid: **REMOVE_HARMFUL for min**
+(−0.552 EUR/MWh, favourable in all four evaluation periods, 14 of 16 measurements,
+and per-window std *falling* 1.07 on 15 of 16) versus **KEEP_SCENARIO for cheap2h**
+(−0.439 on average, but one period genuinely positive, and not from a single freak
+window). Corroborated on a second data vintage: −0.241 (7 of 8) for min, −0.319
+(7 of 8) for cheap2h, on the four independently fetched caches.
+
+Note what this leaves: **`min` now has no electricity-price feature at all** — it
+is purely weather / fuel / hydro / calendar. That is the logical end of a result
+this repo has reproduced three times (a target's own frozen price lag hurts it),
+and it is a fair thing to be uneasy about — the model has no idea what power
+currently costs.
+
+The open question, and the one distinction that matters if you pick it up: every
+price feature rejected for these targets is in `FORECAST_FROZEN_FEATURES`, so
+`apply_forecast_freeze` pins it at its last known value for the whole 7-day
+window. What is demonstrated harmful is therefore **a stale scalar the model
+treats as current**, not price information as such — and note that min still
+keeps `ttf_price_lag1` and `gas_marginal_cost`, which are also lagged prices, and
+leave-one-out says keep both. So a signal that is either genuinely fresh at every
+forecast day, or explicitly encoded as *anchor plus its age*, has never been
+tried; candidates are `price_vs_30d` (a stationary ratio rather than a level),
+`days_since_price_anchor` alongside the anchor, and the neighbouring-zone lags
+`price_de_lag1` / `price_dk2_lag1` on their own. **Do not answer this by adding a
+frozen own-price lag back** — that exact thing has been measured as harmful three
+times.
+
 **How this list was arrived at (2026-07 → 2026-08).** A systematic per-target
 ablation program tested every one of the 51 columns against all four targets, then
 tested combined drop sets per target. `min` adopted the result first: **−1.01
 EUR/MWh pooled across 14 measurements spanning four independently-fetched
 snapshots**, every measurement negative, per-window std *decreasing* (−0.19).
+
+*Correction to that number (2026-08-06).* Those 14 measurements were taken partly
+on the same windows the list was selected from, so −1.01 is optimistic. Re-measured
+on a confound-free grid spanning four evaluation periods — including one with zero
+calendar overlap with the selection data — the prune is worth **+0.635 EUR/MWh**
+(i.e. the 51-column list is that much worse), positive in every period but smallest
+in the zero-overlap one (+0.345). The prune is confirmed; the magnitude was
+inflated by selection, as the provenance predicted.
 
 `cheap2h` came to the same list by a different route. Its own per-feature evidence
 was unusable — re-running identical windows on an independently fetched snapshot
@@ -319,7 +372,8 @@ after the change, versus 29 of 60 before, though the worst violation shrank from
 +27.9 to +8.9 EUR/MWh. The coherence clamp that would enforce it was tested and
 made cheap2h *worse* (see [Features Tested and Rejected](#features-tested-and-rejected)).
 
-Full evidence trail: [FEATURE_REVALIDATION_PLAN.md](FEATURE_REVALIDATION_PLAN.md)
+Full evidence trail: the run scripts and raw per-window results under
+[experiments/](experiments/), and IMPROVEMENT_PLAN.md (rounds 10–17)
 and [experiments/](experiments/).
 
 ### Negative-Price Hurdle (cheap2h only)
@@ -347,8 +401,8 @@ inference already rely on for every other feature.
 
 Validated 2026-07-24 via `ab_test.py` — cheap2h REAL (mean −0.44 EUR/MWh across 6
 simulated shifts, see "Current MAE Baseline"). `min` showed the same direction but
-didn't clear the strict A/B bar, so it stays on a plain regressor for now — see
-[MIN_HURDLE_FOLLOWUP.md](MIN_HURDLE_FOLLOWUP.md).
+didn't clear the strict A/B bar, and a 2026-08 re-test on the confound-free
+four-period grid came back NOISE again, so it stays on a plain regressor.
 
 ## A/B Backtest Flow
 
@@ -456,8 +510,8 @@ others**, and fix the confirmation bar before looking at the screen results.
 
 When updating the MAE table above, quote the run it came from and the snapshot it
 was measured on, and record adopted changes as their **A/B deltas** in the table
-beside it. Full worked example of the practice: the feature re-validation program in
-[FEATURE_REVALIDATION_PLAN.md](FEATURE_REVALIDATION_PLAN.md) and
+beside it. Full worked example of the practice: the per-target feature re-validation
+program, whose scripts and raw per-window results are under
 [experiments/](experiments/).
 
 ### How it works
@@ -500,6 +554,12 @@ instead of comparing across shifts.
 - `ab/variants.py` — a `Variant` dataclass and the two instances the harness runs:
   `BASELINE` (mirrors production) and `CANDIDATE` (the only thing you edit per
   experiment).
+  **`BASELINE` reads `model.TARGETS` directly**, so never wire a validated change
+  into production while further A/B confirmations on that target are still
+  pending — doing so silently collapses `BASELINE == CANDIDATE` and the next run
+  measures nothing. Finish the measurements, then ship. (Corollary: after
+  shipping, comparing against the *old* configuration needs an explicit `targets`
+  override, not `BASELINE`.)
 - `ab/verdict.py` — runs both variants across the shifts and classifies each target.
 
 **The verdict rule** (`ab/verdict.py::classify`), applied per target on the list of
@@ -667,7 +727,10 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | Feature-set prune for `max` (drop 19, then a fuel-excluded 15-feature refinement) | Same program as `avg`, same fuel-price mechanism: the 19-feature drop was net-harmful (all-shifts-positive on 2 of 3 snapshots, up to +1.07). The fuel-excluded 15-feature refinement reduced but did not eliminate the harm (7 of 11 pooled measurements still positive). `max` is not a priority target; not pruned (2026-08). |
 | `price_se4_cheap2h_lag1` on the pruned `cheap2h` model | The lag that originally justified giving cheap2h its own column list at all, and cheap2h's highest-importance feature — but **actively harmful** once the rest of the list is pruned: worse on **13 of 13** directly-comparable measurements. Same mechanism as `price_se4_min_lag1` on min: a target's own lag looks essential by in-sample importance while being frozen stale across the forecast window, crowding out per-day-forecastable signal (2026-08). |
 | Adding back any of the 36 columns excluded from `TROUGH_FEATURE_COLUMNS`, for `cheap2h` | Tested as 7 physically coherent blocks + 8 singles over 16 measurements spanning three evaluation periods (2026-08-05). **Nothing replicated** — the best candidate was −0.07 with sign flips between period clusters. The 8 price/market lags (`price_de_lag1`, `price_dk2_lag1`, `price_se4_avg_lag1/2/7`, `price_se4_min_lag1`, `price_momentum`, `price_volatility_7d`) were the only sign-consistent block and were **harmful: +1.00, 0 of 16 favourable**. Do not re-add these individually hoping for a different answer; the block test is more sensitive than a single-column test, not less. |
-| Removing any of the 15 `TROUGH_FEATURE_COLUMNS` from `cheap2h` | Leave-one-out over the same 16 measurements: every column classified KEEP or INCONCLUSIVE under `classify_ablation` (2026-08-05). Most load-bearing: `mean_wind_stockholm` (+1.36 if dropped) and `max_wind` (+0.51), both harmful to remove at all 16 measurements. One column leaned droppable but did not clear the bar — `price_se4_max_lag1` (−0.20, 12 of 16 favourable, negative in 2 of 3 period clusters) — **closed in round 12 (2026-08-05) reusing this same measurement: verdict `KEEP_SCENARIO`** (sign flips but the effect is large enough somewhere to be regime-dependent rather than dead weight). Kept, not removed. |
+| Removing any of the 15 `TROUGH_FEATURE_COLUMNS` from `cheap2h` | Leave-one-out over the same 16 measurements: every column classified KEEP or INCONCLUSIVE under `classify_ablation` (2026-08-05). Most load-bearing: `mean_wind_stockholm` (+1.36 if dropped) and `max_wind` (+0.51), both harmful to remove at all 16 measurements. One column leaned droppable but did not clear the bar — `price_se4_max_lag1` (−0.20, 12 of 16 favourable, negative in 2 of 3 period clusters) — closed in round 12 (2026-08-05) as `KEEP_SCENARIO`. **Re-measured for cheap2h on the confound-free sliding grid in round 17 (2026-08-06): still `KEEP_SCENARIO`** (−0.439 and 14 of 16 favourable, but the −6M period comes back +0.019 on one genuinely bad point — three of its windows at +9.7/+9.7/+5.5, so not a single-window artefact). Kept for cheap2h. **Removed for `min`**, where the same measurement on the same grid gives −0.552 and is favourable in all four periods — see [Per-Target Feature Sets](#per-target-feature-sets). |
+| Adding back any of the 36 columns excluded from the trough list, for `min` | Round 14a, 2026-08-06 — the same 7 blocks + 8 singles, on the confound-free sliding grid (16 points, four evaluation periods, constant `min_train`). **Nothing adopted.** Only `B6_fuel_co2` (`ttf_rolling_7d`, `co2_price_lag1`, `co2_rolling_7d`) was sign-consistent at −0.187, and its gain tracks how much fuel-price turbulence the *training window* holds: NOW −0.058 (window TTF std 8) → −12M −0.307 (std 48). Production runs the NOW condition. Held pending a re-read once the far periods train on post-crisis windows (~2026-10), not adopted. Confirmations of harm: min's own frozen lag `price_se4_min_lag1` **+0.435** (1 of 16 favourable) and the whole 8-column price/market block **+0.738** (2 of 16), both harmful in all four periods. |
+| Removing any of the remaining 14 `MIN_FEATURE_COLUMNS` from `min` | Round 14a leave-one-out on the same grid: every other column KEEP or INCONCLUSIVE (both mean keep — the burden of proof is on removal). Most load-bearing: `mean_wind_stockholm` **+1.015** (0 of 16 favourable) and `reservoir_norway_deviation` **+0.297**. Only `price_se4_max_lag1` cleared the bar and it has been removed (see [Per-Target Feature Sets](#per-target-feature-sets)); the list is otherwise a local optimum in both directions. |
+| Negative-price hurdle on `min` | Rejected twice. 2026-07-24 on a 6-shift grid (5 of 6 favourable, one near-zero flip → NOISE), then re-opened with a stated mechanism and re-tested in round 16, 2026-08-06, on the confound-free four-period grid: **NOISE again**, clmean −0.104 with the period closest to production at **+0.079**. The obvious explanation — too few negative-price days to fit the classifier, which is what had distorted the *cheap2h* reading — is refuted here by min's own data: that period has the **most** negative-price days (198 of 731 training rows, 27%) and is exactly where the hurdle performs worst. `HURDLE_TARGETS` stays `{"cheap2h"}`; treat this as closed, not parked. |
 | Solar/intraday-trough features on `cheap2h` **as a year-round addition** | `radiation_midday`, `residual_load_range` and the 5-column solar block each help in the light half of the year and hurt in the dark half by about as much, so pooled over a year they cancel to ~0 and read as noise (2026-08-05). Measured LIGHT−DARK contrast: `radiation_midday` **−0.48**, replicated in all three period clusters and 14 of 16 measurements. The open hypothesis — that they need an annual-cycle feature alongside them so the model can condition on season — was tested in round 12 and also rejected; see the next row. |
 | Seasonal interaction (`radiation_midday`/`B3_solar`/`B4_intraday` + `day_of_year_sin/cos`) for `cheap2h`, round 12 (2026-08-05) | Same 16-point grid as the two rows above. All three configs `NOISE` — sign flips between period clusters even though the LIGHT/DARK contrast still points the same direction as the plain-addition test above. A post-hoc **oracle-ceiling check** (candidate's per-window MAE in LIGHT windows, base15's in DARK — an upper bound no real gate can beat, since a real gate can't pick per window) landed at only −0.06 to −0.16 EUR/MWh, below this grid's resolution floor (`LOO_price_se4_max_lag1` above needed −0.20 to only reach 12/16). Worse: the apparent LIGHT gain correlates with `min_train` (r = +0.45 to +0.67 across the three configs) — it's a **data-starvation artefact**, not a seasonal effect. The −6M/−12M clusters (541/361 training rows) show the gain; the NOW cluster (721 rows, closest to production's ~1085) shows a loss or flat. Extrapolated to production's training size all three configs are net harmful (+0.4 to +0.7). Closed; do not re-test the day_of_year combination or the plain addition again on `cheap2h`. |
 | Splitting the negative-price hurdle's classifier/regressor feature lists for `cheap2h` (`_fit_hurdle_model` currently uses ONE list for both), round 12 (2026-08-05) | Classifier-on-51-cols/regressor-on-15-cols (the live question, motivated by "will it go negative" being a coarser question than "how low"): `NOISE`, mean +0.12, no clear gain. Classifier-on-15/regressor-on-51 (reverse-split control): consistently worse, all 16 measurements positive (mean +0.94) — confirms the test harness (the control behaves as expected) but doesn't make the case for the primary split either. Closed; the single unified 15-column list (production, unchanged) stays for both halves of the hurdle. |

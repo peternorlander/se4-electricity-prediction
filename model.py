@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, cross_val_predict
 from xgboost import XGBClassifier, XGBRegressor
-from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS
+from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS
 
 
 # Time-decay sample weighting (step 5 — regime handling). Per target: each
@@ -26,20 +26,23 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 #
 # Deliberately heterogeneous: each target uses the feature set its own ablation
 # testing validated, since a feature can be load-bearing for one target and dead
-# weight for another. The two trough targets (`min`, `cheap2h`) share the pruned
-# 15-column list; avg/max keep all 51. cheap2h additionally gets neg_price_proba,
-# appended at fit/serve time by the hurdle — see HURDLE_TARGETS. README
-# "Per-Target Feature Sets" has the evidence.
+# weight for another. avg/max keep all 51; the two trough targets run pruned
+# lists that differ by exactly one column. cheap2h additionally gets
+# neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS.
+# README "Per-Target Feature Sets" has the evidence.
 #
-# min and cheap2h landing on the SAME list is a measured result, not an
-# assumption: the list was selected on min's data and then tested on cheap2h,
-# which makes it a genuinely out-of-sample result for that target.
+# min (14) and cheap2h (15) differ by `price_se4_max_lag1`, and that difference
+# is measured, not stylistic: on one 16-point / four-period grid the same
+# removal is REMOVE_HARMFUL for min (-0.552, all four clusters) and
+# KEEP_SCENARIO for cheap2h (-0.439 but one cluster genuinely positive). See
+# features.MIN_FEATURE_COLUMNS for the numbers. They shared a list from
+# 2026-08-05 to 2026-08-06 only because cheap2h had borrowed min's.
 #
 # Note for A/B work: ab/variants.py's BASELINE mirrors this dict, so it reflects
 # the PRUNED lists. Comparing against the old 51/52-column variants needs an
 # explicit `targets` override rather than BASELINE.
 TARGETS = {
-    "min":     ("price_min",     TROUGH_FEATURE_COLUMNS),
+    "min":     ("price_min",     MIN_FEATURE_COLUMNS),
     "avg":     ("price_avg",     FEATURE_COLUMNS),
     "max":     ("price_max",     FEATURE_COLUMNS),
     "cheap2h": ("price_cheap2h", TROUGH_FEATURE_COLUMNS),
@@ -71,9 +74,10 @@ def _make_regressor() -> XGBRegressor:
 # cheap2h REAL (mean -0.44 EUR/MWh, all 6 shifts improved) -- the largest,
 # cleanest single-run win recorded for the top-priority target. min was
 # NOISE by the strict sign-consistency rule (5/6 shifts improved, one
-# near-zero flip) -- promising but not confirmed, so HURDLE_TARGETS is
-# deliberately cheap2h-only for now. See IMPROVEMENT_PLAN.md step 5 and
-# MIN_HURDLE_FOLLOWUP.md (re-test min once more training data accumulates).
+# near-zero flip). Re-tested 2026-08-06 on the confound-free four-period
+# grid (IMPROVEMENT_PLAN.md "Round 16") and NOISE again -- clmean -0.104,
+# but +0.079 in the period closest to production. HURDLE_TARGETS is
+# cheap2h-only, and that is now a closed question, not a pending one.
 NEG_PRICE_THRESHOLD = 0.0  # EUR/MWh
 HURDLE_PROBA_FEATURE_NAME = "neg_price_proba"
 HURDLE_TARGETS = {"cheap2h"}
