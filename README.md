@@ -26,7 +26,8 @@ Feature engineering (features.py)
          ▼
 Model training (model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
-    → per-target feature sets: avg/max use all 51, while the two trough targets
+    → per-target feature sets: `max` uses all 51, `avg` runs a validated
+      42-column subset (AVG_FEATURE_COLUMNS), and the two trough targets
       (cheap2h, min) run validated pruned subsets of 15 / 14 columns
       (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
@@ -43,36 +44,46 @@ Evaluation uses **52-window (1-year) walk-forward validation** on 3 years of tra
 
 The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
 
-Current, measured on the **2026-08-04** data snapshot with the production code as
+Current, measured on the **2026-08-21** data snapshot with the production code as
 it stands (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
-trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06):
+trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06; `avg`
+on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21):
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|
-| min     | 15.52        | ±7.97 |
-| avg     | 19.18        | ±8.36 |
-| max     | 34.01        | ±17.45 |
-| cheap2h | **15.90**    | ±8.01 |
+| min     | 14.59        | ±6.77 |
+| avg     | 18.88        | ±7.94 |
+| max     | 37.40        | ±19.94 |
+| cheap2h | **15.04**    | ±6.17 |
 
 Measured with `OMP_NUM_THREADS=4`. **Pin the thread count before comparing this
 table with anything.** XGBoost's floating-point reduction order depends on it, so
 the same unchanged model lands a few hundredths apart at 4 vs 16 threads — which
 is the size of a small real effect.
 
-Each of the last two adoptions was checked the same way: re-measure the *same*
+Each of the last three adoptions was checked the same way: re-measure the *same*
 snapshot before and after, and require the untouched targets to reproduce exactly.
 
 - **`min` dropping `price_se4_max_lag1` (2026-08-06):** min 15.680 → 15.516
   (−0.165) while `avg`, `max` and `cheap2h` were **bit-identical per window**.
 - **cheap2h adopting the trough list (2026-08-05):** 16.85 → 15.94 (−0.91), the
   other three unchanged.
+- **avg dropping the 9-column price/market family (2026-08-21):** 18.81 → 18.88
+  (**+0.07**, essentially flat) while `min`, `max` and `cheap2h` were
+  **bit-identical**. Unlike the two rows above, this single snapshot happened to
+  land on a *calm* evaluation period for the mechanism this change targets (see
+  [Per-Target Feature Sets](#per-target-feature-sets)) — a reminder that a
+  same-snapshot before/after only checks the wiring, never the evidence.
 
 That exact reproduction of the untouched targets is what makes such a before/after
 meaningful — same snapshot, same windows, same code path, one thing changed. It is
-**not** the evidence for either change (that is the A/B: −0.55 and −0.86
-respectively); it is a consistency check on the wiring. Note also how much a
-single period understates the A/B: min's −0.165 here against −0.55 pooled over
-four evaluation periods.
+**not** the evidence for any of these changes (that is the A/B: −0.55, −0.86 and
+−1.2 to −2.0 respectively); it is a consistency check on the wiring. Note also how
+much a single period can misstate the A/B in *either* direction: min's −0.165 here
+against −0.55 pooled over four evaluation periods (understated), and avg's +0.07
+here against a clmean of −1.22 to −1.97 on the two independent 5-year fetches
+(reversed in sign) — the avg case is the sharper warning, since a single-snapshot
+reading would have looked like a regression.
 
 **Do not compare this table against an older one to judge a change.** The headline
 number moves with the *evaluation period*, not just with the model. Against the
@@ -104,6 +115,7 @@ slices, one thing varied. Those are the numbers to trust:
 | `min` drops `price_se4_max_lag1` | **−0.55 EUR/MWh** | 16 measurements, **4 evaluation periods**, all negative; per-window std also −1.07. Corroborated at −0.24 (7 of 8) on a second data vintage |
 | `cheap2h` pruned feature list | **−0.86 EUR/MWh** | 16 measurements, **3 evaluation periods**, all negative (after 17/17 in an earlier round) |
 | Negative-price hurdle (cheap2h) | **−0.44 EUR/MWh** | 6 measurements, 1 snapshot, all negative |
+| `avg` drops the 9-column price/market family | **−1.2 to −1.97 EUR/MWh** (clmean) | 32 measurements, **4 evaluation periods**, on **two independently-fetched 5-year snapshots** 15 days apart — all 4 clusters negative both times. Magnitude is regime-dependent (see [Per-Target Feature Sets](#per-target-feature-sets)), so read this as a range, not a point estimate |
 
 See [How changes are validated](#how-changes-are-validated) for why this project
 reports it that way.
@@ -151,12 +163,13 @@ Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds
 ## Features (51 engineered + 1 cheap2h-specific)
 
 The catalogue below is the full engineered set (`FEATURE_COLUMNS`), used in its
-entirety by the **avg** and **max** models. **Not every model uses every
+entirety only by the **max** model. **Not every model uses every
 feature** — see [Per-Target Feature Sets](#per-target-feature-sets):
 
 | Model | Features used |
 |-------|---------------|
-| avg, max | all 51 |
+| max | all 51 |
+| **avg** | **a validated 42-feature subset** (`AVG_FEATURE_COLUMNS`) — `FEATURE_COLUMNS` minus the 9-column price/market lag family |
 | **cheap2h** | **a validated 15-feature subset** (`TROUGH_FEATURE_COLUMNS`), plus `neg_price_proba` at fit/serve |
 | **min** | **the same list minus `price_se4_max_lag1`** (`MIN_FEATURE_COLUMNS`, 14) |
 
@@ -166,8 +179,9 @@ It's not a column in `FEATURE_COLUMNS` below, since it's model-internal rather
 than fetched/engineered by `features.py`.)
 
 Note that **36 of the 51 columns below are not used by the two priority targets**
-(37 for `min`). They are not dead code — avg and max use all of them — but if you
-are reading this to understand what drives the cheap-price forecast, the lists in
+(37 for `min`), and 9 of them are also not used by `avg`. They are not dead code —
+`max` uses all of them — but if you are reading this to understand what drives the
+cheap-price or average-price forecast, the lists in
 [Per-Target Feature Sets](#per-target-feature-sets) are what matters.
 
 ### Local Weather (SE4/Malmö)
@@ -184,17 +198,44 @@ Captures wind and solar generation in coupled markets that flow into SE4.
 - **DE North** — northern Germany, Baltic Cable (~600 MW)
 
 ### Market Coupling
-- `price_de_lag1`, `price_dk2_lag1` — previous day's prices in neighbouring zones
+- `price_de_lag1`, `price_dk2_lag1` — previous day's prices in neighbouring zones.
+  **Used only by `max`** — never in the trough lists, and dropped from `avg` in 2026-08-21
+  with the rest of the price/market family (round 18 separately tested them alone for
+  `min`/`cheap2h` and found them harmful there too, see
+  [Features Tested and Rejected](#features-tested-and-rejected))
 - Only lag-1 is valid: day-ahead auction clears all zones simultaneously
 
 ### SE4 Own Price Lags (autoregressive)
-- `price_se4_avg_lag1` — strongest feature for the **avg** model (~0.24 importance)
-- `price_se4_avg_lag2`, `price_se4_avg_lag7` — momentum and weekly seasonality
-- `price_se4_min_lag1` — yesterday's min; historically the highest-importance feature for both min and cheap2h (~0.23–0.25). **No longer used by either trough model** — ablation testing showed removing it (with the rest of the prune) *improves* both, since importance reflects in-sample usage rather than marginal value, and the lag is frozen stale across each forecast window anyway. Still used by avg/max. See [Per-Target Feature Sets](#per-target-feature-sets).
-- `price_se4_max_lag1` — yesterday's max. **Used by `cheap2h` (and avg/max), not by `min`** (2026-08-06): on one 16-point / four-period grid, removing it is `REMOVE_HARMFUL` for min (−0.552, favourable in every period, per-window std also −1.07) but `KEEP_SCENARIO` for cheap2h (−0.439 on average, yet one period genuinely positive). Same column, same grid, opposite answers — which is why the two trough lists are no longer identical. It is the last SE4 price lag either trough model carries, so **`min` now has no electricity-price feature at all**.
-- `price_se4_cheap2h_lag1` — yesterday's cheap2h. **No longer used by any model** (2026-08-05). It was built for the cheap2h model and was that model's highest-importance feature, but a direct A/B found it *actively harmful* once the rest of the list was pruned — worse on 13 of 13 directly-comparable measurements. The same lesson as `price_se4_min_lag1`: a target's own lag looks essential by importance and is frozen stale across the forecast window in practice. Still computed by `add_se4_price_lags` because the A/B experiment scripts use it as their reference arm.
-- `price_momentum` — lag1 minus lag2 (rising vs falling trend)
-- `price_volatility_7d` — rolling 7-day std (market regime stability)
+- `price_se4_avg_lag1` — was avg's strongest feature (~0.24 importance) until 2026-08-21.
+  **No longer used by `avg`** — dropped along with the rest of the price/market family
+  (see [Per-Target Feature Sets](#per-target-feature-sets)). **Used only by `max`** now.
+- `price_se4_avg_lag2`, `price_se4_avg_lag7` — momentum and weekly seasonality. Same
+  status: **used only by `max`** since 2026-08-21.
+- `price_se4_min_lag1` — yesterday's min; historically the highest-importance feature for
+  both min and cheap2h (~0.23–0.25). **No longer used by `min`, `cheap2h` or `avg`** —
+  ablation testing showed removing it improves the trough targets (importance reflects
+  in-sample usage, not marginal value, and the lag is frozen stale across each forecast
+  window anyway), and the same family-level finding closed it out of `avg` too. **Used
+  only by `max`** now. See [Per-Target Feature Sets](#per-target-feature-sets).
+- `price_se4_max_lag1` — yesterday's max. **Used by `cheap2h` and `max`, not by `min` or
+  `avg`** (2026-08-06 / 2026-08-21): on one 16-point / four-period grid, removing it is
+  `REMOVE_HARMFUL` for min (−0.552, favourable in every period, per-window std also
+  −1.07) but `KEEP_SCENARIO` for cheap2h (−0.439 on average, yet one period genuinely
+  positive). Same column, same grid, opposite answers — which is why the two trough
+  lists are no longer identical. It is the last SE4 price lag `min` carries, so **`min`
+  now has no electricity-price feature at all**; `avg` lost it along with the rest of
+  the price/market family.
+- `price_se4_cheap2h_lag1` — yesterday's cheap2h. **No longer used by any model**
+  (2026-08-05). It was built for the cheap2h model and was that model's highest-importance
+  feature, but a direct A/B found it *actively harmful* once the rest of the list was
+  pruned — worse on 13 of 13 directly-comparable measurements. The same lesson as
+  `price_se4_min_lag1`: a target's own lag looks essential by importance and is frozen
+  stale across the forecast window in practice. Still computed by `add_se4_price_lags`
+  because the A/B experiment scripts use it as their reference arm.
+- `price_momentum` — lag1 minus lag2 (rising vs falling trend). **Used only by `max`**
+  since 2026-08-21 (dropped from `avg` with the rest of the price/market family).
+- `price_volatility_7d` — rolling 7-day std (market regime stability). Same status:
+  **used only by `max`** since 2026-08-21.
 
 ### Residual Load
 Engineered composite feature: demand proxy minus weighted wind/solar supply.
@@ -267,7 +308,8 @@ is therefore deliberately heterogeneous.
 
 | Model | Feature list | Count |
 |-------|--------------|-------|
-| `avg`, `max` | `FEATURE_COLUMNS` | 51 |
+| `max` | `FEATURE_COLUMNS` | 51 |
+| `avg` | `AVG_FEATURE_COLUMNS` — `FEATURE_COLUMNS` minus the 9-column price/market lag family | **42** |
 | `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `neg_price_proba`, appended by the hurdle at fit/serve time | **15** (+1) |
 | `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1` | **14** |
 
@@ -294,19 +336,26 @@ this repo has reproduced three times (a target's own frozen price lag hurts it),
 and it is a fair thing to be uneasy about — the model has no idea what power
 currently costs.
 
-The open question, and the one distinction that matters if you pick it up: every
-price feature rejected for these targets is in `FORECAST_FROZEN_FEATURES`, so
+**This was tested and closed 2026-08-21 (round 18).** Every price feature
+rejected for these targets is in `FORECAST_FROZEN_FEATURES`, so
 `apply_forecast_freeze` pins it at its last known value for the whole 7-day
-window. What is demonstrated harmful is therefore **a stale scalar the model
-treats as current**, not price information as such — and note that min still
-keeps `ttf_price_lag1` and `gas_marginal_cost`, which are also lagged prices, and
-leave-one-out says keep both. So a signal that is either genuinely fresh at every
-forecast day, or explicitly encoded as *anchor plus its age*, has never been
-tried; candidates are `price_vs_30d` (a stationary ratio rather than a level),
-`days_since_price_anchor` alongside the anchor, and the neighbouring-zone lags
-`price_de_lag1` / `price_dk2_lag1` on their own. **Do not answer this by adding a
-frozen own-price lag back** — that exact thing has been measured as harmful three
-times.
+window — so the obvious hypothesis was that what's harmful is **a stale scalar
+the model treats as current**, not price information as such (note that min
+still keeps `ttf_price_lag1` and `gas_marginal_cost`, which are also lagged
+prices, and leave-one-out says keep both). Three candidates tested this
+directly: `price_vs_30d` (a stationary ratio rather than a level),
+`days_since_price_anchor` alongside the anchor (explicitly tells the model how
+stale it is), and the neighbouring-zone lags `price_de_lag1` / `price_dk2_lag1`
+alone. **All three were harmful, on both trough targets, in every evaluation
+period, confirmed on three independent measurements** (the confound-free
+sliding grid, a 5-cache vintage ladder, and a fresh 5-year snapshot) — see
+[Features Tested and Rejected](#features-tested-and-rejected). The staleness
+hypothesis is specifically refuted: `days_since_price_anchor`, the arm that
+tells the model exactly how stale the anchor is, was the *worst* of the three
+on `min`. Reading: it is price-*level* information these targets reject, not
+its freshness — they are trough targets driven by weather → residual load, and
+any price level crowds that out, however it's encoded. **Closed — do not
+re-open without a mechanism that is not about staleness.**
 
 **How this list was arrived at (2026-07 → 2026-08).** A systematic per-target
 ablation program tested every one of the 51 columns against all four targets, then
@@ -372,9 +421,35 @@ after the change, versus 29 of 60 before, though the worst violation shrank from
 +27.9 to +8.9 EUR/MWh. The coherence clamp that would enforce it was tested and
 made cheap2h *worse* (see [Features Tested and Rejected](#features-tested-and-rejected)).
 
+**`avg` (2026-08-21): the same family-of-frozen-lags finding, on a fourth
+target.** `avg` was declared closed after the 2026-07/08 program on a
+single-column leave-one-out — dropping `price_se4_avg_lag1` alone is absorbed
+by `price_se4_avg_lag2`/`lag7`/`price_de_lag1`/`price_dk2_lag1`, so a
+single-column test reads near-zero *whether or not the family as a whole is
+load-bearing*. A block-level re-audit (dropping all 9 price/market columns as
+a unit) found it **REMOVE_HARMFUL**, replicated on two independently-fetched
+5-year snapshots 15 days apart: clmean **−1.97** and **−1.22 EUR/MWh**, all
+four evaluation periods negative both times (12 to 16 of 16 measurements
+favourable). Physical control blocks (wind, calendar, fuel/carbon) reproduced
+almost to the decimal across both fetches, which corroborates the harness
+itself and not just this one finding.
+
+The mechanism is quantified, not just directional: across 879 deduplicated
+calendar weeks, **corr(baseline MAE, delta) = −0.72**. The frozen
+`price_se4_avg_lag1` anchor — previously avg's #1 feature at ~0.24 importance
+— is a decent predictor in a stable price regime and catastrophically wrong
+during a regime shift, because `apply_forecast_freeze` pins it at its
+last-known value for the entire 7-day forecast horizon. Weeks where the old
+model's MAE exceeds 40 EUR/MWh (3.6% of weeks) improve by −24.1 EUR/MWh on
+average; calm weeks (96.4%) still improve on median, just by much less
+(−0.76 mean). **This means the realized MAE delta will visibly vary between
+production runs** depending on how many regime-shift weeks the evaluation
+window happens to contain — a single-snapshot before/after landed at +0.07
+(see [Current MAE Baseline](#current-mae-baseline)) purely because that one
+window was calm; that is expected, not a contradiction of the A/B.
+
 Full evidence trail: the run scripts and raw per-window results under
-[experiments/](experiments/), and IMPROVEMENT_PLAN.md (rounds 10–17)
-and [experiments/](experiments/).
+[experiments/](experiments/).
 
 ### Negative-Price Hurdle (cheap2h only)
 
@@ -459,8 +534,9 @@ What that trade gives up, stated plainly so nobody has to rediscover it: the
 Actions run was never a good *accuracy* check, but it was the only end-to-end
 exercise of the parts the A/B harness never touches — the live fetches, the
 EUR→SEK conversion, and the Home Assistant push. A backtest cannot catch a
-NaN exchange rate blanking the payload (which has happened; see the fixed
-currency bug in IMPROVEMENT_PLAN.md). So the requirement is replaced, not dropped:
+NaN exchange rate blanking the payload (which has happened; see
+[Known Limitations](#known-limitations) for the fixed bug). So the requirement
+is replaced, not dropped:
 
 - **Accuracy** → the A/B verdict, before commit.
 - **Integration** → run `train` → `predict` → `get_feature_importance` against a
@@ -499,14 +575,33 @@ down *why the answer would now differ*: what changed in the model, the data or t
 measurement that caused the original rejection. "A lot has changed, maybe it
 behaves differently now" is not a mechanism, and if you cannot state one, that is
 your answer. Worked example: after the 2026-08 prune cut the priority targets from
-51 columns to 15, exactly four rejected items had a mechanism (IMPROVEMENT_PLAN.md
-"Round 13") and five were explicitly declined with reasons.
+51 columns to 15, a full re-audit of every rejected entry found exactly four items
+with a stated mechanism for why the prune could change the answer (per-target
+hyperparameters, solar-capacity scaling, time-decay weights on min/cheap2h, and the
+min≤cheap2h coherence check) and five explicitly declined with reasons.
 
 The same discipline covers any test with many arms — a hyperparameter sweep, a
 per-feature ranking. Picking the best of N on the grid you also validate on is
 selection on noise (this is what made round 2's per-feature ranking unusable, at
 37% sign reproduction). **Screen on one period cluster, confirm the winner on the
 others**, and fix the confirmation bar before looking at the screen results.
+
+**A validated change's verdict is scoped to the model it was measured on —
+re-check *adopted* changes too when a feature list changes materially, not
+just rejected ones.** Found 2026-08-05: the cheap2h negative-price hurdle was
+validated at −0.437 EUR/MWh on the old 52-column feature list; once cheap2h
+moved to the pruned 15-column list, the hurdle's marginal value on *that*
+model had never actually been measured (re-measuring found it had shrunk to
+−0.026, no cluster consistency) — nothing in the process flagged that the
+prune had silently invalidated an earlier verdict about a different
+component. The ledger records verdicts, not the configuration each was
+measured against, so a stale one can sit there looking valid. (This was
+ultimately resolved, not just flagged: a later re-measurement on the
+confound-free sliding grid — see the time-decay/hurdle discussion above —
+found the hurdle **is** load-bearing on the pruned list after all; the
+apparent shrinkage was the old grid starving its classifier of negative-price
+days at the far clusters. The methodological point stands regardless of how
+that particular case resolved.)
 
 When updating the MAE table above, quote the run it came from and the snapshot it
 was measured on, and record adopted changes as their **A/B deltas** in the table
@@ -586,8 +681,10 @@ Follow this whenever testing a feature or model change from the improvement plan
    iterating. `--days N` fetches a longer/shorter window than the default ~3
    years; a longer one auto-routes to `ab_cache/long/` (`--root` to override)
    so it can't be picked up as "newest" by a routine run against the normal
-   snapshots — see IMPROVEMENT_PLAN.md "Round 15" for why a longer window is
-   sometimes wanted.
+   snapshots. A longer window is wanted when a candidate needs the round-15b
+   sliding grid (constant `min_train`, four evaluation periods) rather than
+   the normal tail-truncation shift grid, which confounds period with
+   training-set size at large shifts.
 2. **Express the change as `CANDIDATE`** in `ab/variants.py`. This is the only file
    you edit, usually a handful of lines. A `Variant` has:
    - `transform(data) -> data` — adds or modifies **columns** on the merged daily
@@ -733,6 +830,7 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | Negative-price hurdle on `min` | Rejected twice. 2026-07-24 on a 6-shift grid (5 of 6 favourable, one near-zero flip → NOISE), then re-opened with a stated mechanism and re-tested in round 16, 2026-08-06, on the confound-free four-period grid: **NOISE again**, clmean −0.104 with the period closest to production at **+0.079**. The obvious explanation — too few negative-price days to fit the classifier, which is what had distorted the *cheap2h* reading — is refuted here by min's own data: that period has the **most** negative-price days (198 of 731 training rows, 27%) and is exactly where the hurdle performs worst. `HURDLE_TARGETS` stays `{"cheap2h"}`; treat this as closed, not parked. |
 | Solar/intraday-trough features on `cheap2h` **as a year-round addition** | `radiation_midday`, `residual_load_range` and the 5-column solar block each help in the light half of the year and hurt in the dark half by about as much, so pooled over a year they cancel to ~0 and read as noise (2026-08-05). Measured LIGHT−DARK contrast: `radiation_midday` **−0.48**, replicated in all three period clusters and 14 of 16 measurements. The open hypothesis — that they need an annual-cycle feature alongside them so the model can condition on season — was tested in round 12 and also rejected; see the next row. |
 | Seasonal interaction (`radiation_midday`/`B3_solar`/`B4_intraday` + `day_of_year_sin/cos`) for `cheap2h`, round 12 (2026-08-05) | Same 16-point grid as the two rows above. All three configs `NOISE` — sign flips between period clusters even though the LIGHT/DARK contrast still points the same direction as the plain-addition test above. A post-hoc **oracle-ceiling check** (candidate's per-window MAE in LIGHT windows, base15's in DARK — an upper bound no real gate can beat, since a real gate can't pick per window) landed at only −0.06 to −0.16 EUR/MWh, below this grid's resolution floor (`LOO_price_se4_max_lag1` above needed −0.20 to only reach 12/16). Worse: the apparent LIGHT gain correlates with `min_train` (r = +0.45 to +0.67 across the three configs) — it's a **data-starvation artefact**, not a seasonal effect. The −6M/−12M clusters (541/361 training rows) show the gain; the NOW cluster (721 rows, closest to production's ~1085) shows a loss or flat. Extrapolated to production's training size all three configs are net harmful (+0.4 to +0.7). Closed; do not re-test the day_of_year combination or the plain addition again on `cheap2h`. |
+| Giving `min`/`cheap2h` a non-stale price signal — `price_vs_30d` (ratio to a 30-day rolling mean), `days_since_price_anchor` (anchor age, added alongside `price_se4_avg_lag1`), or `price_de_lag1`/`price_dk2_lag1` alone — round 18 (2026-08-21) | Prompted by the obvious objection to round 14a: after its prune `min` has **no electricity-price feature at all**. The pre-registered mechanism was that what had been shown harmful is not "price information" but *a stale scalar the model treats as current*, so a signal that is either a stationary ratio, or explicitly age-tagged, might survive. **It does not — all three arms are harmful, on both targets, in every period.** Confound-free sliding grid, 16 points / four periods: `min` +0.444 / +0.610 / +0.319, `cheap2h` +0.226 / +0.347 / +0.212 (`classify_clustered` → REAL-and-harmful for 5 of the 6 target×arm cells, NOISE for the sixth). Corroborated on a 10-point vintage ladder across five independently-fetched caches (`min` **0 of 10 favourable on all three arms**) and again on a fresh 5-year snapshot anchored 15 days later (`min` +0.673/+0.535/+0.520). The staleness hypothesis is specifically refuted: `days_since_price_anchor`, the arm that *tells the model how stale the anchor is*, is the **worst** of the three on `min`. Reading: it is price-level information itself these targets reject, not its freshness — they are trough targets driven by weather → residual load, and a price level (however encoded) crowds that out. Closed; do not re-open without a mechanism that is not about staleness. |
 | Splitting the negative-price hurdle's classifier/regressor feature lists for `cheap2h` (`_fit_hurdle_model` currently uses ONE list for both), round 12 (2026-08-05) | Classifier-on-51-cols/regressor-on-15-cols (the live question, motivated by "will it go negative" being a coarser question than "how low"): `NOISE`, mean +0.12, no clear gain. Classifier-on-15/regressor-on-51 (reverse-split control): consistently worse, all 16 measurements positive (mean +0.94) — confirms the test harness (the control behaves as expected) but doesn't make the case for the primary split either. Closed; the single unified 15-column list (production, unchanged) stays for both halves of the hurdle. |
 
 ## Known Limitations
@@ -743,6 +841,25 @@ Keep this list updated — it prevents re-testing things that didn't work.
 - **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis — real day+7 weather forecasts are worse than archive. This optimism grows at far horizons and is not captured by the anchor-staleness or per-horizon metrics.
 - **Max prediction accuracy** (~34 EUR/MWh MAE, the highest of the four targets): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
 - **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale.
+- **FIXED 2026-07-22 — NaN exchange rate had blanked the whole HA payload.**
+  Symptom: every min/avg/max/cheap2h prediction was pushed to Home Assistant as
+  `NaN`. Root cause: `currency.calculate_eur_to_sek_rate` filtered the ENTSO-E
+  frame to `date.today()` and averaged it; when that day had no ENTSO-E rows yet
+  the mean was NaN, so `rate = nordpool_mean_sek / NaN`. Two things made the day
+  empty in practice — a midnight rollover during the run (the function
+  re-derived `date.today()` independently of `predict.main()`'s single `today`,
+  so a run straddling midnight computed the rate for a day not yet fetched), and
+  a structural split where live Nordpool data for today can exist before
+  ENTSO-E's day-ahead prices for the same day are published. **Fix constraint
+  worth remembering if this is ever touched again: do NOT "just use the latest
+  available ENTSO-E day"** — the rate is `SEK_mean / EUR_mean` for the *same
+  delivery day* (Nordpool applies a daily ECB fixing), so pairing Nordpool-today
+  with ENTSO-E-yesterday gives a **wrong** rate, not merely a stale one. The fix
+  takes the single `today` from `predict.main()` and walks back up to
+  `_RATE_LOOKBACK_DAYS` (7) to the most recent delivery day present in **both**
+  the ENTSO-E frame and Nordpool, computing the rate on that shared day; if no
+  common day exists within the window it raises `ValueError` instead of
+  silently returning NaN.
 
 ## Setup
 

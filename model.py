@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, cross_val_predict
 from xgboost import XGBClassifier, XGBRegressor
-from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS
+from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS, AVG_FEATURE_COLUMNS
 
 
 # Time-decay sample weighting (step 5 — regime handling). Per target: each
@@ -17,8 +17,8 @@ from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMN
 # / ~0 across the three runs, i.e. smaller than the between-run variability — so
 # they (and non-priority `max`, also noisy) stay on uniform weights. The `avg`
 # model is independent (own regressor, own fit), so weighting it does not touch the
-# other targets' predictions. Do NOT "tidy" this into a single scalar. See
-# IMPROVEMENT_PLAN.md step 5 and the README rejected table.
+# other targets' predictions. Do NOT "tidy" this into a single scalar. See the
+# README "Features Tested and Rejected" table (time-decay sample weights row).
 HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 
 
@@ -26,8 +26,10 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 #
 # Deliberately heterogeneous: each target uses the feature set its own ablation
 # testing validated, since a feature can be load-bearing for one target and dead
-# weight for another. avg/max keep all 51; the two trough targets run pruned
-# lists that differ by exactly one column. cheap2h additionally gets
+# weight for another. `max` keeps all 51 (not a priority target, never audited).
+# `avg` drops its 9-column price/market family (42 of 51, see
+# features.AVG_FEATURE_COLUMNS). The two trough targets run pruned lists that
+# differ from each other by exactly one column. cheap2h additionally gets
 # neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS.
 # README "Per-Target Feature Sets" has the evidence.
 #
@@ -43,7 +45,7 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 # explicit `targets` override rather than BASELINE.
 TARGETS = {
     "min":     ("price_min",     MIN_FEATURE_COLUMNS),
-    "avg":     ("price_avg",     FEATURE_COLUMNS),
+    "avg":     ("price_avg",     AVG_FEATURE_COLUMNS),
     "max":     ("price_max",     FEATURE_COLUMNS),
     "cheap2h": ("price_cheap2h", TROUGH_FEATURE_COLUMNS),
 }
@@ -75,9 +77,9 @@ def _make_regressor() -> XGBRegressor:
 # cleanest single-run win recorded for the top-priority target. min was
 # NOISE by the strict sign-consistency rule (5/6 shifts improved, one
 # near-zero flip). Re-tested 2026-08-06 on the confound-free four-period
-# grid (IMPROVEMENT_PLAN.md "Round 16") and NOISE again -- clmean -0.104,
-# but +0.079 in the period closest to production. HURDLE_TARGETS is
-# cheap2h-only, and that is now a closed question, not a pending one.
+# grid and NOISE again -- clmean -0.104, but +0.079 in the period closest
+# to production (see README "Features Tested and Rejected"). HURDLE_TARGETS
+# is cheap2h-only, and that is now a closed question, not a pending one.
 NEG_PRICE_THRESHOLD = 0.0  # EUR/MWh
 HURDLE_PROBA_FEATURE_NAME = "neg_price_proba"
 HURDLE_TARGETS = {"cheap2h"}

@@ -41,7 +41,7 @@ def _mean_mae(data: pd.DataFrame, variant, shift: int) -> dict:
 def classify(deltas: list) -> str:
     """
     REAL / NOISE / BORDERLINE / NO_CHANGE per the established replication
-    rule (IMPROVEMENT_PLAN.md finding #4, method lesson under step 5):
+    rule (see README "How changes are validated"):
 
     - NO_CHANGE: every delta is exactly zero (candidate == baseline).
     - NOISE:     the sign of the delta flips across shifts -- smaller than

@@ -163,10 +163,47 @@ TROUGH_FEATURE_COLUMNS = [
 # logical end of a finding this repo has now reproduced three times (a target's
 # own frozen price lag hurts it: price_se4_min_lag1 for min, cheap2h_lag1 for
 # cheap2h, the whole 8-lag price block at +0.74 on min), but it is a strong
-# structural statement. Whether min wants a DIFFERENT, non-stale price signal is
-# an open question with its own designed round — see IMPROVEMENT_PLAN.md
-# "Round 18". Do not answer it by adding a frozen lag back.
+# structural statement. Whether min wants a DIFFERENT, non-stale price signal was
+# tested 2026-08-21: all three candidates (a stationary ratio, an age-tagged
+# anchor, neighbouring-zone lags alone) came back harmful on both trough
+# targets, on three independent measurements. Closed — do not add a price
+# signal back to min/cheap2h without a genuinely new mechanism (the staleness
+# hypothesis specifically has been refuted). See README "Features Tested and
+# Rejected".
 MIN_FEATURE_COLUMNS = [c for c in TROUGH_FEATURE_COLUMNS if c != "price_se4_max_lag1"]
+
+# `avg`'s list: FEATURE_COLUMNS minus the 9-column price/market lag family
+# (own SE4 lags avg_lag1/2/7, min_lag1, max_lag1, momentum, volatility_7d, plus
+# the two neighbouring-zone lags DE/DK2).
+#
+# ADOPTED 2026-08-21. A single-column LOO
+# (round 2, pre-A/B-harness) had found this family replaceable-by-neighbour and
+# closed `avg` as done — but that method is structurally blind to a whole-family
+# effect (dropping price_se4_avg_lag1 alone is absorbed by lag2/lag7/DE/DK2, so
+# the measured marginal effect is near zero whether or not the family as a whole
+# matters). A block-level re-audit (round 14b) found the whole family REMOVE_HARMFUL
+# on `classify_ablation_clustered`, replicated on two independently-fetched 5-year
+# snapshots 15 days apart: clmean −1.97 and −1.22, all 4 period clusters negative
+# both times (12 to 16 of 16 measurements favourable). Physical control blocks
+# (wind, calendar, fuel/carbon) reproduced almost to the decimal across both
+# fetches, corroborating the harness rather than just the finding.
+#
+# MECHANISM (879 deduplicated calendar weeks, pooled across both snapshots):
+# corr(baseline MAE, delta) = −0.72. The frozen avg-price anchor — previously
+# avg's #1 feature at ~0.24 importance — is a good predictor in calm weeks and
+# catastrophically wrong during a price-regime shift, because it is pinned at
+# its last-known value for the entire 7-day forecast horizon
+# (FORECAST_FROZEN_FEATURES). Split by week type: weeks where the untouched
+# model's MAE exceeds 40 EUR/MWh (3.6% of weeks) improve by −24.1 EUR/MWh on
+# average; calm weeks (96.4%) still improve, but only by −0.76. The magnitude is
+# therefore driven by how many regime-shift weeks land in whatever period is
+# measured — real but not uniform, expect it to vary between production runs.
+AVG_FEATURE_COLUMNS = [c for c in FEATURE_COLUMNS if c not in {
+    "price_de_lag1", "price_dk2_lag1",
+    "price_se4_avg_lag1", "price_se4_avg_lag2", "price_se4_avg_lag7",
+    "price_se4_min_lag1", "price_se4_max_lag1",
+    "price_momentum", "price_volatility_7d",
+}]
 
 
 # Features that build_forecast_features() holds constant across the entire
@@ -805,7 +842,7 @@ def _warn_uncovered(df: pd.DataFrame, columns: list, source_label: str) -> None:
     missing values; at serving time these columns are never missing, so that
     branch is simply never taken.
 
-    Found via a 5-year fetch (IMPROVEMENT_PLAN.md Round 15): EUA data starts
+    Found via a 5-year fetch: EUA data starts
     2021-10-18, so a window opening earlier got 65 days of 0.00 EUR/t, silently
     propagated into gas_marginal_cost -- a TROUGH_FEATURE_COLUMNS member. The
     normal ~3-year window is unaffected (both sources cover it completely), so

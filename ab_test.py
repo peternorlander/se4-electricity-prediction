@@ -12,7 +12,7 @@ the full design and the agent playbook.
 Needs ENTSO_E_TOKEN (and the other source-API env vars) only for `fetch`;
 `run` and `list` are offline once a snapshot exists.
 
-LONG-WINDOW SNAPSHOTS (added 2026-08-06 for Round 15, IMPROVEMENT_PLAN.md).
+LONG-WINDOW SNAPSHOTS (added 2026-08-06).
 `--days` overrides fetch_data.TRAINING_DAYS (normally 1095, ~3 years) for one
 fetch -- same fetch_training_inputs() call, same single contiguous range up to
 today, just with the start pushed further back. A run with --days longer than

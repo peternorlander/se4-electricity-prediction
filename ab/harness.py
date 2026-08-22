@@ -4,7 +4,7 @@ Flow" section.
 
 Deliberately does NOT import or refactor evaluate.walk_forward_validate --
 the production headline eval stays untouched so every recorded baseline
-number (IMPROVEMENT_PLAN.md) stays comparable. This module carries its own
+number stays comparable. This module carries its own
 copy of the same ~25-line loop, parameterized by a Variant's fit_fn/targets/
 freeze-lists so BASELINE and CANDIDATE run through identical slices. The two
 are pinned together by an acceptance test: at shift=0 with the BASELINE
