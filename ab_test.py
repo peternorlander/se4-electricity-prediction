@@ -28,11 +28,13 @@ snapshot is still saved if a gap is found -- the data remains useful -- but the
 gap is printed loudly so it gets investigated before being built into a grid.
 """
 import argparse
+import json
 import sys
 from datetime import datetime, UTC
 from pathlib import Path
 
-from ab.snapshot import save_snapshot, list_snapshots, load_snapshot, DEFAULT_CACHE_ROOT, LONG_CACHE_ROOT
+from ab.snapshot import (save_snapshot, list_snapshots, load_snapshot, read_meta,
+                         DEFAULT_CACHE_ROOT, LONG_CACHE_ROOT)
 from ab.harness import parse_shift_range
 from ab.verdict import run_ab
 
@@ -107,8 +109,20 @@ def cmd_list(args):
                   f"list them with: python ab_test.py list --root {LONG_CACHE_ROOT})")
         return
     print(f"Available snapshots under {cache_root}/:")
+    print(f"  {'snapshot':<12} {'weather tail':>12}")
     for name in snapshots:
-        print(f"  {name}")
+        meta = read_meta(name, cache_root=cache_root)
+        tail = meta.get("weather_tail_days")
+        # "*" = the snapshot predates the field and it was derived from the
+        # data on read, not recorded at save time. Same number either way.
+        mark = "*" if meta.get("weather_tail_derived") else ""
+        print(f"  {name:<12} {(f'{tail}d{mark}') if tail is not None else '?':>12}")
+    print("\n'weather tail' is how many days behind the snapshot's own `today` its")
+    print("weather stops -- 1d = topped up to yesterday, ~5d = archive-only (fetched")
+    print("before 2026-08-23). Snapshots with DIFFERENT tails must not share one")
+    print("measurement grid: the merged frame is ~4 rows longer on a 1d snapshot, so")
+    print("a shift grid built across both would silently compare different windows.")
+    print("'*' means the snapshot predates the field and it was derived on read.")
 
 
 def cmd_run(args):

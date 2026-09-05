@@ -32,6 +32,8 @@ Model training (model.py)
       (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
+    → price_cheap2h also gets a conformally calibrated 80% interval from two
+      quantile regressors on the same features (cheap2h_low / cheap2h_high)
     → Walk-forward validation: 52 windows × 7 days (evaluate.py)
          │
          ▼
@@ -276,6 +278,98 @@ directly comparable — the merged frame is ~4 rows longer afterwards, so grid
 scripts that assert a row count (`experiments/run_round19.py` and friends) will
 trip on a fresh fetch. That assertion is doing its job; update the constant, do
 not delete it.
+
+## Prediction interval for cheap2h (round 19c)
+
+Adopted 2026-09-05. `cheap2h_low` / `cheap2h_high` are an **80% band around each
+day's own `cheap2h` prediction**. This is an addition — the headline `cheap2h`
+number is produced by exactly the model it always was, and `model.predict()`
+without an `interval` argument returns byte-for-byte what it returned before.
+
+### Why
+
+A point estimate cannot say "I don't know". On 2026-08-18 the model predicted
+42.7 EUR/MWh against a realised 127.9, with exactly the outward confidence it
+predicts 6.0 with on a calm day; the automation had no way to tell the two
+apart. Two quantile regressors (`reg:quantileerror` at α = 0.10 and 0.90) on the
+**same feature list and the same hyperparameters** give it one.
+
+The band is not decoration — width tracks accuracy. Grouping a year of
+walk-forward days by band width:
+
+| band width | n | MAE of the point estimate | coverage |
+|---|---|---|---|
+| narrowest | 41 | **7.26** | 0.90 |
+| narrow | 41 | 13.13 | 0.90 |
+| wide | 40 | 20.83 | 0.82 |
+| widest | 41 | **21.50** | 0.83 |
+
+The point estimate is three times worse on the days the model itself flags as
+uncertain. It knows when it does not know; it just had no way to say so.
+
+### Calibration — the raw band is over-confident, conformal fixes it
+
+Measured on the round-15b sliding grid, four period clusters: a nominal 80%
+band covers **0.542** (cheap2h) / 0.576 (min), and only ~0.15 on the days in the
+top decile of realised price. An 80% interval that covers 54% is a point
+estimate with decoration.
+
+`model.train_interval()` applies **split conformal**: fit both quantile models
+on everything but the last `CONFORMAL_HOLDOUT_DAYS` (180) rows, score that
+holdout, widen the band by the (1−α) empirical quantile of the conformity
+scores `max(q10 − y, y − q90)`, then refit on all the data and carry the
+correction over. Measured effect on the grid: **0.542 → 0.788** pooled, 0.76–0.83
+in every cluster, both targets; top-decile coverage 0.31 → 0.51. The price is a
+band ~50% wider, which is the honest width.
+
+The refit-after-calibration step assumes the correction transfers from a fit on
+n−180 rows to one on n. It does, in the safe direction: the full-data models are
+marginally sharper, so the carried-over correction is mildly conservative, never
+optimistic.
+
+Three corrections are applied in order at serve time, each for a measured
+reason (see `model.IntervalModel`):
+
+1. **Sort** — the two regressors are independent fits, so nothing enforces
+   q10 ≤ q90. Full crossing is rare (0.04% of rows) but real.
+2. **Widen** by the conformal correction.
+3. **Include the point estimate** — the point model minimises squared error and
+   predicts the conditional *mean*; the quantiles are quantiles. Prices are
+   right-skewed, so the mean sits above the median (+2.36 EUR/MWh on average)
+   and falls outside the raw band on 9.5% of rows, 1.9% after widening.
+   Clamping the band open around the point costs nothing and guarantees the
+   number the automation reads is inside the range shown beside it.
+
+### What was tested and NOT adopted
+
+Ranking the next H days by `q90` instead of the point estimate looked like a
+0.8 EUR/MWh reduction in realised charging cost **pooled over 14 grid points**,
+and **sign-flips per period cluster** (cheap2h H=7: NOW −2.82, −6M +0.25,
+−12M −0.51, −21M −1.12). The pooled gain was a NOW-cluster effect wearing a
+bigger `n` — exactly what the clustered verdict rules exist to catch. Not
+adopted as a decision rule. `q50` is not fitted at all: the point model stays
+the headline number.
+
+### How this interacts with A/B testing
+
+**The existing cheap2h MAE A/B remains the gate for feature and model changes.**
+The quantile models are fitted on `TARGETS["cheap2h"]`'s feature list, so
+anything that improves the point model's features improves their inputs too. A
+separate A/B per quantile would trade compute for a near-duplicate answer.
+
+**But MAE does not measure interval quality, and never will.** They are
+different objects: a model can rank days perfectly and be badly calibrated, or
+be well calibrated and rank badly. So the band gets a **guard rail, not a
+gate**: every production run prints and pushes `cheap2h_interval` with
+`coverage_calibrated` against `nominal_coverage`. After adopting any change,
+check that it is still near 0.80. It costs nothing and it is the only thing that
+would catch a feature change that quietly broke the band.
+
+**Changing the interval itself is a different experiment.** Quantile levels, the
+conformal window or α, or separate hyperparameters for the quantile models are
+not measurable by MAE at all — score them on **pinball loss and coverage**, and
+do it **per period cluster**, never pooled. The q90 decision rule above is the
+worked example of why.
 
 ## Target Definition
 
@@ -635,6 +729,38 @@ improvement on one day's data and a regression on the next. Historically that fo
 re-running an experiment across several real calendar days to tell signal from noise
 — one change every few days. The A/B flow simulates those different run-days from a
 single data snapshot, so a verdict takes one sitting.
+
+### Snapshot generations — check the weather tail before building a grid
+
+`python ab_test.py list` reports a **weather tail** per snapshot: how many days
+behind its own `today` the weather stops.
+
+```
+  snapshot     weather tail
+  2026-08-21            5d*
+  2026-09-05            1d*
+```
+
+`5d` means archive-only (fetched before the 2026-08-23
+[archive-lag top-up](#closing-the-weather-archive-lag-round-19a)); `1d` means
+topped up to yesterday. `*` marks a value derived on read rather than recorded
+at save time — same number, and snapshots taken before the field existed need no
+migration, `ab.snapshot.read_meta` works it out from `weather_hourly.pkl`.
+
+**Old snapshots are not stale and must not be deleted.** They are the evidence
+base for every verdict in the rejected table, and an A/B run on one is still
+valid — `BASELINE` and `CANDIDATE` always share a snapshot, so the delta is
+drift-free either way.
+
+What the tail *is* for: **snapshots with different tails must not share one
+measurement grid.** A 1d snapshot's merged frame is ~4 rows longer, and the
+shift arithmetic derives its windows from the end of the frame, so a grid built
+across both would silently compare different windows. A vintage ladder mixing
+generations varies two things at once — the fetch and the tail condition. Stay
+within one generation, or say plainly that you are not.
+
+Grid scripts that assert a row count will trip on the first post-top-up fetch.
+That assertion is doing its job: update the constant, do not delete it.
 
 ### How changes are validated
 
@@ -1033,12 +1159,15 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `wo
 ## Home Assistant Integration
 
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
-- `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day)
+- `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`)
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
 - `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from horizon-honest walk-forward validation
 - `mae_by_horizon` — per-target MAE broken down by forecast horizon (day+1 … day+7); shows how accuracy decays with forecast distance
+- `cheap2h_interval` — the band's own calibration for this run: `coverage_raw`, `coverage_calibrated`, `nominal_coverage`, `correction_eur_mwh`, `n_holdout`. **Watch `coverage_calibrated` against `nominal_coverage`** — if it drifts away from 0.80 the band has stopped meaning what it says
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
 
 For charging decisions ("charge today or wait for cheaper days"), compare `cheap2h` across days — it is the expected price of a ~2h session picking the day's cheapest hours, which is what the schedule can actually achieve.
+
+`cheap2h_low` / `cheap2h_high` are an **80% band around that day's own prediction**, in the same SEK/kWh units and carried through the addon like everything else. `cheap2h` is always inside them. Use them as a guard rail on the *defer* decision, not as a replacement for the ranking: the cost of waiting when the price is about to rise is much larger than the cost of charging now when it was about to fall, so a rule like "do not defer if `cheap2h_high` for the later day is above today's known cheap price" is the asymmetry the point estimate cannot express. Ranking the days by `cheap2h_high` instead of `cheap2h` was tested and is **not** replicated — see [Prediction interval for cheap2h](#prediction-interval-for-cheap2h-round-19c).
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.

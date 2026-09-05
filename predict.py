@@ -20,7 +20,7 @@ from features import (
     aggregate_market_prices_daily,
     aggregate_prices_daily,
 )
-from model import train, predict
+from model import train, train_interval, predict
 from evaluate import walk_forward_validate, get_feature_importance
 from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
 from ha_client import fetch_addon_value, apply_addon, push_predictions
@@ -78,6 +78,15 @@ def main():
     feature_importance = get_feature_importance(models)
     print("  → Done")
 
+    print("Calibrating the cheap2h prediction interval...")
+    interval = train_interval(training_data)
+    d = interval.diagnostics
+    print(f"  → holdout {d['n_holdout']} days, coverage "
+          f"{d.get('coverage_raw', float('nan')):.3f} raw → "
+          f"{d.get('coverage_calibrated', float('nan')):.3f} calibrated "
+          f"(nominal {d['nominal_coverage']:.2f}), "
+          f"widening ±{d['correction_eur_mwh']:.2f} EUR/MWh")
+
     for target, importances in feature_importance.items():
         print(f"\n=== Feature importance ({target} model) ===")
         for feature, importance in importances.items():
@@ -98,7 +107,7 @@ def main():
     ].reset_index(drop=True)
 
     print(f"Running inference on {len(forecast_features)} days...")
-    predictions_eur = predict(models, forecast_features)
+    predictions_eur = predict(models, forecast_features, interval=interval)
     predictions_raw = convert_predictions_to_sek(predictions_eur, eur_to_sek_rate)
 
     print("Fetching electricity price addon from HA...")
@@ -107,6 +116,12 @@ def main():
 
     print("\n=== Price predictions (SEK/kWh) ===")
     print(json.dumps(predictions_raw, indent=2))
+
+    # The interval's own calibration travels with the metrics so drift is
+    # visible in Home Assistant without re-running anything: if
+    # coverage_calibrated stops sitting near nominal_coverage, the band has
+    # stopped meaning what it says.
+    model_metrics = {**model_metrics, "cheap2h_interval": interval.diagnostics}
 
     print("\nPushing predictions to Home Assistant...")
     push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance)

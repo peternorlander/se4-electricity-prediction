@@ -212,6 +212,175 @@ def _fit_models(data: pd.DataFrame, half_life_days=HALF_LIFE_DAYS, targets=None)
     return models
 
 
+# ---------------------------------------------------------------------------
+# Prediction interval for cheap2h (round 19c, adopted 2026-09-05)
+# ---------------------------------------------------------------------------
+# A point estimate cannot say "I don't know". On 2026-08-18 the model predicted
+# 42.7 against a realised 127.9 with exactly the outward confidence it predicts
+# 6.0 with on a calm day, and the Home Assistant automation had no way to tell
+# those apart. Two quantile regressors on the SAME feature list give it one.
+#
+# Measured on the round-15b sliding grid, four period clusters (see the README
+# "Prediction interval for cheap2h" section):
+#   * band width tracks accuracy -- point-estimate MAE runs 7.26 / 13.13 /
+#     20.83 / 21.50 across width quartiles, so a wide band really does mean a
+#     bad day rather than a shy model;
+#   * the RAW band is over-confident: an 80% interval covers 54%;
+#   * a rolling conformal correction fixes that to 0.788 with no refit.
+#
+# This is an ADDITION. The headline cheap2h number is unchanged -- q50 is not
+# fitted and the point model still produces `cheap2h`. Nothing here touches
+# TARGETS, _fit_models, or anything evaluate.py / the A/B harness calls.
+INTERVAL_TARGET = "cheap2h"
+INTERVAL_QUANTILES = (0.10, 0.90)
+
+# Split-conformal calibration. The last CONFORMAL_HOLDOUT_DAYS rows are held out
+# of the calibration fit, scored, and the band widened by the (1-alpha)
+# empirical quantile of the conformity scores. 180 days is what the round-19c
+# rolling correction used; shorter reacts faster but estimates the quantile off
+# fewer points, and below ~30 the correction is switched off entirely rather
+# than trusted.
+CONFORMAL_HOLDOUT_DAYS = 180
+CONFORMAL_ALPHA = 0.20          # -> a nominal 80% band, matching q10..q90
+CONFORMAL_MIN_HOLDOUT = 30
+
+
+def _make_quantile_regressor(alpha: float) -> XGBRegressor:
+    """Production hyperparameters with the objective swapped to pinball loss.
+
+    Deliberately NOT retuned: the question this answers is what the existing
+    model can say about its own uncertainty, not whether a differently-tuned
+    model scores better. Retuning would confound the two.
+    """
+    return XGBRegressor(
+        n_estimators=500,
+        max_depth=5,
+        learning_rate=0.03,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_child_weight=3,
+        reg_alpha=0.1,
+        reg_lambda=1.5,
+        random_state=42,
+        objective="reg:quantileerror",
+        quantile_alpha=alpha,
+    )
+
+
+class IntervalModel:
+    """Calibrated [low, high] band for one target.
+
+    predict(X, point) returns (low, high) with three corrections applied in
+    order, each for a measured reason:
+
+    1. SORT. The two quantile regressors are independent fits, so nothing makes
+       q10 <= q90. Full crossing is rare (0.04% of rows) but real, and an
+       unsorted band would occasionally be inverted.
+    2. WIDEN by the conformal correction, which is what turns a nominal 80%
+       band into an actual one (0.542 -> 0.788 measured).
+    3. INCLUDE THE POINT ESTIMATE. The point model minimises squared error and
+       so predicts the conditional MEAN; q10/q90 are quantiles of the same
+       distribution. Electricity prices are right-skewed, so the mean sits
+       above the median (+2.36 EUR/MWh on average) and lands outside the raw
+       band on 9.5% of rows -- 1.9% after the conformal widening. Clamping the
+       band open around the point costs nothing and means the number the
+       automation reads is always inside the range shown next to it.
+    """
+
+    def __init__(self, low_model, high_model, correction: float, diagnostics: dict):
+        self.low_model = low_model
+        self.high_model = high_model
+        self.correction = correction
+        self.diagnostics = diagnostics
+
+    def predict(self, X: np.ndarray, point: np.ndarray):
+        lo_raw = self.low_model.predict(X)
+        hi_raw = self.high_model.predict(X)
+        low = np.minimum(lo_raw, hi_raw) - self.correction
+        high = np.maximum(lo_raw, hi_raw) + self.correction
+        return np.minimum(low, point), np.maximum(high, point)
+
+
+def _conformity_scores(y, low, high) -> np.ndarray:
+    """How far outside [low, high] the truth fell. Negative when inside."""
+    return np.maximum(low - y, y - high)
+
+
+def _conformal_correction(scores: np.ndarray, alpha: float = CONFORMAL_ALPHA) -> float:
+    """
+    The (1-alpha) empirical quantile of the conformity scores, with the standard
+    finite-sample (n+1)/n adjustment, floored at 0 so calibration can only ever
+    widen the band and never narrow it below what the quantile models produced.
+    """
+    n = len(scores)
+    if n < CONFORMAL_MIN_HOLDOUT:
+        return 0.0
+    k = min(1.0, np.ceil((n + 1) * (1 - alpha)) / n)
+    return max(0.0, float(np.quantile(scores, k)))
+
+
+def train_interval(training_data: pd.DataFrame,
+                   target: str = INTERVAL_TARGET) -> IntervalModel:
+    """
+    Fit the calibrated prediction interval for `target`.
+
+    Split conformal, in three steps:
+      1. fit both quantile regressors on everything except the last
+         CONFORMAL_HOLDOUT_DAYS rows;
+      2. score that holdout to get the conformal correction -- these rows were
+         not seen by the calibration fit, which is what makes the resulting
+         coverage honest rather than in-sample;
+      3. REFIT both regressors on all the data and carry the correction over,
+         so the served band uses the full training window like every other
+         model here.
+
+    Step 3 assumes the correction transfers between a fit on n-180 rows and one
+    on n. It does, in the direction that matters: the full-data models are
+    marginally sharper, so carrying the correction over is mildly conservative
+    (a slightly wider band than strictly needed), never optimistic.
+
+    Args:
+        training_data: The same daily frame train() is given.
+        target:        Target name; must be a key of TARGETS.
+
+    Returns:
+        IntervalModel, with .diagnostics carrying the holdout coverage before
+        and after calibration -- the numbers to watch for drift.
+    """
+    target_col, feature_cols = TARGETS[target]
+    X = training_data[feature_cols].values
+    y = training_data[target_col].values
+
+    n_holdout = min(CONFORMAL_HOLDOUT_DAYS, max(0, len(training_data) // 4))
+    split = len(training_data) - n_holdout
+
+    if n_holdout >= CONFORMAL_MIN_HOLDOUT:
+        lo_cal = _make_quantile_regressor(INTERVAL_QUANTILES[0]).fit(X[:split], y[:split])
+        hi_cal = _make_quantile_regressor(INTERVAL_QUANTILES[1]).fit(X[:split], y[:split])
+        lo_h = lo_cal.predict(X[split:])
+        hi_h = hi_cal.predict(X[split:])
+        band_lo, band_hi = np.minimum(lo_h, hi_h), np.maximum(lo_h, hi_h)
+        scores = _conformity_scores(y[split:], band_lo, band_hi)
+        correction = _conformal_correction(scores)
+        diagnostics = {
+            "n_holdout": int(n_holdout),
+            "coverage_raw": float(np.mean((y[split:] >= band_lo) & (y[split:] <= band_hi))),
+            "coverage_calibrated": float(np.mean(
+                (y[split:] >= band_lo - correction) & (y[split:] <= band_hi + correction))),
+            "correction_eur_mwh": round(correction, 4),
+            "nominal_coverage": 1 - CONFORMAL_ALPHA,
+        }
+    else:
+        correction = 0.0
+        diagnostics = {"n_holdout": int(n_holdout), "correction_eur_mwh": 0.0,
+                       "nominal_coverage": 1 - CONFORMAL_ALPHA,
+                       "note": "holdout too small to calibrate; band is uncalibrated"}
+
+    low_model = _make_quantile_regressor(INTERVAL_QUANTILES[0]).fit(X, y)
+    high_model = _make_quantile_regressor(INTERVAL_QUANTILES[1]).fit(X, y)
+    return IntervalModel(low_model, high_model, correction, diagnostics)
+
+
 def train(training_data: pd.DataFrame) -> dict:
     """
     Train one XGBoost regressor per daily price target.
@@ -225,21 +394,35 @@ def train(training_data: pd.DataFrame) -> dict:
     return _fit_models(training_data)
 
 
-def predict(models: dict, forecast_features: pd.DataFrame) -> dict:
+def predict(models: dict, forecast_features: pd.DataFrame,
+            interval: IntervalModel = None) -> dict:
     """
     Run inference on forecast features.
 
     Args:
         models: Dict of fitted models keyed by target name.
         forecast_features: Daily DataFrame with feature columns.
+        interval: Optional IntervalModel from train_interval(). When given, each
+                  day also gets `<target>_low` / `<target>_high` -- a calibrated
+                  band around that day's own prediction. Left as None the output
+                  is byte-for-byte what it was before intervals existed, which
+                  is what evaluate.py and the A/B harness rely on.
 
     Returns:
-        Dict keyed by date string (YYYY-MM-DD) with min/avg/max/cheap2h in EUR/MWh.
+        Dict keyed by date string (YYYY-MM-DD) with min/avg/max/cheap2h in
+        EUR/MWh, plus cheap2h_low / cheap2h_high when `interval` is given.
     """
     preds = {
         name: models[name].predict(forecast_features[TARGETS[name][1]].values)
         for name in TARGETS
     }
+
+    band = {}
+    if interval is not None:
+        target = INTERVAL_TARGET
+        low, high = interval.predict(
+            forecast_features[TARGETS[target][1]].values, preds[target])
+        band = {f"{target}_low": low, f"{target}_high": high}
 
     dates = pd.to_datetime(forecast_features["date"]).dt.strftime("%Y-%m-%d").values
     predictions = {}
@@ -248,5 +431,7 @@ def predict(models: dict, forecast_features: pd.DataFrame) -> dict:
         predictions[dates[i]] = {
             name: round(float(preds[name][i]), 4) for name in TARGETS
         }
+        for name, values in band.items():
+            predictions[dates[i]][name] = round(float(values[i]), 4)
 
     return predictions

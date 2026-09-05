@@ -16,6 +16,8 @@ import pickle
 from datetime import date, datetime
 from pathlib import Path
 
+import pandas as pd
+
 DEFAULT_CACHE_ROOT = Path("ab_cache")
 
 # Long-window snapshots (ab_test.py fetch --days N, N > fetch_data.TRAINING_DAYS)
@@ -27,6 +29,74 @@ DEFAULT_CACHE_ROOT = Path("ab_cache")
 # snapshots physically separate makes that impossible rather than merely
 # documented.
 LONG_CACHE_ROOT = DEFAULT_CACHE_ROOT / "long"
+
+
+# Snapshots taken before 2026-08-23 were fetched with weather ending
+# ~WEATHER_ARCHIVE_LAG_DAYS back; afterwards fetch_data tops the archive up to
+# yesterday (README "Closing the weather-archive lag"). The merged frame is
+# therefore ~4 rows longer on a newer snapshot, and the two are NOT
+# interchangeable inside one measurement grid. Rather than stamp a version
+# number that has to be remembered and bumped, every snapshot records the fact
+# it actually depends on -- how far its weather reaches -- and load_snapshot
+# derives the same fields for older snapshots that predate this.
+def describe_weather_tail(inputs: dict, today: date) -> dict:
+    """
+    How far behind `today` a snapshot's weather stops.
+
+    `weather_tail_days` is the number the caller usually wants: 1 means the
+    frame reaches yesterday (post-top-up), ~5 means archive-only. Comparing it
+    across snapshots is how you tell whether two caches can share a grid.
+
+    Returns an empty dict if the snapshot has no weather frame at all, so this
+    can never be the reason a save or load fails.
+    """
+    weather = inputs.get("weather_hourly")
+    if weather is None or getattr(weather, "empty", True) or "timestamp" not in weather:
+        return {}
+
+    last = pd.to_datetime(weather["timestamp"], utc=True).max()
+    return {
+        "weather_last_timestamp": last.isoformat(),
+        "weather_tail_days": int((today - last.date()).days),
+    }
+
+
+def read_meta(date_str: str, cache_root=DEFAULT_CACHE_ROOT) -> dict:
+    """
+    Read one snapshot's meta.json, deriving the weather-tail fields when the
+    snapshot predates them.
+
+    Cheap by design: it unpickles ONLY weather_hourly.pkl in the fallback path,
+    never the whole snapshot, so `ab_test.py list` can report the tail for every
+    cache without paying for a full load. `weather_tail_derived` marks the
+    fallback, so "recorded at save time" and "worked out afterwards" stay
+    distinguishable.
+
+    Args:
+        date_str:   Snapshot directory name (YYYY-MM-DD).
+        cache_root: Root directory for all snapshots.
+
+    Returns:
+        The meta dict. Missing/unreadable meta.json returns {}.
+    """
+    snapshot_dir = Path(cache_root) / date_str
+    try:
+        with open(snapshot_dir / "meta.json", encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+    if "weather_tail_days" in meta or "today" not in meta:
+        return meta
+
+    weather_path = snapshot_dir / "weather_hourly.pkl"
+    if not weather_path.exists():
+        return meta
+    with open(weather_path, "rb") as f:
+        weather = pickle.load(f)
+    derived = describe_weather_tail({"weather_hourly": weather},
+                                    date.fromisoformat(meta["today"]))
+    return {**meta, **derived, "weather_tail_derived": True} if derived else meta
 
 
 def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT) -> Path:
@@ -50,7 +120,11 @@ def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT) -> P
         with open(snapshot_dir / f"{key}.pkl", "wb") as f:
             pickle.dump(value, f)
 
-    meta = {"today": today.isoformat(), "fetched_at": datetime.now().isoformat()}
+    meta = {
+        "today": today.isoformat(),
+        "fetched_at": datetime.now().isoformat(),
+        **describe_weather_tail(inputs, today),
+    }
     with open(snapshot_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
 
@@ -78,7 +152,11 @@ def load_snapshot(date_str: str = None, cache_root=DEFAULT_CACHE_ROOT):
 
     Returns:
         (inputs, meta) -- inputs is the fetch_training_inputs()-shaped dict,
-        meta is {"today": ..., "fetched_at": ...}.
+        meta is {"today", "fetched_at", "weather_last_timestamp",
+        "weather_tail_days"}. The last two are read from meta.json when the
+        snapshot was saved with them and derived from the data otherwise (with
+        "weather_tail_derived": True), so snapshots taken before 2026-08-23
+        report the same fields as new ones.
     """
     cache_root = Path(cache_root)
     available = list_snapshots(cache_root)
@@ -93,8 +171,7 @@ def load_snapshot(date_str: str = None, cache_root=DEFAULT_CACHE_ROOT):
         raise FileNotFoundError(f"Snapshot '{date_str}' not found. Available: {available}")
 
     snapshot_dir = cache_root / date_str
-    with open(snapshot_dir / "meta.json", encoding="utf-8") as f:
-        meta = json.load(f)
+    meta = read_meta(date_str, cache_root=cache_root)
 
     inputs = {}
     for pkl_path in sorted(snapshot_dir.glob("*.pkl")):
