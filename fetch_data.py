@@ -1,18 +1,113 @@
+import logging
 from datetime import date, timedelta
+
+import pandas as pd
 
 from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3, fetch_reservoir_sweden
 from sources.nve import fetch_reservoir_norway, fetch_reservoir_norway_median
 from sources.swedish_calendar import get_non_workdays
-from sources.open_meteo import fetch_historical, fetch_international_wind_historical
+from sources.open_meteo import (
+    fetch_historical, fetch_international_wind_historical,
+    fetch_recent, fetch_international_wind_recent,
+)
 from sources.yahoo_finance import fetch_ttf_prices
 from sources.eua_carbon import fetch_eua_prices
+
+logger = logging.getLogger(__name__)
 
 
 # Open-Meteo archive has a ~5-day lag before data becomes available
 WEATHER_ARCHIVE_LAG_DAYS = 5
 
+# Days of history requested from the FORECAST endpoint to top the archive up to
+# yesterday. Comfortably more than WEATHER_ARCHIVE_LAG_DAYS so a day where the
+# archive lags 6 or 7 instead of 5 still leaves no hole; the splice keeps the
+# archive wherever it has published, so over-requesting costs nothing but bytes.
+WEATHER_RECENT_TOPUP_DAYS = WEATHER_ARCHIVE_LAG_DAYS + 3
+
+# Daily aggregation in features.py groups by Swedish calendar day, so the
+# spliced series must be cut at a Swedish midnight -- otherwise the newest day
+# is a partial one (a handful of hours) and would enter training as a full row
+# with a badly wrong daily mean.
+SWEDISH_TZ = "Europe/Stockholm"
+
 # How many days of historical data to train on
 TRAINING_DAYS = 1095
+
+
+def _splice_recent(archive: pd.DataFrame, recent: pd.DataFrame, today: date) -> pd.DataFrame:
+    """
+    Extend an archive weather frame with the recent-analysis frame, up to the
+    last COMPLETE Swedish day.
+
+    Why this exists: the Open-Meteo archive only reaches today-5, so
+    build_training_data() used to produce a frame ending ~5 days before the
+    first forecast day and the model was fitted that far behind. Measured cost:
+    avg +1.70 / min +0.59 / cheap2h +0.37 EUR/MWh over four evaluation periods,
+    and +2.2 / +1.0 / +0.8 in the current regime, positive on 25-28 of 28
+    measurements across seven independently fetched caches. See the README
+    "Closing the weather-archive lag" section.
+
+    Two rules, both load-bearing:
+
+    1. The archive WINS wherever it has published. Only rows strictly after its
+       last timestamp are taken from `recent`, so the three years of archive
+       data the model is mostly trained on are untouched, and re-running on a
+       later day does not rewrite history as the archive catches up.
+    2. The result is cut at Swedish midnight of `today`, which is the end of
+       yesterday's Swedish day. `recent` runs to the current hour, and an
+       incomplete final day would otherwise be aggregated as if it were whole.
+
+    Args:
+        archive: Frame from fetch_historical / fetch_international_wind_historical.
+        recent:  Frame from fetch_recent / fetch_international_wind_recent.
+        today:   The "as of" date, the same one fetch_training_inputs was called with.
+
+    Returns:
+        Concatenation of both, timestamp-sorted, with no duplicate timestamps.
+    """
+    if recent is None or recent.empty:
+        return archive
+    if archive is None or archive.empty:
+        return recent
+
+    archive = archive.copy()
+    recent = recent.copy()
+    archive["timestamp"] = pd.to_datetime(archive["timestamp"], utc=True)
+    recent["timestamp"] = pd.to_datetime(recent["timestamp"], utc=True)
+
+    cutoff = pd.Timestamp(today, tz=SWEDISH_TZ).tz_convert("UTC")
+    tail = recent[(recent["timestamp"] > archive["timestamp"].max())
+                  & (recent["timestamp"] < cutoff)]
+    tail = tail.reindex(columns=archive.columns)
+
+    if tail.empty:
+        return archive
+
+    return (pd.concat([archive, tail], ignore_index=True)
+              .sort_values("timestamp")
+              .reset_index(drop=True))
+
+
+def _fetch_recent_or_none(fetch_fn, label: str):
+    """
+    Call a recent-analysis fetch, returning None instead of raising.
+
+    The top-up is an accuracy improvement, not a correctness requirement: with
+    it the frame reaches yesterday, without it the pipeline is exactly what it
+    was before. A scheduled Actions run must not fail outright because
+    Open-Meteo's forecast endpoint had a bad minute, so a failure here degrades
+    to the archive-only behaviour and says so loudly.
+    """
+    try:
+        return fetch_fn()
+    except Exception as e:
+        logger.warning(
+            "  WARNING: %s top-up failed (%s: %s) - falling back to archive only, "
+            "so the training frame will end ~%d days back.",
+            label, type(e).__name__, e, WEATHER_ARCHIVE_LAG_DAYS,
+        )
+        return None
 
 
 def fetch_training_inputs(today: date) -> dict:
@@ -61,6 +156,27 @@ def fetch_training_inputs(today: date) -> dict:
         str(weather_hist_end)
     )
     print(f"  -> {len(wind_intl_hourly)} records")
+
+    # Top the archive up to yesterday from the forecast endpoint's recent
+    # analysis -- see _splice_recent for why this is worth ~0.4-2.2 EUR/MWh.
+    print(f"Topping weather up to {today - timedelta(days=1)} "
+          f"(archive lags {WEATHER_ARCHIVE_LAG_DAYS} days)...")
+    weather_hourly = _splice_recent(
+        weather_hourly,
+        _fetch_recent_or_none(lambda: fetch_recent(WEATHER_RECENT_TOPUP_DAYS),
+                              "SE4 weather"),
+        today,
+    )
+    wind_intl_hourly = _splice_recent(
+        wind_intl_hourly,
+        _fetch_recent_or_none(
+            lambda: fetch_international_wind_recent(WEATHER_RECENT_TOPUP_DAYS),
+            "DE/DK wind"),
+        today,
+    )
+    print(f"  -> weather now {len(weather_hourly)} records "
+          f"(to {weather_hourly['timestamp'].max()}), "
+          f"wind {len(wind_intl_hourly)} records")
 
     print(f"Fetching DE/DK2 market prices {historical_start} -> {today}...")
     market_prices_hourly = fetch_market_prices(

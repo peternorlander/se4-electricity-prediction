@@ -14,7 +14,7 @@ The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, an
 Data sources (API)
     │
     ├── ENTSO-E      → SE4/DE/DK2 day-ahead prices, SE3 nuclear outages, Sweden reservoir (A72)
-    ├── Open-Meteo   → Historical weather archive + 8-day forecast (SE4/Malmö + 5 regional locations)
+    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 5 regional locations)
     ├── Yahoo Finance → TTF natural gas futures, EU ETS carbon allowance (EUA)
     ├── NVE          → Norwegian hydro reservoir levels + 20-year seasonal median
     └── Nordpool     → Published prices (to skip days already known)
@@ -55,6 +55,14 @@ on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21):
 | avg     | 18.88        | ±7.94 |
 | max     | 37.40        | ±19.94 |
 | cheap2h | **15.04**    | ±6.17 |
+
+**These numbers are measured in the `gap0` condition** — the evaluator fits right
+up to its test window. Until 2026-08-23 production fitted ~5 days behind that,
+so this table was optimistic by roughly +0.37 (cheap2h) / +0.59 (min) / +1.70
+(avg), and by about double that in the current regime. The
+[archive-lag top-up](#closing-the-weather-archive-lag-round-19a) closes most of
+that gap in production, which brings the deployed model *toward* this table
+rather than changing the table. It has not been re-measured since.
 
 Measured with `OMP_NUM_THREADS=4`. **Pin the thread count before comparing this
 table with anything.** XGBoost's floating-point reduction order depends on it, so
@@ -124,11 +132,150 @@ reports it that way.
 
 **Price-lag anchor freshening (2026-07):** the SE4 price lags — the dominant min/cheap2h features — are now frozen at the freshest *known* ENTSO-E price (`se4_prices_daily`), not the training frame's last row. The training frame ends ~`WEATHER_ARCHIVE_LAG_DAYS` behind because it inner-joins prices with the lagging weather archive, so production was previously anchoring the price lags ~5 days stale (the DE/DK2 lags were already fresh — this closes the same gap for SE4's own lags). The walk-forward reports an **anchor-staleness sensitivity** (fresh d0 vs stale d5 ≈ old pipeline). Measured saving from freshening: **~1.1 EUR/MWh (min/cheap2h), ~2.3 (avg)** — real and free, but modest, because yesterday's min and six-days-ago min are similar.
 
+**Closing the weather-archive lag (2026-08-23):** the Open-Meteo *archive* only
+publishes to about today−5, so `build_training_data` produced a frame ending
+~5 days back and **the model was fitted that far behind the first forecast day**.
+The price-lag freshening above fixed the *anchor*; the *fit* stayed stale, and
+that had never been measured because `evaluate.walk_forward_validate` fits right
+up to its test window — it models the production anchor faithfully and the
+production training tail not at all. `fetch_data` now tops the archive up from
+Open-Meteo's forecast endpoint (`past_days`, `sources.open_meteo.fetch_recent` /
+`fetch_international_wind_recent`) so the frame reaches **yesterday**. See
+[Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a)
+for the measurement, the two splice rules that make it safe, and what it does
+*not* fix.
+
 **Negative-price hurdle (2026-07-24/25, cheap2h only):** an XGBoost classifier predicts P(tomorrow's `price_min` < 0 EUR/MWh) — a distinct physical regime (renewable oversupply + low/weekend demand) a plain regressor otherwise has to infer implicitly from the same weather/calendar features. Its out-of-fold probability feeds into the `cheap2h` regressor as an extra feature (`neg_price_proba`, now the #1 feature for cheap2h at ~0.25 importance). Validated via `ab_test.py` on a real cached snapshot, shifts 0–5: **REAL, all 6 shifts improved, mean −0.44 EUR/MWh** — the largest, cleanest single-run win recorded for the top-priority target; local reproduction via `evaluate.walk_forward_validate` matched the A/B exactly (14.74 vs the same run's min/avg/max, which were unaffected). **Confirmed on a real Actions run and committed 2026-07-25**; the table above now includes it. `min` showed the same direction on 5 of 6 shifts but didn't clear the strict sign-consistency bar (one near-zero flip) — **not productionized for `min`** — re-tested on the confound-free four-period grid in 2026-08 and rejected again (NOISE: −0.10 on average but *worse* in the period closest to production, and min's own data refutes the obvious explanation — that period has the most negative-price days to learn from, not the fewest).
 
 **Per-horizon MAE (`mae_by_horizon`) is weekday-confounded — do not read it as pure horizon decay.** The walk-forward steps by 7 days with 7-day windows, so horizon ≡ weekday (d+1 is always the same weekday as the window start). The curve mixes horizon and day-of-week and is non-monotonic. The clean measure of horizon/lag-staleness cost is the anchor-staleness sensitivity above (~1 EUR), **not** the per-horizon spread. This is why horizon-aware modeling (a `forecast_horizon` feature / per-horizon models) was evaluated and **shelved**: the true stale-lag headroom is ~1 EUR, and the bulk of the ~17 EUR error is regime-driven (winter cold-snap volatility, spring solar/negative-price ramp), not horizon-driven.
 
 Feature importance is reported for **min, avg and cheap2h models only** — including max would dilute the signal for what actually matters for scheduling decisions.
+
+## Closing the weather-archive lag (round 19a)
+
+Adopted 2026-08-23. This is the one change in this repo whose evidence is a
+*handicap* measurement rather than a candidate-vs-baseline A/B, so read the sign
+convention before the table.
+
+### The gap
+
+`fetch_data.WEATHER_ARCHIVE_LAG_DAYS = 5`: the Open-Meteo archive publishes to
+about today−5, and `build_training_data` inner-joins prices against it. So the
+merged frame ended ~5 days back and **the model was fitted five days behind the
+first forecast day** — every day, on every run.
+
+The [price-lag anchor freshening](#current-mae-baseline) fixed the *anchor* in
+2026-07: `build_forecast_features` takes the SE4 lags from `se4_prices_daily`,
+which reaches the latest published price. The *fit* was never addressed, and the
+gap was invisible because `evaluate.walk_forward_validate` fits right up to its
+test window. The eval models production's anchor faithfully and production's
+training tail not at all.
+
+### The measurement
+
+Two arms on the round-15b confound-free sliding grid (`L=1095`, so
+`min_train == 731` at every shift; four period clusters):
+
+* `gap0` — fit up to the test window. What the eval does.
+* `gap5` — fit five days short, price lags still freshened exactly as production
+  freshens them. What production did.
+
+`gap0` reproduces `ab.harness.run_walk_forward` exactly (cheap2h 14.942 at
+NOW/shift 0 either way), which pins the handicap harness to the production loop.
+
+**A positive delta means the lag costs that much** — these are handicaps, not
+candidates, so positive is the expected result and its size is the prize.
+
+| target | `gap5 − gap0` | NOW | −6M | −12M | −21M | verdict |
+|---|---|---|---|---|---|---|
+| `avg` | **+1.695** | +2.075 | +1.562 | +1.507 | +1.637 | REAL, 14/14 |
+| `min` | **+0.586** | +1.053 | +0.528 | +0.219 | +0.542 | REAL, 12/14 |
+| `cheap2h` | **+0.372** | +0.777 | +0.401 | +0.063 | +0.247 | REAL, 11/14 |
+
+A `gap3` arm sits between `gap0` and `gap5` on `min` and `avg` — the
+dose-response a real mechanism should show.
+
+**The mechanism is the fit, not stale features.** A `gap5_fitonly` arm (fit
+short, rolling anchors fresh) reproduces `gap5`; a `gap5_rollonly` arm (fit
+full, only `wind_variability` / `radiation_variability` five days staler) is
+~0 and NOISE on both priority targets. Freezing the rolling regime signals
+earlier costs nothing. Not having the last five days of *targets* costs
+everything. That is why the fix extends the frame rather than re-seeding
+anchors.
+
+**Vintage replication.** The grid above varies period on one snapshot. It was
+re-run varying the *fetch*: all five 3-year caches at shifts 0–1 (10 points,
+**10/10 positive on every target**, mean +0.820 cheap2h / +1.005 min / +2.226
+avg), and the second 5-year snapshot fetched 15 days earlier (4/4 positive,
++0.573 / +0.668 / +1.632). Pooled over all three grids — **28 measurements on
+seven independently fetched caches** — positive on 25/28 (cheap2h), 26/28
+(min), 28/28 (avg).
+
+The ladder is roughly double the clustered mean because every ladder point
+evaluates a window ending Jul–Aug 2026, i.e. the NOW condition, which the
+primary grid also puts at +0.777 / +1.053 / +2.075. So:
+
+* **+0.37 / +0.59 / +1.70** is the effect averaged over four market regimes.
+* **+0.8 / +1.0 / +2.2** is the effect in the regime production runs in now.
+
+### The fix, and the two rules that make it safe
+
+`sources.open_meteo.fetch_recent` / `fetch_international_wind_recent` call the
+*forecast* endpoint with `past_days`, which serves the operational NWP model's
+own recent analysis right up to the current hour. `fetch_data._splice_recent`
+joins it onto the archive:
+
+1. **The archive wins wherever it has published.** Only rows strictly after its
+   last timestamp are taken from the top-up, so three years of archive data are
+   untouched and a later run does not rewrite history as the archive catches up.
+2. **The result is cut at Swedish midnight of `today`.** The top-up runs to the
+   current hour; `features.aggregate_weather_daily` groups by Swedish calendar
+   day, so an uncut series would add a partial final day — a handful of hours
+   averaged as if they were twenty-four — as a full training row.
+
+A failed top-up degrades to archive-only with a warning rather than failing the
+run (`_fetch_recent_or_none`): the top-up is an accuracy improvement, not a
+correctness requirement, and a scheduled Actions run should not die because one
+endpoint had a bad minute.
+
+### Are the two products interchangeable?
+
+Measured over a 10-day overlap, forecast-endpoint analysis against archive:
+
+| variable | bias | MAE | rel. MAE |
+|---|---|---|---|
+| windspeed (SE4/Malmö) | +0.000 | **0.000** | 0.0% |
+| temperature | +0.737 | 0.903 | 4.9% |
+| radiation | −6.117 | 28.775 | 12.9% |
+
+Windspeed is **bit-identical** at Malmö, DK1, DK2, Karlskrona and Stockholm;
+only DE-north differs (1.30 m/s). That is the part that matters most —
+`mean_wind_stockholm` and `max_wind` are the two most load-bearing columns in
+the trough list. End to end, rebuilding the frame both ways, the trough-list
+columns disagree by under 0.21 of their own 3-year standard deviation except
+`radiation_variability` at 0.49 sd (a 7-day rolling window, so one day's
+radiation difference propagates).
+
+### What this does NOT claim
+
+The +0.37 / +0.59 / +1.70 is the cost of the gap measured with *archive* weather
+on both sides. Production fills those days with the recent-analysis product
+instead, which carries the error in the table above, so **the realised gain will
+be smaller than the measured cost** — by an amount nobody has measured yet.
+
+The honest confirmation is a candidate-vs-baseline A/B on a snapshot fetched
+*after* this change: build the frame with and without the spliced tail and run
+the same walk-forward. That measurement is still outstanding. It was adopted
+ahead of it because the sign is not in doubt (28 of 28 grids agree on direction,
+and the splice can only move the estimate toward zero, not past it), the change
+is reversible in one function, and the alternative was to keep shipping a
+five-day-stale fit for another week.
+
+Note for A/B work: snapshots taken before and after this change are **not**
+directly comparable — the merged frame is ~4 rows longer afterwards, so grid
+scripts that assert a row count (`experiments/run_round19.py` and friends) will
+trip on a fresh fetch. That assertion is doing its job; update the constant, do
+not delete it.
 
 ## Target Definition
 
@@ -155,7 +302,7 @@ Note: since charging sessions span hours, the *pointwise* 15-min min mostly adds
 | Source | What it provides | Auth |
 |--------|-----------------|------|
 | [ENTSO-E Transparency Platform](https://transparency.entsoe.eu) | SE4/DE/DK2 hourly day-ahead prices, SE3 nuclear outages (A77), Sweden reservoir fill (A72) | `ENTSO_E_TOKEN` env var |
-| [Open-Meteo](https://open-meteo.com) | Hourly weather archive + 8-day forecast for SE4 (Malmö) and 5 regional locations | None |
+| [Open-Meteo](https://open-meteo.com) | Hourly weather archive (to ~today−5), recent-analysis top-up for the days the archive has not reached, and an 8-day forecast — SE4 (Malmö) and 5 regional locations | None |
 | [Yahoo Finance](https://finance.yahoo.com) via `yfinance` | TTF natural gas futures (`TTF=F`), EU ETS carbon allowances (`CO2.L`) | None |
 | [NVE](https://biapi.nve.no/magasinstatistikk) | Norwegian hydro reservoir fill levels + 20-year min/max/median by week | None |
 | [Nordpool](https://www.nordpoolgroup.com) | Published SE4 prices (used to exclude already-known days from predictions) | None |
@@ -839,6 +986,7 @@ Keep this list updated — it prevents re-testing things that didn't work.
 - **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
 - **Forecast horizon**: All forecast days (1–8) use the same features and a single model that doesn't distinguish horizon. Horizon-aware modelling was **evaluated and shelved** (2026-07): the anchor-staleness sensitivity showed the true stale-lag cost is only ~1 EUR/MWh for min/cheap2h, so a `forecast_horizon` feature has little headroom. The scary-looking per-horizon curve is a weekday artifact of the step-7 walk-forward (see Current MAE Baseline), not real horizon decay. The price-lag anchor is kept fresh regardless, since that was a free win.
 - **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis — real day+7 weather forecasts are worse than archive. This optimism grows at far horizons and is not captured by the anchor-staleness or per-horizon metrics.
+- **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual 1-day gap is still not modelled, and neither is the recent-analysis product's own error against the archive.
 - **Max prediction accuracy** (~34 EUR/MWh MAE, the highest of the four targets): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
 - **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale.
 - **FIXED 2026-07-22 — NaN exchange rate had blanked the whole HA payload.**

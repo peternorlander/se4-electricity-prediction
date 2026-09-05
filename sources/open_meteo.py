@@ -71,6 +71,43 @@ def fetch_historical(start_date: str, end_date: str) -> pd.DataFrame:
     return _parse_response(response.json())
 
 
+def fetch_recent(past_days: int) -> pd.DataFrame:
+    """
+    Fetch the last `past_days` days of hourly weather from the FORECAST endpoint.
+
+    Fills the archive's ~5-day publication lag. `fetch_historical` can only
+    reach today−5, which used to leave the training frame ending ~5 days behind
+    the first forecast day — measured at avg +1.70 / min +0.59 / cheap2h +0.37
+    EUR/MWh MAE, and +2.2 / +1.0 / +0.8 in the current regime. See the README
+    "Closing the weather-archive lag" section for the evidence and for why the
+    two products are interchangeable here (windspeed matched the archive to
+    0.000 MAE at four of five locations over a 10-day overlap).
+
+    This is the operational NWP model's own recent analysis, not ERA5. That is
+    a different product from `fetch_historical`, which is the reason the caller
+    splices rather than replacing: the archive stays authoritative wherever it
+    has published, and this only covers days it has not reached.
+
+    Args:
+        past_days: Days of history to request (Open-Meteo allows up to 92).
+
+    Returns:
+        DataFrame with columns: timestamp, temperature, windspeed, radiation (W/m²).
+        Runs up to the current hour, so the caller must trim to whole days.
+    """
+    params = {
+        "latitude": LOCATION_LAT,
+        "longitude": LOCATION_LON,
+        "hourly": HOURLY_VARIABLES,
+        "past_days": past_days,
+        "forecast_days": 1,
+        "timezone": TIMEZONE
+    }
+
+    response = get_with_retry(OPEN_METEO_FORECAST_URL, params)
+    return _parse_response(response.json())
+
+
 def fetch_forecast() -> pd.DataFrame:
     """
     Fetch 8-day hourly weather forecast from Open-Meteo.
@@ -138,6 +175,25 @@ def fetch_international_wind_historical(start_date: str, end_date: str) -> pd.Da
     return _fetch_all_locations(
         OPEN_METEO_ARCHIVE_URL,
         {"start_date": start_date, "end_date": end_date},
+    )
+
+
+def fetch_international_wind_recent(past_days: int) -> pd.DataFrame:
+    """
+    Fetch the last `past_days` days of hourly wind/radiation/temperature for all
+    WIND_LOCATIONS from the FORECAST endpoint — the international counterpart to
+    `fetch_recent`, filling the same archive lag.
+
+    Args:
+        past_days: Days of history to request (Open-Meteo allows up to 92).
+
+    Returns:
+        DataFrame with columns: timestamp, windspeed_{key}, radiation_{key}, ...
+        Runs up to the current hour, so the caller must trim to whole days.
+    """
+    return _fetch_all_locations(
+        OPEN_METEO_FORECAST_URL,
+        {"past_days": past_days, "forecast_days": 1},
     )
 
 
