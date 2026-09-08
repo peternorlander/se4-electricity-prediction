@@ -59,12 +59,21 @@ on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21):
 | cheap2h | **15.04**    | ±6.17 |
 
 **These numbers are measured in the `gap0` condition** — the evaluator fits right
-up to its test window. Until 2026-08-23 production fitted ~5 days behind that,
-so this table was optimistic by roughly +0.37 (cheap2h) / +0.59 (min) / +1.70
-(avg), and by about double that in the current regime. The
-[archive-lag top-up](#closing-the-weather-archive-lag-round-19a) closes most of
-that gap in production, which brings the deployed model *toward* this table
-rather than changing the table. It has not been re-measured since.
+up to its test window, which it can only do because the whole evaluation year
+sits in one contiguous frame. Production cannot: its frame ends where the
+weather source ends. Until 2026-08-23 that was ~5 days back, making this table
+optimistic by **+0.37 (cheap2h) / +0.59 (min) / +1.70 (avg)**. Since the
+[archive-lag top-up](#closing-the-weather-archive-lag-round-19a) production fits
+to yesterday, and the remaining optimism is the `gap1` row below:
+
+| target | eval overstated by, before (gap5) | after (gap1) |
+|---|---|---|
+| cheap2h | +0.372 | **+0.155** |
+| min | +0.586 | **+0.258** |
+| avg | +1.695 | **+0.591** |
+
+So the fix moved the deployed model *toward* this table rather than changing the
+table. The table itself has not been re-measured since.
 
 Measured with `OMP_NUM_THREADS=4`. **Pin the thread count before comparing this
 table with anything.** XGBoost's floating-point reduction order depends on it, so
@@ -153,223 +162,224 @@ for the measurement, the two splice rules that make it safe, and what it does
 
 Feature importance is reported for **min, avg and cheap2h models only** — including max would dilute the signal for what actually matters for scheduling decisions.
 
+## The 2026-08-17 regime break
+
+The motivating case for round 19 and for
+[IMPROVEMENT_PLAN.md item 0](IMPROVEMENT_PLAN.md). Worth keeping because it is
+the clearest evidence this project has for what the model structurally *cannot*
+do, and because the obvious fixes were all tested and all failed.
+
+### What happened
+
+| date | avg | cheap2h | cheap2h/avg |
+|---|---|---|---|
+| 2026-08-16 | 20.1 | 6.0 | 0.30 |
+| 2026-08-17 | 138.1 | 20.2 | 0.15 |
+| 2026-08-18 | 163.7 | **127.9** | **0.78** |
+| 2026-08-19 | 164.0 | **128.0** | **0.78** |
+| 2026-08-20 | 142.8 | 81.2 | 0.57 |
+
+`cheap2h = 128.0` is the **all-time maximum of the 3-year training window**
+(n = 1096, median 13.1, p99 100.5). The previous August record across three
+Augusts was 85.7.
+
+**The shape broke, not just the level.** `cheap2h/avg` = 0.78 against a 3-year
+median of 0.28 — there was no cheap window at all — and the trough moved from
+night to midday: on 08-16 the cheap hours were 00–15, on 08-18 they were 13–14
+(solar) and the night was the expensive part. A night-charging automation would
+have paid ~160 instead of 128. Days with `cheap2h/avg > 0.70` **and** `avg > 100`
+number 57 of 1096 and are almost all Nov–Feb.
+
+### What caused it
+
+SE4 re-coupled to the continent: the |SE4 − DE| gap collapsed from ~90 to ~15
+EUR/MWh and the 30-day correlation went 0.33 → 0.79. 2026-07-25 → 08-11 had been
+an 18-day run with SE4 − DE < −50 (mean −85.5), the longest in the whole history.
+
+**It was not Baltic Cable returning**, which is what the press and an early read
+of this data suggested. ENTSO-E A78 carries a forced outage on that link,
+`available_mw = 0`, reason *"Trip of the BC-link"*, 2026-06-21 → 2026-09-18, and
+the DE_LU physical flow was 0.0 MW every day from 2026-07-01 through 08-22. The
+real mechanism has two layers:
+
+* **Background:** crippled export capacity kept SE4's surplus trapped all summer
+  (total exports ~780–1040 MW in Jul/Aug against 1400–2200 across Oct–Jan), which is
+  why it ran so cheap and so decoupled.
+* **Trigger:** the surplus vanished. `mean_wind_stockholm` — the trough models'
+  most load-bearing feature — fell from the 70th percentile (08-16) to the
+  **3.9th** (08-18) and **1.7th** (08-20). SE4 flipped from exporting to
+  importing ~1960 MW from SE3 and repriced to import parity.
+
+So the model *has* the wind. What it lacks is the capacity state the wind has to
+be conditioned on — which is IMPROVEMENT_PLAN item 0.
+
+### What the model predicted, and why it is structural
+
+Replaying the forecast production actually issued each morning (fit ≤ D−5, i.e.
+under the archive lag), cheap2h at d+1:
+
+| date | actual | predicted |
+|---|---|---|
+| 2026-08-17 | 20.2 | 20.4 |
+| 2026-08-18 | **127.9** | 34.4 |
+| 2026-08-19 | **128.0** | 30.5 |
+| 2026-08-20 | 81.2 | 40.8 |
+
+MAE 4.32 before the break, **57.75** from 08-17 on, bias −55.5. The highest
+number production issued anywhere that week was **49.1**.
+
+Four reasons this is not a tuning failure. Each was measured, and together they
+close the obvious routes:
+
+1. **No feature carries the cause.** `TROUGH_FEATURE_COLUMNS` has no continental
+   price feature at all, and nothing anywhere encodes transmission capacity.
+2. **Adding the continental price back does not fix it.** Arms on the same
+   slices: production 52.84 spike MAE, `+price_de_lag1/price_dk2_lag1` 50.84,
+   `+coupling gap` 51.63, and an **oracle given the same-day German price**
+   (impossible in production) 51.30 — predicting **41.6** for a realised 127.9.
+   DE sat at 100–170 through the entire cheap fortnight; only the coupling
+   changed, so the price was never the missing information.
+3. **The model cannot output the number.** XGBoost interpolates; it cannot
+   extrapolate past its training targets. Fitted in-sample on the full window,
+   cheap2h's maximum output is **108.8** all-year and **95.2** on May–Sep rows,
+   against a realised 127.9. **No feature set makes 128 reachable from a 3-year
+   window.** This is the single most durable constraint on future work here.
+4. **Reformulating the target does not rescue it.** Predicting `cheap2h − avg`
+   or `cheap2h/avg` and reconstructing gives 51.56 / 51.89 against 52.84 — the
+   *shape* (0.78) is as unprecedented as the level, so decomposing just moves
+   the out-of-distribution problem, and it costs 6.7 EUR/MWh of pre-break
+   accuracy.
+
+A 5-year training window raises the ceiling (cheap2h targets top out at 450.2
+instead of 107.9) and does help on the break — 48.52 against 52.84 — but costs
+three times the pre-break accuracy (7.98 against 2.53). Regime insurance with a
+real premium, consistent with round 15's closure of window length rather than a
+challenge to it.
+
 ## Closing the weather-archive lag (round 19a)
 
-Adopted 2026-08-23. This is the one change in this repo whose evidence is a
-*handicap* measurement rather than a candidate-vs-baseline A/B, so read the sign
-convention before the table.
+Adopted 2026-08-23. Measured with local experiment scripts under `experiments/`,
+which is **not committed** — the numbers below are the record.
 
-### The gap
+`fetch_data.WEATHER_ARCHIVE_LAG_DAYS = 5` — the Open-Meteo archive publishes to
+about today−5, so the merged frame ended ~5 days back and **the model was fitted
+five days behind the first forecast day**. The
+[price-lag freshening](#current-mae-baseline) had fixed the *anchor* in 2026-07;
+the *fit* was never addressed, and the gap was invisible because
+`evaluate.walk_forward_validate` fits right up to its test window — it models
+production's anchor faithfully and production's training tail not at all.
 
-`fetch_data.WEATHER_ARCHIVE_LAG_DAYS = 5`: the Open-Meteo archive publishes to
-about today−5, and `build_training_data` inner-joins prices against it. So the
-merged frame ended ~5 days back and **the model was fitted five days behind the
-first forecast day** — every day, on every run.
+`fetch_data._splice_recent` now tops the archive up from Open-Meteo's forecast
+endpoint (`sources.open_meteo.fetch_recent` / `fetch_international_wind_recent`,
+`past_days`) so the frame reaches yesterday. **Two rules in that function are
+load-bearing** — the archive wins wherever it has published, and the result is
+cut at Swedish midnight so the newest day is never a partial one. Both are
+explained where they are enforced; read the docstring before touching it.
 
-The [price-lag anchor freshening](#current-mae-baseline) fixed the *anchor* in
-2026-07: `build_forecast_features` takes the SE4 lags from `se4_prices_daily`,
-which reaches the latest published price. The *fit* was never addressed, and the
-gap was invisible because `evaluate.walk_forward_validate` fits right up to its
-test window. The eval models production's anchor faithfully and production's
-training tail not at all.
+Measured cost of the lag, on the round-15b sliding grid (four period clusters,
+`min_train` constant), replicated on 28 measurements across seven independently
+fetched caches:
 
-### The measurement
+| target | eval overstated production by, before (gap5) | after the fix (gap1) |
+|---|---|---|
+| `cheap2h` | +0.372 | **+0.155** |
+| `min` | +0.586 | **+0.258** |
+| `avg` | +1.695 | **+0.591** |
 
-Two arms on the round-15b confound-free sliding grid (`L=1095`, so
-`min_train == 731` at every shift; four period clusters):
-
-* `gap0` — fit up to the test window. What the eval does.
-* `gap5` — fit five days short, price lags still freshened exactly as production
-  freshens them. What production did.
-
-`gap0` reproduces `ab.harness.run_walk_forward` exactly (cheap2h 14.942 at
-NOW/shift 0 either way), which pins the handicap harness to the production loop.
-
-**A positive delta means the lag costs that much** — these are handicaps, not
-candidates, so positive is the expected result and its size is the prize.
-
-| target | `gap5 − gap0` | NOW | −6M | −12M | −21M | verdict |
-|---|---|---|---|---|---|---|
-| `avg` | **+1.695** | +2.075 | +1.562 | +1.507 | +1.637 | REAL, 14/14 |
-| `min` | **+0.586** | +1.053 | +0.528 | +0.219 | +0.542 | REAL, 12/14 |
-| `cheap2h` | **+0.372** | +0.777 | +0.401 | +0.063 | +0.247 | REAL, 11/14 |
-
-A `gap3` arm sits between `gap0` and `gap5` on `min` and `avg` — the
-dose-response a real mechanism should show.
+Both are REAL in all four clusters, and monotone in the gap (gap1 < gap3 < gap5
+on every target — the dose-response a real mechanism shows and noise does not).
+**The residual `gap1` column is the number that still matters**: the headline
+baselines remain optimistic by that much, because the eval fits one day closer
+than production ever can. Note the first day carries 35–44% of the whole
+five-day cost — recency is steeply non-linear, which is what makes reaching
+*yesterday* rather than today−2 worth the Swedish-midnight cut.
 
 **The mechanism is the fit, not stale features.** A `gap5_fitonly` arm (fit
 short, rolling anchors fresh) reproduces `gap5`; a `gap5_rollonly` arm (fit
-full, only `wind_variability` / `radiation_variability` five days staler) is
-~0 and NOISE on both priority targets. Freezing the rolling regime signals
-earlier costs nothing. Not having the last five days of *targets* costs
-everything. That is why the fix extends the frame rather than re-seeding
-anchors.
+full, only `wind_variability` / `radiation_variability` five days staler) is ~0
+and NOISE on both priority targets. Not having the last five days of *targets*
+costs everything; freezing the rolling regime signals earlier costs nothing.
+That is why the fix extends the frame rather than re-seeding anchors.
 
-**Vintage replication.** The grid above varies period on one snapshot. It was
-re-run varying the *fetch*: all five 3-year caches at shifts 0–1 (10 points,
-**10/10 positive on every target**, mean +0.820 cheap2h / +1.005 min / +2.226
-avg), and the second 5-year snapshot fetched 15 days earlier (4/4 positive,
-+0.573 / +0.668 / +1.632). Pooled over all three grids — **28 measurements on
-seven independently fetched caches** — positive on 25/28 (cheap2h), 26/28
-(min), 28/28 (avg).
+**Replication.** The grid above varies period on one snapshot. Re-run varying
+the *fetch*: all five 3-year caches at shifts 0–1 (**10/10 positive on every
+target**, mean +0.820 cheap2h / +1.005 min / +2.226 avg) and a second 5-year
+snapshot fetched 15 days earlier (4/4 positive, +0.573 / +0.668 / +1.632).
+Pooled over all three grids — **28 measurements on seven independently fetched
+caches** — positive on 25/28 (cheap2h), 26/28 (min), 28/28 (avg). The ladder
+runs about double the clustered mean because every ladder point sits in the NOW
+period, which the primary grid also puts at +0.777 / +1.053 / +2.075; read
++0.8 / +1.0 / +2.2 as the current-regime effect.
 
-The ladder is roughly double the clustered mean because every ladder point
-evaluates a window ending Jul–Aug 2026, i.e. the NOW condition, which the
-primary grid also puts at +0.777 / +1.053 / +2.075. So:
+**What it did on the break week.** Production as it actually ran (fit ≤ D−5)
+against the gap-closed condition, cheap2h at d+1:
 
-* **+0.37 / +0.59 / +1.70** is the effect averaged over four market regimes.
-* **+0.8 / +1.0 / +2.2** is the effect in the regime production runs in now.
-
-### The fix, and the two rules that make it safe
-
-`sources.open_meteo.fetch_recent` / `fetch_international_wind_recent` call the
-*forecast* endpoint with `past_days`, which serves the operational NWP model's
-own recent analysis right up to the current hour. `fetch_data._splice_recent`
-joins it onto the archive:
-
-1. **The archive wins wherever it has published.** Only rows strictly after its
-   last timestamp are taken from the top-up, so three years of archive data are
-   untouched and a later run does not rewrite history as the archive catches up.
-2. **The result is cut at Swedish midnight of `today`.** The top-up runs to the
-   current hour; `features.aggregate_weather_daily` groups by Swedish calendar
-   day, so an uncut series would add a partial final day — a handful of hours
-   averaged as if they were twenty-four — as a full training row.
-
-A failed top-up degrades to archive-only with a warning rather than failing the
-run (`_fetch_recent_or_none`): the top-up is an accuracy improvement, not a
-correctness requirement, and a scheduled Actions run should not die because one
-endpoint had a bad minute.
-
-### Are the two products interchangeable?
-
-Measured over a 10-day overlap, forecast-endpoint analysis against archive:
-
-| variable | bias | MAE | rel. MAE |
+| date | actual | production (gap5) | gap closed |
 |---|---|---|---|
-| windspeed (SE4/Malmö) | +0.000 | **0.000** | 0.0% |
-| temperature | +0.737 | 0.903 | 4.9% |
-| radiation | −6.117 | 28.775 | 12.9% |
+| 2026-08-18 | 127.9 | 34.4 | 42.7 |
+| 2026-08-19 | 128.0 | 30.5 | 53.7 |
+| **2026-08-20** | **81.2** | **40.8** | **104.6** |
+| 2026-08-21 | 62.3 | 34.3 | 60.5 |
 
-Windspeed is **bit-identical** at Malmö, DK1, DK2, Karlskrona and Stockholm;
-only DE-north differs (1.30 m/s). That is the part that matters most —
-`mean_wind_stockholm` and `max_wind` are the two most load-bearing columns in
-the trough list. End to end, rebuilding the frame both ways, the trough-list
-columns disagree by under 0.21 of their own 3-year standard deviation except
-`radiation_variability` at 0.49 sd (a 7-day rolling window, so one day's
-radiation difference propagates).
+The 08-20 row is the finding in one line. By then the break was three days old
+and both 08-18 and 08-19 had cleared at 128 — but production had not been
+*fitted* on either, because the archive had not published their weather. The
+chase lag is not one day, it is closer to six.
 
-### What this does NOT claim
-
-The +0.37 / +0.59 / +1.70 is the cost of the gap measured with *archive* weather
-on both sides. Production fills those days with the recent-analysis product
-instead, which carries the error in the table above, so **the realised gain will
-be smaller than the measured cost** — by an amount nobody has measured yet.
-
-The honest confirmation is a candidate-vs-baseline A/B on a snapshot fetched
-*after* this change: build the frame with and without the spliced tail and run
-the same walk-forward. That measurement is still outstanding. It was adopted
-ahead of it because the sign is not in doubt (28 of 28 grids agree on direction,
-and the splice can only move the estimate toward zero, not past it), the change
-is reversible in one function, and the alternative was to keep shipping a
-five-day-stale fit for another week.
-
-Note for A/B work: snapshots taken before and after this change are **not**
-directly comparable — the merged frame is ~4 rows longer afterwards, so grid
-scripts that assert a row count (`experiments/run_round19.py` and friends) will
-trip on a fresh fetch. That assertion is doing its job; update the constant, do
-not delete it.
+Caveat carried forward: those figures were measured with archive weather on both
+sides of the comparison. Production fills the gap with the forecast product
+instead, which carries its own error against the archive (windspeed matched to
+0.000 MAE at four of five locations, temperature +0.75 °C, radiation ~6–17%), so
+the realised gain is smaller than the measured cost by an amount nobody has
+measured. The clean confirmation — a candidate-vs-baseline A/B whose candidate
+frame is built from spliced weather — is still outstanding.
 
 ## Prediction interval for cheap2h (round 19c)
 
-Adopted 2026-09-05. `cheap2h_low` / `cheap2h_high` are an **80% band around each
-day's own `cheap2h` prediction**. This is an addition — the headline `cheap2h`
-number is produced by exactly the model it always was, and `model.predict()`
-without an `interval` argument returns byte-for-byte what it returned before.
+Adopted 2026-09-05. Measured with local experiment scripts under
+`experiments/`, which is **not committed** — the numbers below are the record.
 
-### Why
+`cheap2h_low` / `cheap2h_high` are a **conformally calibrated 80% band around
+each day's own `cheap2h` prediction**, from two `reg:quantileerror` regressors
+(α = 0.10 / 0.90) on the same feature list and hyperparameters as the point
+model. This is an addition: `model.predict()` without an `interval` argument
+returns exactly what it always did, so `evaluate.py` and the A/B harness are
+untouched.
 
-A point estimate cannot say "I don't know". On 2026-08-18 the model predicted
-42.7 EUR/MWh against a realised 127.9, with exactly the outward confidence it
-predicts 6.0 with on a calm day; the automation had no way to tell the two
-apart. Two quantile regressors (`reg:quantileerror` at α = 0.10 and 0.90) on the
-**same feature list and the same hyperparameters** give it one.
+Why it exists: a point estimate cannot say "I don't know". On 2026-08-18 the
+model predicted 42.7 against a realised 127.9 with the same outward confidence
+it predicts 6.0 with on a calm day. The band can — and its width is informative,
+not decorative: the point estimate's MAE runs 7.26 → 21.50 across band-width
+quartiles.
 
-The band is not decoration — width tracks accuracy. Grouping a year of
-walk-forward days by band width:
+The **raw** band is over-confident (a nominal 80% interval covers 54%), so
+`model.train_interval` applies split conformal on a 180-day holdout and refits on
+all data. Measured 0.542 → 0.788 pooled, in every period cluster. Serve-time
+order is sort → widen → clamp open around the point estimate; each step has a
+measured reason, documented on `model.IntervalModel`.
 
-| band width | n | MAE of the point estimate | coverage |
-|---|---|---|---|
-| narrowest | 41 | **7.26** | 0.90 |
-| narrow | 41 | 13.13 | 0.90 |
-| wide | 40 | 20.83 | 0.82 |
-| widest | 41 | **21.50** | 0.83 |
-
-The point estimate is three times worse on the days the model itself flags as
-uncertain. It knows when it does not know; it just had no way to say so.
-
-### Calibration — the raw band is over-confident, conformal fixes it
-
-Measured on the round-15b sliding grid, four period clusters: a nominal 80%
-band covers **0.542** (cheap2h) / 0.576 (min), and only ~0.15 on the days in the
-top decile of realised price. An 80% interval that covers 54% is a point
-estimate with decoration.
-
-`model.train_interval()` applies **split conformal**: fit both quantile models
-on everything but the last `CONFORMAL_HOLDOUT_DAYS` (180) rows, score that
-holdout, widen the band by the (1−α) empirical quantile of the conformity
-scores `max(q10 − y, y − q90)`, then refit on all the data and carry the
-correction over. Measured effect on the grid: **0.542 → 0.788** pooled, 0.76–0.83
-in every cluster, both targets; top-decile coverage 0.31 → 0.51. The price is a
-band ~50% wider, which is the honest width.
-
-The refit-after-calibration step assumes the correction transfers from a fit on
-n−180 rows to one on n. It does, in the safe direction: the full-data models are
-marginally sharper, so the carried-over correction is mildly conservative, never
-optimistic.
-
-Three corrections are applied in order at serve time, each for a measured
-reason (see `model.IntervalModel`):
-
-1. **Sort** — the two regressors are independent fits, so nothing enforces
-   q10 ≤ q90. Full crossing is rare (0.04% of rows) but real.
-2. **Widen** by the conformal correction.
-3. **Include the point estimate** — the point model minimises squared error and
-   predicts the conditional *mean*; the quantiles are quantiles. Prices are
-   right-skewed, so the mean sits above the median (+2.36 EUR/MWh on average)
-   and falls outside the raw band on 9.5% of rows, 1.9% after widening.
-   Clamping the band open around the point costs nothing and guarantees the
-   number the automation reads is inside the range shown beside it.
-
-### What was tested and NOT adopted
-
-Ranking the next H days by `q90` instead of the point estimate looked like a
-0.8 EUR/MWh reduction in realised charging cost **pooled over 14 grid points**,
-and **sign-flips per period cluster** (cheap2h H=7: NOW −2.82, −6M +0.25,
-−12M −0.51, −21M −1.12). The pooled gain was a NOW-cluster effect wearing a
-bigger `n` — exactly what the clustered verdict rules exist to catch. Not
-adopted as a decision rule. `q50` is not fitted at all: the point model stays
-the headline number.
+**What the band said on the break week.** cheap2h q90 at d+1: −1.5 (08-16) →
+34.4 (08-17) → 70.2 (08-18) → 78.1 (08-19) → 116.4 (08-20). As a *level* it
+still badly understates 127.9 — the ceiling in
+[The 2026-08-17 regime break](#the-2026-08-17-regime-break) binds the quantile
+models too. As an *alarm* it is far more legible than the point estimate's
+1.7 → 16.5 → 42.7, and it is the honest reason to ship the band: not that it
+predicts a break, but that it stops claiming confidence it does not have.
+Coverage during the break was 0.14, against 0.83 in the days before it.
 
 ### How this interacts with A/B testing
 
-**The existing cheap2h MAE A/B remains the gate for feature and model changes.**
-The quantile models are fitted on `TARGETS["cheap2h"]`'s feature list, so
-anything that improves the point model's features improves their inputs too. A
-separate A/B per quantile would trade compute for a near-duplicate answer.
-
-**But MAE does not measure interval quality, and never will.** They are
-different objects: a model can rank days perfectly and be badly calibrated, or
-be well calibrated and rank badly. So the band gets a **guard rail, not a
-gate**: every production run prints and pushes `cheap2h_interval` with
-`coverage_calibrated` against `nominal_coverage`. After adopting any change,
-check that it is still near 0.80. It costs nothing and it is the only thing that
-would catch a feature change that quietly broke the band.
-
-**Changing the interval itself is a different experiment.** Quantile levels, the
-conformal window or α, or separate hyperparameters for the quantile models are
-not measurable by MAE at all — score them on **pinball loss and coverage**, and
-do it **per period cluster**, never pooled. The q90 decision rule above is the
-worked example of why.
+- **cheap2h MAE stays the gate** for feature and model changes. The quantile
+  models are fitted on `TARGETS["cheap2h"]`'s feature list, so anything that
+  improves the point model's inputs improves theirs.
+- **MAE cannot measure the band, ever.** It only looks at one number per day.
+  The conformal calibration moved coverage 0.594 → 0.806 and MAE by *exactly
+  zero*. So the band gets a **guard rail, not a gate**: every run pushes
+  `cheap2h_interval` with `coverage_calibrated`; after adopting any change,
+  check it is still near `nominal_coverage`.
+- **Changing the interval itself** — quantile levels, conformal window or α,
+  separate hyperparameters — is not measurable by MAE at all. Score it on
+  **pinball loss and coverage**, **per period cluster**, never pooled.
 
 ## Target Definition
 
@@ -733,34 +743,32 @@ single data snapshot, so a verdict takes one sitting.
 ### Snapshot generations — check the weather tail before building a grid
 
 `python ab_test.py list` reports a **weather tail** per snapshot: how many days
-behind its own `today` the weather stops.
-
-```
-  snapshot     weather tail
-  2026-08-21            5d*
-  2026-09-05            1d*
-```
-
-`5d` means archive-only (fetched before the 2026-08-23
+behind its own `today` the weather stops. `5d` means archive-only (fetched
+before the 2026-08-23
 [archive-lag top-up](#closing-the-weather-archive-lag-round-19a)); `1d` means
 topped up to yesterday. `*` marks a value derived on read rather than recorded
-at save time — same number, and snapshots taken before the field existed need no
-migration, `ab.snapshot.read_meta` works it out from `weather_hourly.pkl`.
+at save time — same number, so snapshots predating the field need no migration.
 
-**Old snapshots are not stale and must not be deleted.** They are the evidence
-base for every verdict in the rejected table, and an A/B run on one is still
-valid — `BASELINE` and `CANDIDATE` always share a snapshot, so the delta is
-drift-free either way.
+**Snapshots with different tails must not share one measurement grid.** A 1d
+frame is ~4 rows longer, and the shift arithmetic derives its windows from the
+end of the frame, so a grid spanning both would silently compare different
+windows. A vintage ladder mixing generations varies the fetch *and* the tail at
+once. Grid scripts that assert a row count will trip on the first post-top-up
+fetch — that assertion is doing its job; update the constant, do not delete it.
 
-What the tail *is* for: **snapshots with different tails must not share one
-measurement grid.** A 1d snapshot's merged frame is ~4 rows longer, and the
-shift arithmetic derives its windows from the end of the frame, so a grid built
-across both would silently compare different windows. A vintage ladder mixing
-generations varies two things at once — the fetch and the tail condition. Stay
-within one generation, or say plainly that you are not.
-
-Grid scripts that assert a row count will trip on the first post-top-up fetch.
-That assertion is doing its job: update the constant, do not delete it.
+**Do not delete or backfill old snapshots.** An A/B is paired, so the tail is
+shared by both arms and cancels out of the delta. Measured rather than assumed:
+one snapshot built both ways, same known-harmful candidate (the 8-column
+price/market block on cheap2h, +1.00 in the ledger below), four shifts each —
+the 1d frame gave mean delta +1.372 and the 5d frame +0.735, a gap of 0.638
+against a within-frame shift-to-shift spread of up to 1.510. Inside the noise
+the shift sweep already samples. (`classify` did label the two frames REAL and
+NOISE, but on one 5d shift landing at −0.008 — the documented
+sign-consistency brittleness, not the tail. Drop that point and both read REAL.)
+Backfilling also cannot
+supply a source the cache never fetched, which is the case that actually blocks
+work. If you need a 1d-tail cache, fetch one — the reason to keep fetching is a
+more recent evaluation period, which is what snapshots were always for.
 
 ### How changes are validated
 
@@ -1079,6 +1087,10 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | Longer training window (4y / 4.4y / 4.8y vs 3y) | Round 15a/15c/15d, 2026-08-06, on a 5-year snapshot. Longer won 24/24 at the NOW period (cheap2h −0.73, min −0.61, avg −0.61) but NOISE across three periods — the gain tracks how crisis-heavy the added year is (mean TTF 92 → 124 → 129). |
 | Shorter training window (2.0y / 2.5y vs 3y) | Round 15d, 2026-08-06. NOISE on all four period clusters for both priority targets, sign-flipping (cheap2h 2.0y: NOW +0.404 but −12M −0.467). Together with the row above this closes window length in BOTH directions: it is not a lever, and 15c's single-period 24/24 was a period effect. Keep `TRAINING_DAYS = 1095`. |
 | Removing the cheap2h negative-price hurdle | Round 15b, 2026-08-06 — **tested and REJECTED, the hurdle stays.** Removal costs **+0.250 EUR/MWh**, positive in all four period clusters → `KEEP_LOAD_BEARING`. An earlier reading (13.1b/c) called it worthless; that was a `min_train` artefact — the old tail-truncated grid trained the far clusters on 361–541 rows, starving the hurdle's classifier of negative-price days. |
+| Ranking forecast days by the interval's `q90` instead of the point estimate, for the charging decision | Round 19c, 2026-09-05. Looked like −0.8 EUR/MWh of realised charging cost **pooled over 14 grid points**, and **sign-flips per period cluster** (cheap2h H=7: NOW −2.82, −6M +0.25, −12M −0.51, −21M −1.12; min flips at both horizons). A NOW-cluster effect wearing a bigger `n` — the exact failure the clustered verdict rules exist to catch. The band ships as information and as a guard rail on the *defer* decision; the day **ranking** stays on the point estimate. Decision metrics must be scored per cluster, never pooled. |
+| Anchored target for `min`/`cheap2h` (regress `y − known price lag`, add the anchor back) | Round 19b, 2026-08-22. **+2.4 to +48 EUR/MWh harmful**, 0 of 4 favourable in every period cluster, on both targets and all three anchors. The anchor is frozen across the horizon while SE4 troughs swing 1.5 → 50 → 8 within a week, so re-basing injects the anchor's whole day-to-day variance. With round 18 (price signals as *features*) this closes both routes: the prediction ceiling cannot be raised from inside the model. |
+| Market-coupling / congestion features for `min`/`cheap2h` (`coupled_frac_dk2`, `relgap_dk2`, 1-day and 7-day) | Round 19e, 2026-08-22. Carries no price level (a 5 and a 200 EUR/MWh day score identically) and does track the regime (relgap monthly 0.055 Feb-26 → 0.493 Aug-26), but **NOISE on all four arms, both targets**. Best was `cpl_gap7` on cheap2h (clmean −0.268, 11/14 favourable) killed by −6M at +0.027. The state is not learnable from a price-derived lag; ENTSO-E cross-border capacity/flows are the remaining route (IMPROVEMENT_PLAN item 0). |
+| 5-year training window as regime insurance (re-opened only for the ceiling, not for headline MAE) | Round 19, 2026-08-22. The 3-year window's cheap2h targets top out at 107.9 so 127.9 is unreachable; a 5-year window tops out at 450.2 and does score better on the 2026-08-17 break (spike MAE 48.52 vs 52.84) — but **three times worse on the calm days before it** (7.98 vs 2.53). Regime insurance with a real premium; consistent with round 15a/15c/15d's closure of window length rather than a challenge to it. Not a lever. |
 | `price_se4_min_lag7` | Importance 0.009, added variance to min/avg MAE. With only 3 years training data, insufficient weekly-min samples. |
 | `reservoir_norway_fill_pct` (raw) | Redundant with `reservoir_norway_deviation` which is the more informative signal. Removed to reduce noise. |
 | `reservoir_norway_change` | Low importance (0.009), already captured implicitly by `reservoir_sweden_change`. Removed to reduce noise. |
@@ -1112,7 +1124,7 @@ Keep this list updated — it prevents re-testing things that didn't work.
 - **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
 - **Forecast horizon**: All forecast days (1–8) use the same features and a single model that doesn't distinguish horizon. Horizon-aware modelling was **evaluated and shelved** (2026-07): the anchor-staleness sensitivity showed the true stale-lag cost is only ~1 EUR/MWh for min/cheap2h, so a `forecast_horizon` feature has little headroom. The scary-looking per-horizon curve is a weekday artifact of the step-7 walk-forward (see Current MAE Baseline), not real horizon decay. The price-lag anchor is kept fresh regardless, since that was a free win.
 - **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis — real day+7 weather forecasts are worse than archive. This optimism grows at far horizons and is not captured by the anchor-staleness or per-horizon metrics.
-- **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual 1-day gap is still not modelled, and neither is the recent-analysis product's own error against the archive.
+- **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual is measured at **+0.155 (cheap2h) / +0.258 (min) / +0.591 (avg)** (the `gap1` arm), and the recent-analysis product's own error against the archive is on top of that and still unmeasured.
 - **Max prediction accuracy** (~34 EUR/MWh MAE, the highest of the four targets): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
 - **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale.
 - **FIXED 2026-07-22 — NaN exchange rate had blanked the whole HA payload.**
