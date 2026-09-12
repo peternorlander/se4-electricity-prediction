@@ -45,8 +45,8 @@ def _splice_recent(archive: pd.DataFrame, recent: pd.DataFrame, today: date) -> 
     first forecast day and the model was fitted that far behind. Measured cost:
     avg +1.70 / min +0.59 / cheap2h +0.37 EUR/MWh over four evaluation periods,
     and +2.2 / +1.0 / +0.8 in the current regime, positive on 25-28 of 28
-    measurements across seven independently fetched caches. See the README
-    "Closing the weather-archive lag" section.
+    measurements across seven independently fetched caches. See docs/DECISIONS.md
+    "Closing the weather-archive lag".
 
     Two rules, both load-bearing:
 
@@ -117,7 +117,7 @@ def fetch_training_inputs(today: date) -> dict:
     Split out of predict.py so the same fetch logic is reusable by the A/B
     backtest flow (ab_test.py / ab.snapshot), which caches the result to disk
     and replays it across many walk-forward shifts without re-fetching. See the
-    README "A/B Backtest Flow" section. predict.py's forecast-side fetches (weather/wind
+    docs/AB_TESTING.md. predict.py's forecast-side fetches (weather/wind
     forecast, planned nuclear outages, the wider-range calendar covering the
     forecast horizon, market_daily aggregation, EUR/SEK rate, known-price
     dates) are not needed for training and stay in predict.py.

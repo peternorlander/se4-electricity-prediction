@@ -1,5 +1,5 @@
 """
-CLI for the A/B backtest flow. See the README "A/B Backtest Flow" section for
+CLI for the A/B backtest flow. See docs/AB_TESTING.md for
 the full design and the agent playbook.
 
     python ab_test.py fetch                        # fetch + cache today's training inputs
@@ -142,7 +142,13 @@ def main():
                                help="Override the training window length in days "
                                     "(default: fetch_data.TRAINING_DAYS, ~3 years). "
                                     "A value longer than the default auto-routes to "
-                                    "ab_cache/long/ unless --root is given.")
+                                    "ab_cache/long/ unless --root is given. Use 1825 "
+                                    "for the sliding four-cluster grid; asking for "
+                                    "more buys no extra rows, because the frame "
+                                    "cannot start before EUA carbon data does "
+                                    "(2021-10-18) and the head is dropped. See "
+                                    "docs/AB_TESTING.md 'How long a snapshot to "
+                                    "fetch'.")
     fetch_parser.add_argument("--root", default=None,
                                help="Cache root to save under (default: ab_cache/, "
                                     "or ab_cache/long/ for a long --days fetch).")

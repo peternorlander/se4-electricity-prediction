@@ -18,7 +18,7 @@ from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMN
 # they (and non-priority `max`, also noisy) stay on uniform weights. The `avg`
 # model is independent (own regressor, own fit), so weighting it does not touch the
 # other targets' predictions. Do NOT "tidy" this into a single scalar. See the
-# README "Features Tested and Rejected" table (time-decay sample weights row).
+# docs/REJECTED.md (time-decay sample weights row).
 HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 
 
@@ -31,7 +31,7 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 # features.AVG_FEATURE_COLUMNS). The two trough targets run pruned lists that
 # differ from each other by exactly one column. cheap2h additionally gets
 # neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS.
-# README "Per-Target Feature Sets" has the evidence.
+# docs/MODEL.md "Per-Target Feature Sets" has the evidence.
 #
 # min (14) and cheap2h (15) differ by `price_se4_max_lag1`, and that difference
 # is measured, not stylistic: on one 16-point / four-period grid the same
@@ -78,7 +78,7 @@ def _make_regressor() -> XGBRegressor:
 # NOISE by the strict sign-consistency rule (5/6 shifts improved, one
 # near-zero flip). Re-tested 2026-08-06 on the confound-free four-period
 # grid and NOISE again -- clmean -0.104, but +0.079 in the period closest
-# to production (see README "Features Tested and Rejected"). HURDLE_TARGETS
+# to production (see docs/REJECTED.md). HURDLE_TARGETS
 # is cheap2h-only, and that is now a closed question, not a pending one.
 NEG_PRICE_THRESHOLD = 0.0  # EUR/MWh
 HURDLE_PROBA_FEATURE_NAME = "neg_price_proba"
@@ -220,8 +220,8 @@ def _fit_models(data: pd.DataFrame, half_life_days=HALF_LIFE_DAYS, targets=None)
 # 6.0 with on a calm day, and the Home Assistant automation had no way to tell
 # those apart. Two quantile regressors on the SAME feature list give it one.
 #
-# Measured on the round-15b sliding grid, four period clusters (see the README
-# "Prediction interval for cheap2h" section):
+# Measured on the round-15b sliding grid, four period clusters (see
+# docs/DECISIONS.md "Prediction interval for cheap2h"):
 #   * band width tracks accuracy -- point-estimate MAE runs 7.26 / 13.13 /
 #     20.83 / 21.50 across width quartiles, so a wide band really does mean a
 #     bad day rather than a shy model;

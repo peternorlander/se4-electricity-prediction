@@ -1,6 +1,5 @@
 """
-Walk-forward loop for the A/B backtest flow. See the README "A/B Backtest
-Flow" section.
+Walk-forward loop for the A/B backtest flow. See docs/AB_TESTING.md.
 
 Deliberately does NOT import or refactor evaluate.walk_forward_validate --
 the production headline eval stays untouched so every recorded baseline
@@ -40,8 +39,8 @@ def apply_shift(data: pd.DataFrame, shift: int) -> pd.DataFrame:
     `shift` days reproduces the eval exactly as it would have run `shift`
     days earlier -- window placement AND training tail move together, the
     same way a real rerun on an earlier day would. This single "shift" axis
-    captures the whole between-day difference (see the README "A/B Backtest
-    Flow" section, "Key insight").
+    captures the whole between-day difference (see docs/AB_TESTING.md,
+    "How it works").
     """
     if shift <= 0:
         return data

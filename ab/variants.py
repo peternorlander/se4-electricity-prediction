@@ -1,6 +1,6 @@
 """
-Variant definitions for the A/B backtest flow. See the README "A/B Backtest
-Flow" section (the agent playbook covers editing CANDIDATE step by step).
+Variant definitions for the A/B backtest flow. See docs/AB_TESTING.md (the
+agent playbook covers editing CANDIDATE step by step).
 
 BASELINE mirrors production exactly (model._fit_models / model.TARGETS).
 CANDIDATE is the ONLY thing an experimenter edits -- typically a handful of
@@ -46,5 +46,5 @@ class Variant:
 BASELINE = Variant(name="base")
 
 # --- Edit below for the experiment at hand. Revert to the no-op Variant()
-# once the verdict is recorded (see the README "A/B Backtest Flow" playbook). ---
+# once the verdict is recorded (see docs/AB_TESTING.md, the playbook). ---
 CANDIDATE = Variant(name="candidate")

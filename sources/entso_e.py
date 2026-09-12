@@ -111,6 +111,21 @@ def reason_text(content: bytes) -> str:
     return " | ".join(parts)[:300] if parts else content[:200].decode("utf-8", "replace")
 
 
+def raise_for_status_with_reason(response, label: str) -> None:
+    """raise_for_status(), but log WHY first.
+
+    The production fetchers below raise on 4xx, and a bare HTTPError says only
+    "400 Client Error" -- which in a GitHub Actions log is indistinguishable
+    between a bad token, a bad EIC and a platform limit change. ENTSO-E puts the
+    actual reason in the body, and on 2026-09-12 it was a new per-document
+    period cap (docs/FINDINGS.md). Same failure, one line of diagnosis.
+    """
+    if response.status_code >= 400:
+        logger.error("ENTSO-E %s failed: HTTP %d: %s",
+                     label, response.status_code, reason_text(response.content))
+    response.raise_for_status()
+
+
 def request_documents(params: dict, label: str = "", *, raw_dir=None,
                       raw_name: str = None, log=None) -> tuple[list, bool]:
     """One ENTSO-E call, returning (parsed XML roots, ok).
@@ -262,7 +277,8 @@ def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> 
     }
 
     response = get_with_retry(ENTSO_E_API_URL, params)
-    response.raise_for_status()
+    raise_for_status_with_reason(
+        response, f"day-ahead prices (A44) {area_code} {start_date}..{end_date}")
 
     root = ET.fromstring(response.content)
     records = []
@@ -371,7 +387,9 @@ def _fetch_outages_chunk(
     }
 
     response = get_with_retry(ENTSO_E_API_URL, params)
-    response.raise_for_status()
+    raise_for_status_with_reason(
+        response,
+        f"nuclear outages (A77/{business_type}) {area_code} {start_date}..{end_date}")
 
     # Each XML file in the ZIP is one outage event — iterate all of them.
     try:
@@ -526,7 +544,8 @@ def _fetch_reservoir_chunk(area_code: str, start_date: str, end_date: str) -> pd
     }
 
     response = get_with_retry(ENTSO_E_API_URL, params)
-    response.raise_for_status()
+    raise_for_status_with_reason(
+        response, f"reservoir (A72) {area_code} {start_date}..{end_date}")
 
     try:
         root = ET.fromstring(response.content)

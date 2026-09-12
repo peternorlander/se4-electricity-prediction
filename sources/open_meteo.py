@@ -78,8 +78,8 @@ def fetch_recent(past_days: int) -> pd.DataFrame:
     Fills the archive's ~5-day publication lag. `fetch_historical` can only
     reach today−5, which used to leave the training frame ending ~5 days behind
     the first forecast day — measured at avg +1.70 / min +0.59 / cheap2h +0.37
-    EUR/MWh MAE, and +2.2 / +1.0 / +0.8 in the current regime. See the README
-    "Closing the weather-archive lag" section for the evidence and for why the
+    EUR/MWh MAE, and +2.2 / +1.0 / +0.8 in the current regime. See docs/DECISIONS.md
+    "Closing the weather-archive lag" for the evidence and for why the
     two products are interchangeable here (windspeed matched the archive to
     0.000 MAE at four of five locations over a 10-day overlap).
 

@@ -1,6 +1,5 @@
 """
-Local snapshot cache for the A/B backtest flow. See the README "A/B Backtest
-Flow" section.
+Local snapshot cache for the A/B backtest flow. See docs/AB_TESTING.md.
 
 A snapshot is a pickled copy of one fetch_training_inputs() result, saved
 under ab_cache/<YYYY-MM-DD>/ so ab_test.py can replay the exact same fetched
@@ -33,7 +32,7 @@ LONG_CACHE_ROOT = DEFAULT_CACHE_ROOT / "long"
 
 # Snapshots taken before 2026-08-23 were fetched with weather ending
 # ~WEATHER_ARCHIVE_LAG_DAYS back; afterwards fetch_data tops the archive up to
-# yesterday (README "Closing the weather-archive lag"). The merged frame is
+# yesterday (docs/DECISIONS.md "Closing the weather-archive lag"). The merged frame is
 # therefore ~4 rows longer on a newer snapshot, and the two are NOT
 # interchangeable inside one measurement grid. Rather than stamp a version
 # number that has to be remembered and bumped, every snapshot records the fact

@@ -368,14 +368,49 @@ cluster one unweighted vote instead of counting points. Asserting that the point
 have distinct end dates is still worth doing, but distinctness alone is a weak
 guarantee, not independence.
 
-**The head of a long snapshot is not where the frame starts.** `_warn_uncovered`
-leaves an uncovered price source as NaN and the final `dropna` takes those rows
-with it, so a 5-year fetch begins where the *latest-starting* source does —
-EUA/carbon from 2021-10-18 — not where the weather does. On `long/2026-08-06`
-that is 1747 rows from 2021-10-21, where a naive reading of the fetch window
-would predict 1815 from 2021-08-14. Assert the row count and the first date, and
-update the constant deliberately when it moves (see
-[DECISIONS.md](DECISIONS.md#nan-instead-of-zero-for-uncovered-price-sources)).
+### How long a snapshot to fetch, and why a long one is shorter than you asked for
+
+**`--days 1825` is the right length. You will get fewer rows than that, and that
+is correct behaviour, not damage.** A long fetch reaches back past the start of
+the shortest-history source: EU ETS carbon (`CO2.L` on Yahoo) begins **2021-10-18**
+and nothing earlier exists to fetch. `_warn_uncovered` leaves those days NaN
+instead of zero-filling them, the final `dropna` removes the rows, and the frame
+therefore begins **2021-10-21** — the first day every column is real — whatever
+start date the fetch window implies. Measured on the three long caches:
+
+| cache | days requested | usable rows | lost at the head | frame starts | weather tail |
+|---|---|---|---|---|---|
+| `long/2026-08-06` | 1822 | 1747 | 75 | 2021-10-21 | 5d |
+| `long/2026-08-21` | 1822 | 1762 | 60 | 2021-10-21 | 5d |
+| `long/2026-09-12` | 1825 | **1787** | 38 | 2021-10-21 | **1d** |
+
+Three things follow, and they are the whole practical answer:
+
+* **The waste shrinks on its own and disappears 2026-10-20.** The floor is a
+  fixed calendar date, so every week that passes, a 1825-day window starts closer
+  to it. From 2026-10-20 a 5-year fetch loses nothing at all.
+* **Do not fetch longer to compensate.** Asking for 2200 days buys zero extra
+  usable rows — it just widens the head that gets dropped, and lengthens a fetch
+  that is already the slow part. 1825 stays the right number.
+* **Every long cache has a different length.** 1747 / 1762 / 1787 above are three
+  legitimate row counts. A grid script that asserts the count from the cache it
+  was written against will trip on the next one; that assertion is doing its job.
+  Update the constant deliberately, and re-check the shifts — the clusters are
+  offsets from the *end* of the frame, so they stay put, but a `window()` that
+  reaches furthest back has less room (see
+  [DECISIONS.md](DECISIONS.md#nan-instead-of-zero-for-uncovered-price-sources)
+  for the guard itself).
+
+A long cache needs no repair and none of the three above has any: the snapshot
+stores the **raw fetched inputs**, not the built frame, so `build_training_data`
+re-applies the current guard every time one is loaded. Even a cache fetched
+before the guard existed rebuilds correctly today. The only conceivable "fix" —
+carbon prices before 2021-10-18 — is data the source does not have.
+
+**Weather tails still matter more.** `long/2026-08-06` and `long/2026-08-21` are
+5d-tail caches from before the archive top-up; `long/2026-09-12` is the first 1d
+one. Per the rule above they must not share one measurement grid — that is a real
+incompatibility, unlike the head.
 
 Two points per cluster would be enough for the cluster vote; four in the far
 clusters buys a per-cluster sanity read at negligible extra compute. The

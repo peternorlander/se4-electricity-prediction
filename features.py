@@ -98,7 +98,7 @@ CHEAP2H_FEATURE_COLUMNS = FEATURE_COLUMNS + ["price_se4_cheap2h_lag1"]
 # MIN_FEATURE_COLUMNS below, which is this list minus `price_se4_max_lag1`. This
 # list is cheap2h's, and the shared base the two are defined from.
 #
-# Evidence (README "Per-Target Feature Sets" has the full trail):
+# Evidence (docs/MODEL.md "Per-Target Feature Sets" has the full trail):
 #   min      adopted 2026-08 — -1.01 EUR/MWh pooled over 14 measurements, four snapshots
 #   cheap2h  adopted 2026-08-05 — the old 52-column list measured 0.86 EUR/MWh
 #            WORSE than this one, on all 16 of round 11's measurements across three
@@ -168,8 +168,7 @@ TROUGH_FEATURE_COLUMNS = [
 # anchor, neighbouring-zone lags alone) came back harmful on both trough
 # targets, on three independent measurements. Closed — do not add a price
 # signal back to min/cheap2h without a genuinely new mechanism (the staleness
-# hypothesis specifically has been refuted). See README "Features Tested and
-# Rejected".
+# hypothesis specifically has been refuted). See docs/REJECTED.md.
 MIN_FEATURE_COLUMNS = [c for c in TROUGH_FEATURE_COLUMNS if c != "price_se4_max_lag1"]
 
 # `avg`'s list: FEATURE_COLUMNS minus the 9-column price/market lag family
@@ -298,7 +297,7 @@ def aggregate_prices_daily(df: pd.DataFrame) -> pd.DataFrame:
     side of that boundary — the cheapest of 96 quarters is systematically lower
     than the cheapest of 24 hourly means — biasing the models high on recent
     data. Resampling keeps one target definition across the whole training
-    window. See README "Target Definition" for the planned migration to native
+    window. See docs/MODEL.md "Target Definition" for the planned migration to native
     15-minute targets once enough 15-minute history has accumulated.
 
     price_cheap2h is the mean of the day's two cheapest hours (not necessarily
@@ -1330,7 +1329,7 @@ def apply_forecast_freeze(
                                use the module-level list). Lets an A/B variant
                                that adds a new lag-type feature freeze it too,
                                without touching the production list. See the
-                               README "A/B Backtest Flow" section.
+                               docs/AB_TESTING.md.
         frozen_rolling:        Override for _FORECAST_FROZEN_ROLLING (None =
                                use the module-level set).
 

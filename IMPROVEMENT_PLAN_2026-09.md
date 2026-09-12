@@ -516,7 +516,11 @@ index.
    fetches.
 9. **2.10 coherence**, **2.11 horizon** — when convenient.
 
-Fetch one fresh long snapshot (`python ab_test.py fetch --days 1825`) before
-step 3 so the whole batch shares a grid; the current long caches are 5d-tail
-and predate the top-up (docs/AB_TESTING.md "Snapshot generations").
+**Done 2026-09-12: `ab_cache/long/2026-09-12` is fetched** — 1825 days, **1787
+usable rows** from 2021-10-21, weather tail **1d**. It is the first long cache
+taken after the archive top-up, so run the whole batch on it and do **not** mix
+it with `long/2026-08-06` or `long/2026-08-21` in one grid (those are 5d-tail;
+docs/AB_TESTING.md "Snapshot generations"). Its row count differs from both
+older caches for a second, harmless reason as well — see docs/AB_TESTING.md
+"How long a snapshot to fetch" before updating any `EXPECTED_ROWS` constant.
 

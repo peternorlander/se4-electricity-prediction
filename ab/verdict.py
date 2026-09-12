@@ -1,6 +1,6 @@
 """
 Verdict classification and orchestration for the A/B backtest flow.
-See the README "A/B Backtest Flow" section.
+See docs/AB_TESTING.md.
 """
 import numpy as np
 import pandas as pd
@@ -41,7 +41,7 @@ def _mean_mae(data: pd.DataFrame, variant, shift: int) -> dict:
 def classify(deltas: list) -> str:
     """
     REAL / NOISE / BORDERLINE / NO_CHANGE per the established replication
-    rule (see README "How changes are validated"):
+    rule (see docs/AB_TESTING.md "How changes are validated"):
 
     - NO_CHANGE: every delta is exactly zero (candidate == baseline).
     - NOISE:     the sign of the delta flips across shifts -- smaller than
@@ -81,7 +81,7 @@ def classify(deltas: list) -> str:
 # classify() above is correct for that; this module is the deliberate exception.
 # It is NOT wired into run_ab()/ab_test.py run, which always uses classify() --
 # call classify_ablation() yourself on the per-shift deltas when you're
-# specifically testing a removal (see README "How changes are validated" for the
+# specifically testing a removal (see docs/AB_TESTING.md "How changes are validated" for the
 # full rationale and FEATURE_REVALIDATION_PLAN.md / experiments/ for a worked
 # example of the audit this was built for).
 #
