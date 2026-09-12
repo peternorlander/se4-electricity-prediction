@@ -17,6 +17,11 @@ on a long snapshot with `classify_clustered` / `classify_ablation_clustered`,
 `SLOT_PREDICTION_PLAN.md` (round 20) is unchanged and still next in the queue;
 section 2.6 below says how it interacts with the new item 2.1.
 
+**How this file is maintained (2026-09-12).** A measured item is cut back to
+what is still open — or deleted outright — as soon as its verdict is in
+`README.md`. The README is the ledger; this file is the to-do list. 2.4 is the
+first item maintained that way.
+
 ---
 
 ## 1. What this review measured (2026-09-08, snapshot `ab_cache/2026-09-05`)
@@ -305,49 +310,36 @@ next review.
 ~900 days, well within Open-Meteo's free tier if cached); 2.3b one day; 2.3c
 three days; 2.3d one day.
 
-### 2.4 Cross-border capacity and coupling state (old item 0, refined)
+### 2.4 Cross-border capacity — MEASURED 2026-09-12, closed for the trough targets
 
-Carried over as the route to the regime-break class of error (the 2026-08-17
-week). What this review adds is two cheaper, fresher observables and a
-sharper statement of the leak risk.
+Old item 0 was run in full (flows + outages, four period clusters, break-week
+replay). Verdicts and the A78 data traps are in README "Cross-border capacity
+and flows (round 21)"; the scripts are `experiments/run_round21_*.py`. Three
+results change this plan:
 
-**Fresher observables.**
-- **Nordpool `DayAheadFlow`** gives tomorrow's *scheduled* flow per border at
-  run time. On 2026-09-08 it shows SE3 → SE4 ~1.9 GW, DK2 432 MW export, PL
-  100, LT 700, **GER 0/0** — the Baltic Cable outage, visible without A78. As a
-  feature it is frozen for D+2..D+7 like every lag, but it is *one day fresher
-  than any lag* and it is a physical quantity in MW, which round 18 did not
-  reject (round 18 rejected price levels). Encode as `net_export_south_d1`,
-  `se3_import_d1`, `de_link_open_d1` (0/1). History: query per date — check
-  how far back the endpoint answers before planning on it; A11 physical flows
-  from the existing cache are the fallback and are already on disk for 5 years.
-- **Energinet `Transmissionlines`** publishes hourly import/export *capacity*
-  for DK2–SE4 with the day-ahead result. It is the one SE4 border with a
-  capacity time series that does not depend on A61 (empty for Nordic borders)
-  or on A78 revision history. Verify depth first (Appendix A).
+* **Closed for `cheap2h`/`min`.** Every arm NOISE, headroom harmful on cheap2h,
+  and a *leaky* capacity schedule NOISE as well — so there is no version of
+  this data, however privileged, that pays on the trough targets. Do not
+  re-open with another encoding.
+* **The break needs the northern supply balance, not the interconnector.** The
+  `capacity × calm` interaction fired on exactly 08-18/19/20 and moved nothing,
+  because the same state in Sep 2024 came with cheap2h 6.6. This promotes 2.13.
+* **What is left is `avg` only:** `export_headroom_lag1` is REAL on both
+  5-year snapshots (−0.423 / −0.218, all four clusters, std falling) and is the
+  one open candidate from the whole item. To confirm it:
+  1. Re-encode for serve time. The A/B used *realised* A11 flows on the run
+     day; production knows tomorrow's **scheduled** exchanges (Nord Pool
+     `DayAheadFlow`, or ENTSO-E day-ahead scheduled commercial exchanges) plus
+     the outages posted for that day. Fetch whichever has history and rebuild
+     the column from it.
+  2. Run on a **fresh** long snapshot and a fresh cross-border fetch (the
+     parser was fixed 2026-09-12), in the same batch as the other items.
+  3. Re-check after 2.1 ships — `residual_load` is in avg's list and verdicts
+     are scoped to the model.
+  Priority is below 2.1/2.13: it is an `avg`-only, −0.2 to −0.4 effect against
+  two new production fetches.
 
-**The leak question, resolved by 2.14.** ENTSO-E A78 returns only the current
-record, but Nord Pool's UMM API keeps every version of every outage message
-with its publication time, so a backtest can use exactly the end date that was
-visible on each run date. The Baltic Cable record shows why that matters: the
-trip was posted 2026-06-21 with end 06-29 (v1), moved to 08-31 on 06-23 (v2),
-to 09-18 on 08-17 (v3) and to 09-14 on 09-11 (v4). On 2026-08-16 the knowable
-answer was "back on 08-31", not the 09-18 that A78 shows today. Build the
-outage features from UMM versions as-of the run date (2.14); keep the
-conservative A78 encoding ("active now and already started at run time") only
-as the fallback for anything UMM does not carry. Realised and scheduled flows
-are by construction what was knowable.
-
-**Primary arm, pre-registered:** the interaction `export_headroom ×
-low_wind`, where `export_headroom` = available southbound capacity (A78-derived
-or Energinet + A11 nominal) − scheduled export, and `low_wind` is
-`mean_wind_stockholm` below its 10th percentile. That is the mechanism the
-post-mortem correction identified: crippled export capacity is the background
-condition, northern calm is the trigger. Score the 2026-08-17 week separately
-(`experiments/run_round19_spike.py`) as well as the four clusters.
-
-**Effort.** 2 days for the observables and freeze-list wiring; the A78
-snapshotting is an hour.
+**Effort.** One day, mostly the scheduled-flow source.
 
 ### 2.5 The hurdle's label under regime drift
 
@@ -534,7 +526,13 @@ Precipitation: half a day.
 **Mechanism.** The open question in old item 0 / 2.4 was whether ENTSO-E A78
 is usable as a *forward-looking* feature, because the API returns the current
 version of a record and revisions are invisible, so a backtest could know
-things production could not. Nord Pool's UMM API is the upstream of those
+things production could not. **Round 21 settled that the A78 route cannot
+answer it**: every record for an event before 2025-11 was re-published in
+November 2025, so the cache holds no vintage at all before that date (README
+"If you touch ab_cache/crossborder/"). Since the trough targets rejected the
+data outright, the remaining value of UMM is (a) the MW-weighted nuclear
+feature below and (b) a vintage-honest capacity history for 2.4's `avg`
+candidate. Nord Pool's UMM API is the upstream of those
 records and keeps **every version of every message with its
 `publicationDate`** — `GET /messages/{id}/{version}` returns the record as it
 stood then — for production units (nuclear with installed and available MW per
@@ -613,9 +611,10 @@ index.
    builder here and reuse it for 2.14.
 7. **2.5 hurdle label**, **2.8 holidays**, **2.9 time-decay**, **2.13
    precipitation** — short A/Bs that share one long snapshot; run as one batch.
-8. **2.14 UMM source**, then **2.4 cross-border** and **2.7 week-ahead
-   documents** — the source work; 2.14 needs no token, the ENTSO-E parts do,
-   so Peter runs those fetches.
+8. **2.14 UMM source** (now justified by nuclear MW, not by interconnectors),
+   then **2.7 week-ahead documents** and the `avg` remainder of **2.4** — the
+   source work; 2.14 needs no token, the ENTSO-E parts do, so Peter runs those
+   fetches.
 9. **2.10 coherence**, **2.11 horizon** — when convenient.
 
 Fetch one fresh long snapshot (`python ab_test.py fetch --days 1825`) before

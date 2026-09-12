@@ -21,136 +21,14 @@ sliding grid on a long snapshot (`ab_test.py fetch --days 1825`) — constant
 `classify_clustered` / `classify_ablation_clustered`, not the plain
 `classify`/`classify_ablation` (see README "Which verdict function to call").
 
+**How this file is maintained (2026-09-12).** An item is *deleted* from here
+the moment its verdict is recorded in `README.md` — the rejected table, and a
+section of its own when the round found something worth explaining. This file
+is only what is left to do; the README is the ledger. Item 0 (cross-border
+capacity and flows) was closed that way on 2026-09-12: see README
+"Cross-border capacity and flows (round 21)".
+
 ## Open items
-
-### 0. Cross-border capacity / flows from ENTSO-E — data fetched, evaluation not started
-
-**Status 2026-08-22: a 1-year probe fetch is on disk
-(`ab_cache/crossborder/2026-08-22/`, via `experiments/fetch_entsoe_crossborder.py`).
-Evaluation and implementation are a separate step and have not begun.**
-
-Why this is item 0. Round 19 closed every route to regime-break handling that
-runs off prices alone — round 18 (price signals as features), 19b (anchored
-targets), 19e (coupling features derived from the SE4−DK2 price gap). All
-harmful or NOISE. Cross-border data is the first genuinely *new* observable
-since, and two of its documents publish *before* delivery, which is the property
-no price-derived feature can have.
-
-What came back, and what it says:
-
-* **A11 physical flows** — works, all five borders (SE3, DK2, DE_LU, PL, LT),
-  both directions, 136k rows for one year. Note the encoding: ENTSO-E only
-  publishes points where flow is non-zero in that direction, so **a missing
-  point is a zero**. Reindex to a full 15-minute grid and fill 0 before doing
-  anything else; the absent rows are the signal, not a gap.
-* **A78 unavailability of transmission infrastructure** — works, 626 events in
-  one year (DE_LU 281, PL 177, SE3 71, DK2 52, LT 45). Carries
-  `business_type` (A53 planned / A54 forced), `available_mw`, and a start AND
-  end timestamp — i.e. posted ahead of delivery. `reason` is populated on
-  143/626. This is the forward-looking document.
-* **A61 forecasted transfer capacity — EMPTY on every border, and that is
-  expected, not a bug.** The API resolves `A61` + `contract_MarketAgreement.Type=A01`
-  to `FORECASTED_TRANSFER_CAPACITIES_EXPLICIT`, which only exists for
-  explicitly-auctioned borders. Nordic borders are implicitly allocated through
-  market coupling, so there is nothing to return. A78's `available_mw` is the
-  substitute and it carries the same information in event form. Do not spend
-  time "fixing" the A61 call without first probing which document types actually
-  return data for these EIC pairs.
-
-**What the probe already overturned.** The 2026-08-17 attribution in
-`experiments/AUG21_SPIKE_POSTMORTEM.md` was wrong and the flow data says so
-plainly: Baltic Cable did **not** come back. A78 carries a forced outage,
-`available_mw = 0`, reason *"Trip of the BC-link"*, 2026-06-21 → 2026-09-18, and
-`DE_LU` flow is 0.0 MW every single day from 2026-07-01 through 2026-08-22. What
-changed on 08-17 was the Nordic supply balance, not interconnector availability:
-SE4's import from SE3 stepped from ~1080 MW (08-16) to ~1960 MW (08-17) and
-stayed there, while `mean_wind_stockholm` — the trough model's most load-bearing
-feature — fell to the **3.9th percentile** (08-18) and **1.7th** (08-20) of its
-three-year distribution. See the correction section in the post-mortem.
-
-That refines the mechanism rather than killing it: the crippled export capacity
-is the *background condition* that let SE4 run cheap all summer (total exports
-~780–1040 MW in Jul/Aug against 1300–2200 in winter), and the near-record northern
-calm is the *trigger* that removed the surplus and repriced SE4 to import parity.
-The model has the wind; it does not have the capacity state it has to be
-conditioned on. That interaction is the hypothesis to test.
-
-**Discussion agenda for the dedicated thread** — the things that need a decision
-rather than a measurement, roughly in the order they block each other:
-
-1. **Is A78 usable as a FORWARD-looking feature at all?** This is the question
-   the whole item hinges on. The document is published ahead of delivery, but
-   the API returns the *current* record, not the one that was visible on a past
-   date. If posted `end` dates get revised, a backtest built from today's
-   snapshot knows things production could not have known, and every gain it
-   measures is a leak. Two candidate resolutions: (a) start snapshotting A78
-   daily from now on and only backtest on the frozen vintages, which is honest
-   but means waiting months for enough history; (b) find a conservative
-   encoding that revision cannot flatter — e.g. use only "an outage is active
-   right now" rather than "it ends on date X". Option (b) is testable
-   immediately and is probably where to start. The DE_LU record starting
-   2026-08-17 and running to 2026-11-08 with 0 MW looks like exactly such a
-   revision and is worth reading closely first.
-
-2. **Which physical quantity is the feature?** Candidates, none tested:
-   - `export_capacity_available` — sum over borders of nominal minus A78
-     outage, forward-looking if (1) resolves favourably.
-   - `se3_import_lag1` — realised SE3→SE4 flow. Backward-looking, but it was
-     the variable that actually moved on 08-17 (~1080 → ~1960 MW).
-   - `export_headroom` = capacity − realised export. The economically
-     meaningful one: SE4 stays cheap while it has surplus it cannot ship.
-   - The **interaction** of capacity with `mean_wind_stockholm`. This is the
-     mechanism the 08-17 break actually demonstrates and the one with a stated
-     causal story, so it should be pre-registered as the primary arm rather
-     than discovered by sweeping.
-
-3. **Does any of this survive round 18's finding?** Round 18 closed price-level
-   features for min/cheap2h with the reading that "it is price-level
-   information itself these targets reject — they are trough targets driven by
-   weather → residual load, and a price level crowds that out." Flows and
-   capacity are physical quantities in MW, not prices, so the mechanism is
-   genuinely different. But `se3_import_lag1` is *close* to a price signal in
-   disguise (flows are the market's response to prices), and it is a frozen
-   lag like the ones round 18 rejected. State that objection before measuring,
-   not after.
-
-4. **Scope of the source module.** Five borders × three documents × 5 years is
-   a lot of fetch for a pipeline that currently runs in a few minutes. Decide
-   up front whether production fetches only what a validated feature needs
-   (probably A78 for DE_LU/DK2 plus SE3 flow), and whether A11's volume needs
-   daily pre-aggregation before it enters `fetch_training_inputs`.
-
-5. **The one thing already decided:** do not spend time on A61. It resolves to
-   `FORECASTED_TRANSFER_CAPACITIES_EXPLICIT`, which does not exist for
-   implicitly-allocated Nordic borders. A78's `available_mw` is the substitute.
-
-**What is NOT in scope here.** The archive-lag fix (README "Closing the
-weather-archive lag") shipped 2026-08-23 and is unrelated. The conformalised
-prediction interval from round 19c is a separate, independent item — see
-`experiments/ROUND19_FINDINGS.md` §19c; it needs no new data and can proceed in
-parallel.
-
-Suggested order:
-
-1. Re-run the fetch at `--years 5` so it spans `ab_cache/long`, and validate the
-   flow series against the A78 events (an outage window should coincide with a
-   zero-flow run; disagreement means one of the two is being parsed wrong).
-2. Build candidate features and pre-register them before measuring. Obvious
-   first set: `se3_import_lag1`, `export_capacity_available` (from A78, forward-
-   looking), `export_headroom = capacity − realised export`, and the interaction
-   of capacity with `mean_wind_stockholm`.
-3. A/B on the round-15b sliding grid, `classify_clustered`, four period clusters
-   — and score the 2026-08-17 week separately, since a five-day effect is
-   invisible in a year-averaged MAE (`experiments/run_round19_spike.py` has the
-   harness).
-4. Only then decide on a production source module.
-
-Open question to settle in step 1: A78 is published ahead of delivery, but the
-**revision history is not** — the record on disk today is the *current* one, not
-what was visible on 2026-08-16. A backtest built from today's A78 snapshot may
-therefore be optimistic about what was knowable in advance. Check whether the
-posted `end` dates moved (the 2026-08-17 → 2026-11-08 planned record on DE_LU
-looks like exactly such a revision) before trusting any forward-looking claim.
 
 ### 1. Solar-capacity scaling for min/cheap2h — re-targeted, prior revised down
 
@@ -245,9 +123,13 @@ roughly in priority order:
   power; weight by MW instead of counting each outage as 1 (a 1400 MW
   Oskarshamn-3 outage is not equivalent to a small unit).
 - **SE3 / system price lag** — SE4 is tightly coupled northward, yet only
-  DE/DK2 neighbouring-zone lags are in the feature set today.
-- **Transmission (NTC) outages** on Baltic Cable / Öresund (A78) — drives SE4
-  divergence from neighbouring zones; most parsing work of the four, so last.
+  DE/DK2 neighbouring-zone lags are in the feature set today. Round 21 raised
+  the prior: the state that separates a cheap calm week (Sep 2024) from an
+  expensive one (Aug 2026) is the northern supply balance, and SE3→SE4 net
+  import halved during 2026 (quarterly mean 3182 → 1629 MW). It is still a
+  price level, which round 18 closed for the trough targets, so the physical
+  route (northern wind points, `IMPROVEMENT_PLAN_2026-09.md` §2.13) comes
+  first.
 
 ### 5. `ttf_vs_30d` — regime-abnormality ratio, low expected yield
 

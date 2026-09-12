@@ -164,8 +164,8 @@ Feature importance is reported for **min, avg and cheap2h models only** — incl
 
 ## The 2026-08-17 regime break
 
-The motivating case for round 19 and for
-[IMPROVEMENT_PLAN.md item 0](IMPROVEMENT_PLAN.md). Worth keeping because it is
+The motivating case for round 19 and for the cross-border work of round 21.
+Worth keeping because it is
 the clearest evidence this project has for what the model structurally *cannot*
 do, and because the obvious fixes were all tested and all failed.
 
@@ -210,8 +210,13 @@ real mechanism has two layers:
   **3.9th** (08-18) and **1.7th** (08-20). SE4 flipped from exporting to
   importing ~1960 MW from SE3 and repriced to import parity.
 
-So the model *has* the wind. What it lacks is the capacity state the wind has to
-be conditioned on — which is IMPROVEMENT_PLAN item 0.
+So the model *has* the wind. The obvious reading was that what it lacks is the
+capacity state the wind has to be conditioned on. **That was tested in round 21
+and it is not the answer** — see
+[Cross-border capacity and flows](#cross-border-capacity-and-flows-round-21).
+Capacity × calm fired on exactly the right days and changed nothing, because the
+same state in September 2024 came with a cheap2h of 6.6: the conditioner that
+separates the two is the northern supply balance, not the interconnector.
 
 ### What the model predicted, and why it is structural
 
@@ -380,6 +385,85 @@ Coverage during the break was 0.14, against 0.83 in the days before it.
 - **Changing the interval itself** — quantile levels, conformal window or α,
   separate hyperparameters — is not measurable by MAE at all. Score it on
   **pinball loss and coverage**, **per period cluster**, never pooled.
+
+## Cross-border capacity and flows (round 21)
+
+Closed 2026-09-12. This was IMPROVEMENT_PLAN item 0, the last route the
+[2026-08-17 break](#the-2026-08-17-regime-break) left open: ENTSO-E physical
+flows (A11) and transmission unavailability (A78) for the five SE4 borders,
+cached under `ab_cache/crossborder/`. Scripts and raw per-window results:
+`experiments/run_round21_*.py`, `experiments/results/round21_*.jsonl`, arms and
+bar fixed in advance in `experiments/ROUND21_PREREGISTRATION.md`.
+
+**For `cheap2h` and `min` the route is closed.** Round-15b sliding grid, 14
+points, four period clusters, `classify_clustered`. Every arm — realised SE3
+import, available southbound export capacity, export headroom, and the
+pre-registered primary `capacity × calm-in-Stockholm` interaction — is NOISE on
+both targets; export headroom is REAL-and-*harmful* on cheap2h (+0.144, 2 of 14
+points favourable). The decisive arm is the control: a **leaky** per-day
+capacity built from outage records production could not have had is NOISE too
+(+0.033 / −0.050), so even perfect foreknowledge of interconnector capacity has
+no year-average value for the trough targets. On the break week itself no arm
+lifts the 08-18/19 day-ahead prediction above ~48 against a realised 128.
+
+**One open candidate, on `avg`:** `export_headroom_lag1` — A78-available
+southbound export capacity minus realised net southbound export, on the run
+day, frozen across the horizon.
+
+| snapshot | clmean | NOW | −6M | −12M | −21M | favourable | Δstd |
+|---|---|---|---|---|---|---|---|
+| `long/2026-08-21` | **−0.423** | −0.785 | −0.329 | −0.133 | −0.447 | 11/14 | −0.209 |
+| `long/2026-08-06` (independent fetch) | **−0.218** | −0.524 | −0.144 | −0.056 | −0.148 | 11/14 | −0.266 |
+
+REAL on both, every period cluster favourable both times, per-window std
+*falling*. Three checks behind it: the A11-only encodings (export flow alone,
+capacity inferred from whether a link flowed) are NOISE, so the A78 capacity
+half is what carries it; the round-19e price-derived congestion feature is
+**not** a substitute (REAL on one snapshot with std +0.23, NOISE on the other,
+and adding it on top of headroom destroys the gain — round 18 again); and a
+vintage-honest rebuild, per window from only the records published by that run
+date, stays favourable on all four NOW points (−0.17 to −0.54). Read the effect
+as **−0.2 to −0.4 EUR/MWh on `avg`**. The gain is concentrated where the avg
+price/market prune's was: windows with Baltic Cable closed improve −1.14
+against −0.23 elsewhere, the worst-MAE quartile −1.18, the calmest quartile
++0.46.
+
+**Not adopted.** `avg` was not the pre-registered target and ~12 arms were tried
+on it, so this is a screen that replicated, not a verdict. What it still needs:
+the serve-time encoding (production knows tomorrow's *scheduled* exchanges and
+the outages posted for it, not realised physical flows), a fresh cross-border
+fetch with the fixed parser, and a re-check after the residual-load rebuild,
+since `residual_load` is in avg's list and
+[verdicts are scoped to the model](#how-changes-are-validated).
+
+### If you touch `ab_cache/crossborder/`, read this first
+
+Four properties of A78 that cost a day to find. The fetch script's parser was
+fixed on 2026-09-12; `experiments/round21_xbfeat.py` re-parses `raw/` for caches
+fetched before that.
+
+* **`docStatus = A09` means cancelled.** 632 of 4487 period rows in the
+  2026-08-23 cache are cancellations of outages that never happened, and they
+  were ~64% of that cache's "link down" days. Filter them.
+* **There is no vintage before 2025-11.** The API returns only each record's
+  current revision (1795 of 2428 are rev ≥ 2), and *every* record for an event
+  before November 2025 was re-published that month. So "what was knowable on
+  date D" cannot be reconstructed for the older clusters at all, and a
+  forward-looking A78 feature cannot be backtested honestly on this data. Nord
+  Pool's UMM API (`publicationDate` + `version`) or daily A78 snapshots are the
+  only ways to change that.
+* **DK2 rows describe one 400 kV cable, not the border.** 69 days show
+  `available_mw = 0` while the border keeps flowing. Never min() them into a
+  border capacity; DK2 was held at nominal in every round-21 arm.
+* **A78 and A11 do agree, once the cancellations are gone** — on the HVDC links
+  the element *is* the border: Baltic Cable 135 of 135 outage days show zero
+  flow, PL 202 of 218, LT 45 of 57. And A78 sees what flows cannot: partial
+  reductions, such as Baltic Cable at 210 MW from 2025-10-15 to 2026-02-02.
+
+One correction to the record: the DE_LU outage running 2026-08-17 → 11-08 that
+IMPROVEMENT_PLAN flagged as a suspected revision is Breared–Söderåsen, an
+SE4-internal line, and it is **cancelled**. The Baltic Cable trip record is
+revision 3, created 2026-08-17 10:32 — its end date was posted on the break day.
 
 ## Target Definition
 
@@ -1091,6 +1175,8 @@ Keep this list updated — it prevents re-testing things that didn't work.
 | Anchored target for `min`/`cheap2h` (regress `y − known price lag`, add the anchor back) | Round 19b, 2026-08-22. **+2.4 to +48 EUR/MWh harmful**, 0 of 4 favourable in every period cluster, on both targets and all three anchors. The anchor is frozen across the horizon while SE4 troughs swing 1.5 → 50 → 8 within a week, so re-basing injects the anchor's whole day-to-day variance. With round 18 (price signals as *features*) this closes both routes: the prediction ceiling cannot be raised from inside the model. |
 | Market-coupling / congestion features for `min`/`cheap2h` (`coupled_frac_dk2`, `relgap_dk2`, 1-day and 7-day) | Round 19e, 2026-08-22. Carries no price level (a 5 and a 200 EUR/MWh day score identically) and does track the regime (relgap monthly 0.055 Feb-26 → 0.493 Aug-26), but **NOISE on all four arms, both targets**. Best was `cpl_gap7` on cheap2h (clmean −0.268, 11/14 favourable) killed by −6M at +0.027. The state is not learnable from a price-derived lag; ENTSO-E cross-border capacity/flows are the remaining route (IMPROVEMENT_PLAN item 0). |
 | 5-year training window as regime insurance (re-opened only for the ceiling, not for headline MAE) | Round 19, 2026-08-22. The 3-year window's cheap2h targets top out at 107.9 so 127.9 is unreachable; a 5-year window tops out at 450.2 and does score better on the 2026-08-17 break (spike MAE 48.52 vs 52.84) — but **three times worse on the calm days before it** (7.98 vs 2.53). Regime insurance with a real premium; consistent with round 15a/15c/15d's closure of window length rather than a challenge to it. Not a lever. |
+| Cross-border flows and capacity for `min`/`cheap2h` (`se3_import_lag1`, `export_cap_lag1`, `export_headroom_lag1`, the pre-registered `capacity × calm` interaction, and all of them as a block) | Round 21, 2026-09-12, ENTSO-E A11 + A78 on the 14-point four-cluster grid. **All NOISE on both targets**; `export_headroom_lag1` is REAL-and-harmful on cheap2h (+0.144, 2 of 14 favourable). The control is what closes it: a *leaky* per-day capacity schedule built from outage records production could never have had is NOISE too (+0.033 cheap2h / −0.050 min), so the ceiling is not "we lack the capacity state". `min` liked capacity and the interaction in the NOW cluster only (−0.25) and in none of the three far ones — the round-19c "NOW-only effect wearing a bigger n" pattern. On the break week no arm lifts the 08-18/19 d+1 prediction above ~48 against 128. The interaction fired correctly on exactly those days; the same state in Sep 2024 came with cheap2h 6.6, so it is not learnable from this history. See [Cross-border capacity and flows](#cross-border-capacity-and-flows-round-21). **Kept open for `avg` only.** |
+| Price-derived congestion (`relgap_dk2_lag1`, round 19e) on **`avg`** — the cheap substitute for the cross-border feature | Round 21, 2026-09-12. The one cell round 19e never measured. REAL −0.413 on `long/2026-08-21` **but with per-window std inflated +0.23**, and **NOISE (+0.083) on `long/2026-08-06`**, an independently fetched snapshot. Adding it alongside `export_headroom_lag1` turns that REAL result into NOISE. A price gap is not a substitute for the MW quantity, and this is a clean example of a single-snapshot REAL that vintage replication kills. |
 | `price_se4_min_lag7` | Importance 0.009, added variance to min/avg MAE. With only 3 years training data, insufficient weekly-min samples. |
 | `reservoir_norway_fill_pct` (raw) | Redundant with `reservoir_norway_deviation` which is the more informative signal. Removed to reduce noise. |
 | `reservoir_norway_change` | Low importance (0.009), already captured implicitly by `reservoir_sweden_change`. Removed to reduce noise. |
