@@ -262,3 +262,29 @@ reports it that way.
 **Per-horizon MAE (`mae_by_horizon`) is weekday-confounded — do not read it as pure horizon decay.** The walk-forward steps by 7 days with 7-day windows, so horizon ≡ weekday (d+1 is always the same weekday as the window start). The curve mixes horizon and day-of-week and is non-monotonic. The clean measure of horizon/lag-staleness cost is the anchor-staleness sensitivity reported by the walk-forward (~1 EUR, see [DECISIONS.md](DECISIONS.md#price-lag-anchor-freshening)), **not** the per-horizon spread. This is why horizon-aware modeling (a `forecast_horizon` feature / per-horizon models) was evaluated and **shelved**: the true stale-lag headroom is ~1 EUR, and the bulk of the ~17 EUR error is regime-driven (winter cold-snap volatility, spring solar/negative-price ramp), not horizon-driven.
 
 Feature importance is reported for **min, avg and cheap2h models only** — including max would dilute the signal for what actually matters for scheduling decisions.
+
+### What the MAE is worth as a decision
+
+MAE is the tuning metric, not the product. What the automation actually does is
+pick a day to charge on, so the honest scoreboard is **regret against perfect
+foresight**: choose the day a rule says is cheapest, pay its realised `cheap2h`,
+compare with the best day available. Scored on the four-cluster grid
+(round 19c, EUR/MWh, lower is better):
+
+| horizon | naive "always charge tomorrow" | production point rule |
+|---|---|---|
+| choose among 3 days | 8.8 – 16.0 | **2.9 – 4.9** |
+| choose among 7 days | 15.2 – 32.6 | **4.0 – 6.5** |
+
+The range is across period clusters. Two things follow. The model is worth
+roughly **three to five times** the naive rule on the metric the product is
+actually judged on, which is a larger effect than anything in the accuracy
+ledger. And regret *grows* with the horizon for both rules, so a longer forecast
+window is only worth extending if accuracy holds up out there — which is exactly
+what the archive-weather caveat in Known Limitations says is unmeasured.
+
+Naive references on MAE, for the same reason (last 364 days, cheap2h): persistence
+on lag1 **18.2**, lag7 26.7, a frozen 7-day anchor 24.5, monthly climatology 23.9,
+against the model's 15.04. Weekday means run Mon 40 → Sun 20, so a model that only
+learned the weekly cycle would already score in the mid-20s — read the headline
+against 18.2, not against zero.

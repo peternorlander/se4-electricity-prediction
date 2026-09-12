@@ -252,6 +252,11 @@ Follow this whenever testing a feature or model change from the improvement plan
      the harness asserts the row count and `date` column are unchanged.
    - `fit_fn(train_slice) -> models` — override to change training (objective, sample
      weights, hyperparameters). Default: `model._fit_models` (production).
+     **Gotcha: `avg` is the one target with time-decay weighting**
+     (`HALF_LIFE_DAYS["avg"] = 500`), looked up **by target name** inside
+     `_fit_models`. A variant that renames the target key silently drops the
+     weighting and measures a model production does not run. Assert the key at
+     startup.
    - `targets` — a `{name: (target_col, feature_cols)}` dict; override to add a new
      feature column to the models' feature lists (a `transform` that only *creates* a
      column has no effect until the column is added to `feature_cols` here).
@@ -325,8 +330,9 @@ verdict that nearly removed the cheap2h hurdle; see [REJECTED.md](REJECTED.md)).
 `ab_test.py fetch --days 1825` caches ~5 years under `ab_cache/long/`; a window
 of `rows[n-L-s : n-s]` then holds `min_train = L-364` fixed at every shift, so
 each point is "production as it would actually have run on that date".
-The worked implementation, and the four-cluster grid it feeds (round 15b —
-14 points, reaching −21M with zero calendar overlap against NOW):
+The worked implementation, and **the canonical 16-point grid** — rounds 14a, 14b,
+16, 17 and 18 all reused it verbatim, which is why their answers are directly
+comparable and why re-using it burns no new day-coverage:
 
 ```python
 def window(data, length, shift):
@@ -337,11 +343,39 @@ def window(data, length, shift):
     return data.iloc[start:end].reset_index(drop=True)
 
 L_3Y = 1095                      # production's TRAINING_DAYS
-GRID_15B = [("NOW",    0), ("NOW",    1),
-            ("-6M",  180), ("-6M",  183), ("-6M",  186), ("-6M",  189),
-            ("-12M", 360), ("-12M", 363), ("-12M", 366), ("-12M", 369),
-            ("-21M", 637), ("-21M", 640), ("-21M", 643), ("-21M", 646)]
+GRID = [("NOW",    0), ("NOW",    1), ("NOW",    4), ("NOW",    7),
+        ("-6M",  180), ("-6M",  183), ("-6M",  186), ("-6M",  189),
+        ("-12M", 360), ("-12M", 363), ("-12M", 366), ("-12M", 369),
+        ("-21M", 637), ("-21M", 640), ("-21M", 643), ("-21M", 646)]
 ```
+
+Round 15b's own run used two NOW points rather than four (14 points total), and
+round 21 followed it; either is fine, four is the default. What the clusters buy,
+measured on `long/2026-08-06`:
+
+| cluster | shifts | evaluation year | calendar overlap with NOW |
+|---|---|---|---|
+| NOW | 0, 1, 4, 7 | 2025-07-28 → 2026-08-02 | — |
+| −6M | 180, 183, 186, 189 | 2025-01-27 → 2026-02-03 | ~50 % |
+| −12M | 360, 363, 366, 369 | 2024-07-31 → 2025-08-07 | ~2 % |
+| −21M | 637, 640, 643, 646 | 2023-10-28 → 2024-11-03 | 0 % |
+
+**Points within a cluster overlap 97–100 %.** Their evaluation years differ by
+one to twelve days, so they agree with each other almost by construction —
+sign-consistency *within* a cluster is close to free, and only agreement *across*
+clusters is a finding. That is the whole reason `classify_clustered` gives each
+cluster one unweighted vote instead of counting points. Asserting that the points
+have distinct end dates is still worth doing, but distinctness alone is a weak
+guarantee, not independence.
+
+**The head of a long snapshot is not where the frame starts.** `_warn_uncovered`
+leaves an uncovered price source as NaN and the final `dropna` takes those rows
+with it, so a 5-year fetch begins where the *latest-starting* source does —
+EUA/carbon from 2021-10-18 — not where the weather does. On `long/2026-08-06`
+that is 1747 rows from 2021-10-21, where a naive reading of the fetch window
+would predict 1815 from 2021-08-14. Assert the row count and the first date, and
+update the constant deliberately when it moves (see
+[DECISIONS.md](DECISIONS.md#nan-instead-of-zero-for-uncovered-price-sources)).
 
 Two points per cluster would be enough for the cluster vote; four in the far
 clusters buys a per-cluster sanity read at negligible extra compute. The
@@ -354,6 +388,62 @@ classifier, cross-validation, an ensemble. Tail truncation starves it: the
 hurdle's negative-price classifier sees ~21% positives, so 361 training rows
 leave ~76 positives across a 5-fold split, and it measured as worthless when it
 is in fact worth +0.250 EUR/MWh.
+
+## Practices that keep a run honest
+
+Five habits every round in the ledger converged on. They cost minutes and have
+each caught a real error.
+
+**Re-run a previous round's base arm as a free harness check.** If your new run
+uses the established grid, its baseline arm is *the same computation* an earlier
+round already did — so it must reproduce those numbers to the last decimal. A
+mismatch means something non-deterministic crept in (thread count is the usual
+culprit) and no delta in the run can be trusted. Rounds 12 and 16 both did this;
+assert it, don't eyeball it.
+
+**Store per-window results raw, aggregate afterwards.** Write one JSONL line per
+(point, config) holding all 52 windows' MAE *and* their dates. Every aggregation
+— pooled mean, per cluster, a seasonal LIGHT/DARK split, a regime correlation —
+is then a post-hoc question answered without re-running anything. Round 2 stored
+only per-target means and had to be re-run to answer a follow-up; round 11 stored
+per-window and answered three.
+
+**Make the run resumable.** Skip (point, config) pairs already on disk. These
+runs are tens of minutes; an interrupted one should continue, not restart. For a
+multi-target run a point counts as done only once *every* target's result is
+written.
+
+**Screen and confirm in two separate invocations.** Run the screen, look at it,
+*then* pass the surviving configs to the confirm run as an explicit argument.
+Same discipline as pre-registering the bar, enforced by the tooling rather than
+by memory — it makes it structurally awkward to adjust what counts as a winner
+after seeing the screen.
+
+**A shared feature-list constant means a removal touches two models.**
+`TROUGH_FEATURE_COLUMNS` was shared by `min` and `cheap2h`, so round 14a's
+removal of `price_se4_max_lag1` would have silently changed the top-priority
+target too. Round 17 measured the same column on `cheap2h` on the identical grid
+before anything was edited, got the opposite verdict, and the two lists were
+split. Before editing a shared constant, measure every target that reads it —
+this is the scoping rule above, in its most concrete form.
+
+## What a run costs
+
+Measured at `OMP_NUM_THREADS=4`, one walk-forward (52 windows):
+
+| target | one walk-forward | note |
+|---|---|---|
+| `min` | ~7.6 s | plain regressor |
+| `avg` | ~17.0 s | time-decay weights |
+| `cheap2h` | ~17.9 s | ~2.4× `min` — the hurdle's 5-fold `cross_val_predict` |
+
+All targets are fit together in one `run_walk_forward` call, so a point costs
+about the sum, not the max. Rules of thumb from the ledger: the 16-point grid
+with 2 configs is ~10 min on 4 workers; 4 configs ~27 min serial and ~7–10 min on
+4 workers; a 13-config audit ~59 min serial and ~15–20 min on 4 workers. A
+NOW-only screen (4 points) is roughly a quarter of the full grid. Budget a
+feature-audit round in hours, not days — the expensive thing in this project has
+always been designing the measurement, not running it.
 
 ## Which verdict function to call
 

@@ -18,6 +18,7 @@ measurements were favourable. A script name is a courtesy, never the record.
 | [`min` drops `price_se4_max_lag1`](#per-target-feature-lists-for-min-and-cheap2h) | 2026-08-06 | −0.55 |
 | [Per-target feature lists (min 14, cheap2h 15)](#per-target-feature-lists-for-min-and-cheap2h) | 2026-08-05/06 | −0.64 (min), −0.86 (cheap2h) |
 | [Negative-price hurdle on cheap2h](#negative-price-hurdle-on-cheap2h) | 2026-07-25 | −0.44 |
+| [NaN instead of zero for uncovered price sources](#nan-instead-of-zero-for-uncovered-price-sources) | 2026-08-06 | data integrity, not accuracy — no-op on a 3-year window |
 | [Price-lag anchor freshening](#price-lag-anchor-freshening) | 2026-07 | ~−1.1 min/cheap2h, ~−2.3 avg |
 | [Exposing the intraday trough](#exposing-the-intraday-trough) | 2026-07 | ~−0.66 cheap2h |
 
@@ -42,11 +43,21 @@ it predicts 6.0 with on a calm day. The band can — and its width is informativ
 not decorative: the point estimate's MAE runs 7.26 → 21.50 across band-width
 quartiles.
 
-The **raw** band is over-confident (a nominal 80% interval covers 54%), so
-`model.train_interval` applies split conformal on a 180-day holdout and refits on
-all data. Measured 0.542 → 0.788 pooled, in every period cluster. Serve-time
-order is sort → widen → clamp open around the point estimate; each step has a
-measured reason, documented on `model.IntervalModel`.
+**Why quantile regressors rather than the point model's own residual spread.**
+A dedicated q90 is a much better q90: pinball loss at α = 0.90 is **4.400**
+against **6.963** for the point model used as if it were q90 (cheap2h), and
+3.906 against 6.402 for min — better in every period cluster. The raw band also
+widens in the right places: cheap2h width at NOW is 28.9 on low-price days
+against 47.4 on top-decile days.
+
+The **raw** band is over-confident (a nominal 80% interval covers 54%, and only
+0.31 on top-decile days), so `model.train_interval` applies split conformal on a
+180-day holdout and refits on all data. Measured 0.542 → 0.788 pooled, in every
+period cluster, and top-decile coverage 0.307 → 0.510. **The price is a band
+about 50 % wider** (29.8 → 44.7 mean width on cheap2h, 28.2 → 41.0 on min) —
+that is the honest width, not a cost. Serve-time order is sort → widen → clamp
+open around the point estimate; each step has a measured reason, documented on
+`model.IntervalModel`.
 
 **What the band said on the break week.** cheap2h q90 at d+1: −1.5 (08-16) →
 34.4 (08-17) → 70.2 (08-18) → 78.1 (08-19) → 116.4 (08-20). As a *level* it
@@ -148,6 +159,26 @@ instead, which carries its own error against the archive (windspeed matched to
 the realised gain is smaller than the measured cost by an amount nobody has
 measured. The clean confirmation — a candidate-vs-baseline A/B whose candidate
 frame is built from spliced weather — is still outstanding.
+
+**Which columns the splice actually perturbs**, measured end to end by rebuilding
+the merged frame with the forecast product spliced over the last days and diffing
+the model's own input columns, as a fraction of each feature's 3-year standard
+deviation:
+
+| column | disagreement (sd units) |
+|---|---|
+| `radiation_variability` | 0.489 |
+| `residual_load_min` | 0.212 |
+| `mean_wind_de_north` | 0.169 |
+| `residual_load` | 0.118 |
+| `temp_gradient_se3_se4` | 0.114 |
+| the other 10 trough columns | 0.000 |
+
+So splicing is close to free for wind, hydro, fuel and calendar, and imperfect
+only for the radiation-derived columns. `radiation_variability` is the one to
+watch: it is a 7-day rolling window, so a single day's radiation difference
+propagates for a week. Wind is bit-identical at Malmö, DK1, DK2, Karlskrona and
+Stockholm — which matters because wind is what the trough targets run on.
 
 ## `avg` drops the price/market lag family (round 14b)
 
@@ -256,6 +287,32 @@ Re-tested after the 15-column prune, because
 [a verdict is scoped to the model it was measured on](AB_TESTING.md#how-changes-are-validated):
 removal costs **+0.250 EUR/MWh**, positive in all four period clusters
 (round 15b, 2026-08-06). The hurdle stays.
+
+## NaN instead of zero for uncovered price sources
+
+Adopted 2026-08-06, in `features._warn_uncovered`. Not an accuracy change and
+not A/B'd — a data-integrity fix — but it changes what a long snapshot looks
+like, so it is recorded here.
+
+`build_training_data` used to `fillna(0.0)` any day a price source did not
+cover. A price of zero is not a neutral placeholder: it is a valid-looking
+number XGBoost will happily split on, and it is physically wrong. Found via the
+first 5-year fetch — EUA carbon data starts **2021-10-18**, so a window opening
+earlier got 65 days of 0.00 EUR/t (the real price was ~60) propagated into
+`gas_marginal_cost`, which is a `TROUGH_FEATURE_COLUMNS` member.
+
+The gap is now left as NaN, which XGBoost handles natively by learning a default
+direction, and a loud warning names the source and the date range. At serving
+time these columns are never missing, so that branch is simply never taken.
+
+**Two consequences worth knowing.** The normal ~3-year window is unaffected —
+both sources cover it completely, so this is a no-op for production today; the
+point is that the *next* gap announces itself instead of being trained on. And
+the final `dropna` now drops those rows, so a 5-year snapshot starts where its
+latest-starting source does: `long/2026-08-06` is **1747 rows from 2021-10-21**,
+not 1815 from 2021-08-14. Grid scripts that assert a row count will trip on this;
+the assertion is doing its job (see
+[AB_TESTING.md](AB_TESTING.md#measurement-grids-tail-truncated-vs-sliding-read-before-designing-a-run)).
 
 ## Price-lag anchor freshening
 

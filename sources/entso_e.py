@@ -1,5 +1,6 @@
 import io
 import os
+import time
 import logging
 import zipfile
 import requests
@@ -18,6 +19,10 @@ DE_LU_AREA_CODE   = "10Y1001A1001A82H"  # Germany/Luxembourg — price leader fo
 DK2_AREA_CODE     = "10YDK-2--------M"  # Denmark DK2 — directly coupled to SE4
 SWEDEN_AREA_CODE  = "10YSE-1--------K"  # Sweden country-level — for hydro reservoir data
 ENTSO_E_API_URL = "https://web-api.tp.entsoe.eu/api"
+
+# ENTSO-E API maximum allowed date range per request (default; see
+# DOCUMENT_MAX_RANGE_DAYS for the document types that are stricter)
+_MAX_RANGE_DAYS = 365
 
 
 def _get_token() -> str:
@@ -50,6 +55,155 @@ def _extract_xml_files(content: bytes) -> list[bytes]:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
             return [zf.read(name) for name in zf.namelist() if name.endswith(".xml")]
     return [content]
+
+
+# --------------------------------------------------------------------------
+# Generic request helpers
+#
+# The fetchers below this section each build their own params and call
+# get_with_retry directly, which is fine for documents whose limits we know and
+# whose failures are fatal anyway. These three exist for the other case: an
+# exploratory fetch over years of history, where one refused border must not
+# abort the run and where the API's own explanation is the only way to find out
+# what it wants. experiments/fetch_entsoe_crossborder.py is the caller today;
+# docs/FINDINGS.md "If you touch ab_cache/crossborder/" is the war story.
+# --------------------------------------------------------------------------
+
+# Per-document-type maximum request range. ENTSO-E does not publish these
+# consistently and DOES change them: A11 took 365-day requests on 2026-08-22 and
+# rejected them on 2026-09-12 with "larger than maximum allowed period 'P1M' for
+# 'NET_CROSS_BORDER_PHYSICAL_FLOWS_R3:XML'", while A78 was unaffected in the same
+# run. 28 rather than 30 because P1M is a calendar month. Measured with
+# experiments/probe_a11_range_limit.py; fetch_range() recovers if a limit moves
+# again, this table only saves the refusals.
+DOCUMENT_MAX_RANGE_DAYS = {
+    "A11": 28,     # cross-border physical flows
+}
+
+
+def max_range_days(document_type: str) -> int:
+    """Largest range worth asking for, for this document type."""
+    return DOCUMENT_MAX_RANGE_DAYS.get(document_type, _MAX_RANGE_DAYS)
+
+
+def date_chunks(start: datetime, end: datetime, days: int = _MAX_RANGE_DAYS):
+    """Yield (from, to) pairs of at most `days`, covering [start, end)."""
+    cur = start
+    while cur < end:
+        nxt = min(cur + timedelta(days=days), end)
+        yield cur, nxt
+        cur = nxt
+
+
+def reason_text(content: bytes) -> str:
+    """The Reason code/text ENTSO-E puts in a 4xx body.
+
+    requests' HTTPError message does not carry it, and it is the only place the
+    API says WHY a query was refused -- losing it turned a one-line limit change
+    into an undiagnosable 27-minute fetch that returned nothing (2026-09-12).
+    """
+    try:
+        root = ET.fromstring(content)
+    except Exception:
+        return content[:200].decode("utf-8", "replace")
+    parts = [el.text for el in root.iter()
+             if el.tag.split("}")[-1] in ("code", "text") and el.text]
+    return " | ".join(parts)[:300] if parts else content[:200].decode("utf-8", "replace")
+
+
+def request_documents(params: dict, label: str = "", *, raw_dir=None,
+                      raw_name: str = None, log=None) -> tuple[list, bool]:
+    """One ENTSO-E call, returning (parsed XML roots, ok).
+
+    `ok` is False only when the REQUEST failed, so a caller can react (see
+    fetch_range, which splits the interval and retries). An empty list with
+    ok=True means "no data in this window", which is a normal answer. Never
+    raises: one unavailable border must not abort an hour-long fetch.
+
+    log: callable taking one string, for callers that keep their own fetch log
+    (default: this module's logger).
+    """
+    emit = log or logger.info
+    try:
+        resp = get_with_retry(ENTSO_E_API_URL, {**params, "securityToken": _get_token()})
+    except Exception as e:
+        emit(f"  ERROR  {label}: {type(e).__name__}: {str(e)[:200]}")
+        return [], False
+
+    if resp.status_code >= 400:
+        emit(f"  ERROR  {label}: HTTP {resp.status_code}: {reason_text(resp.content)}")
+        return [], False
+
+    if raw_dir is not None and raw_name is not None:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        ext = ".zip" if resp.content[:2] == b"PK" else ".xml"
+        (raw_dir / (raw_name + ext)).write_bytes(resp.content)
+
+    try:
+        xmls = _extract_xml_files(resp.content)
+    except Exception as e:
+        emit(f"  ERROR  {label}: could not extract: {e}")
+        return [], False
+
+    roots = []
+    for xml_content in xmls:
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError as e:
+            emit(f"  ERROR  {label}: XML parse: {e}")
+            continue
+        if root.tag.split("}")[-1] == "Acknowledgement_MarketDocument":
+            reason = _find_first(root, "text")
+            emit(f"  EMPTY  {label}: {reason.text if reason is not None else 'no data'}")
+            continue
+        roots.append(root)
+    return roots, True
+
+
+def fetch_range(params: dict, start: datetime, end: datetime, parse,
+                label: str = "", *, min_days: int = 7, log=None,
+                raw_dir=None, raw_name: str = None, sleep_s: float = 0.3) -> list:
+    """Fetch [start, end), halving the interval and retrying on refusal.
+
+    `parse` maps one XML root to a list of records. Ask for the whole range and
+    let the refusals narrow it: the per-document limits are neither documented
+    nor stable (see DOCUMENT_MAX_RANGE_DAYS), so a fetch that adapts survives
+    the next change with a slow run instead of an empty one.
+
+    min_days floors the recursion. If a week-long window is refused the cause is
+    not the range, and splitting further only multiplies a failing request.
+    """
+    emit = log or logger.info
+    roots, ok = request_documents(
+        {**params,
+         "periodStart": start.strftime("%Y%m%d%H%M"),
+         "periodEnd": end.strftime("%Y%m%d%H%M")},
+        f"{label} {start.date()}..{end.date()}",
+        raw_dir=raw_dir, raw_name=raw_name, log=log,
+    )
+    if ok:
+        records = []
+        for root in roots:
+            records += parse(root)
+        if records:
+            emit(f"  OK     {label} {start.date()}..{end.date()}: {len(records)} points")
+        return records
+
+    days = (end - start).days
+    if days <= min_days:
+        emit(f"  GIVEUP {label} {start.date()}..{end.date()} ({days}d)")
+        return []
+
+    mid = start + timedelta(days=days // 2)
+    emit(f"  SPLIT  {label} {start.date()}..{end.date()} ({days}d) -> 2 x {days // 2}d")
+    time.sleep(sleep_s)
+    first = fetch_range(params, start, mid, parse, label, min_days=min_days, log=log,
+                        raw_dir=raw_dir, raw_name=raw_name and f"{raw_name}_a",
+                        sleep_s=sleep_s)
+    time.sleep(sleep_s)
+    return first + fetch_range(params, mid, end, parse, label, min_days=min_days,
+                               log=log, raw_dir=raw_dir,
+                               raw_name=raw_name and f"{raw_name}_b", sleep_s=sleep_s)
 
 
 def _get_offset_for_position(position: int, resolution: str) -> timedelta:
@@ -94,10 +248,6 @@ def _parse_period(period: ET.Element) -> list:
 
     return records
 
-
-
-# ENTSO-E API maximum allowed date range per request
-_MAX_RANGE_DAYS = 365
 
 
 def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:

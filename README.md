@@ -128,32 +128,13 @@ belongs in the ledgers above. Concretely, if you are working in that directory:
 
 ## Known Limitations
 
-- **3-year training window**: Unusual market periods (e.g. energy crisis 2021–2022) have outsized weight. Reservoir features will become more valuable as more data accumulates.
+- **The model sees exactly three years, and that is fixed.** `TRAINING_DAYS = 1095` is a *sliding* window, not an accumulating one, so history does not build up: every fit sees 1095 rows and any regime older than that is invisible. Both longer (4y/4.4y/4.8y) and shorter (2.0y/2.5y) windows were tested and rejected — window length is not a lever (see [REJECTED.md](docs/REJECTED.md)). The binding consequence is the **prediction ceiling**: XGBoost cannot extrapolate past its training targets, so a price the last three years never reached is unreachable — see [The 2026-08-17 regime break](docs/FINDINGS.md#the-2026-08-17-regime-break).
 - **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
 - **Forecast horizon**: All forecast days (1–8) use the same features and a single model that doesn't distinguish horizon. Horizon-aware modelling was **evaluated and shelved** (2026-07): the anchor-staleness sensitivity showed the true stale-lag cost is only ~1 EUR/MWh for min/cheap2h, so a `forecast_horizon` feature has little headroom. The scary-looking per-horizon curve is a weekday artifact of the step-7 walk-forward (see [Current MAE Baseline](docs/MODEL.md#current-mae-baseline)), not real horizon decay. The price-lag anchor is kept fresh regardless, since that was a free win.
 - **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis — real day+7 weather forecasts are worse than archive. This optimism grows at far horizons and is not captured by the anchor-staleness or per-horizon metrics.
 - **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](docs/DECISIONS.md#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual is measured at **+0.155 (cheap2h) / +0.258 (min) / +0.591 (avg)** (the `gap1` arm), and the recent-analysis product's own error against the archive is on top of that and still unmeasured.
-- **Max prediction accuracy** (~34 EUR/MWh MAE, the highest of the four targets): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
-- **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale.
-- **FIXED 2026-07-22 — NaN exchange rate had blanked the whole HA payload.**
-  Symptom: every min/avg/max/cheap2h prediction was pushed to Home Assistant as
-  `NaN`. Root cause: `currency.calculate_eur_to_sek_rate` filtered the ENTSO-E
-  frame to `date.today()` and averaged it; when that day had no ENTSO-E rows yet
-  the mean was NaN, so `rate = nordpool_mean_sek / NaN`. Two things made the day
-  empty in practice — a midnight rollover during the run (the function
-  re-derived `date.today()` independently of `predict.main()`'s single `today`,
-  so a run straddling midnight computed the rate for a day not yet fetched), and
-  a structural split where live Nordpool data for today can exist before
-  ENTSO-E's day-ahead prices for the same day are published. **Fix constraint
-  worth remembering if this is ever touched again: do NOT "just use the latest
-  available ENTSO-E day"** — the rate is `SEK_mean / EUR_mean` for the *same
-  delivery day* (Nordpool applies a daily ECB fixing), so pairing Nordpool-today
-  with ENTSO-E-yesterday gives a **wrong** rate, not merely a stale one. The fix
-  takes the single `today` from `predict.main()` and walks back up to
-  `_RATE_LOOKBACK_DAYS` (7) to the most recent delivery day present in **both**
-  the ENTSO-E frame and Nordpool, computing the rate on that shared day; if no
-  common day exists within the window it raises `ValueError` instead of
-  silently returning NaN.
+- **Max prediction accuracy** (the highest MAE of the four targets by a wide margin — see [MODEL.md](docs/MODEL.md#current-mae-baseline)): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
+- **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale. A NaN rate once blanked the entire Home Assistant payload — [FINDINGS.md](docs/FINDINGS.md#the-nan-exchange-rate-that-blanked-the-payload-2026-07-22) has the postmortem and the constraint to respect if `currency.py` is ever touched again.
 
 ## Setup
 

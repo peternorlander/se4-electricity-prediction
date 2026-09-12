@@ -89,6 +89,27 @@ under the archive lag), cheap2h at d+1:
 MAE 4.32 before the break, **57.75** from 08-17 on, bias −55.5. The highest
 number production issued anywhere that week was **49.1**.
 
+**Horizon collapse — the far days are pinned to the pre-break world.** The same
+replay, fit ≤ D, across the whole horizon (cheap2h, EUR/MWh):
+
+| target date | actual | d+1 | d+2 | d+3 | d+4 | d+5 | d+6 | d+7 |
+|---|---|---|---|---|---|---|---|---|
+| 2026-08-17 | 20.2 | 16.5 | 15.4 | 26.7 | 36.9 | | | |
+| 2026-08-18 | **127.9** | 42.7 | 23.2 | 16.4 | 29.8 | 39.4 | | |
+| 2026-08-19 | **128.0** | 53.7 | 32.3 | 18.0 | 16.2 | 26.0 | 34.7 | |
+| 2026-08-20 | 81.2 | 104.6 | 69.6 | 46.5 | 28.4 | 20.8 | 35.2 | 43.6 |
+| 2026-08-21 | 62.3 | 60.5 | 82.6 | 55.6 | 44.7 | 22.2 | 20.0 | 31.6 |
+
+Read along a row: for 08-18, d+1 says 42.7 but d+3 says 16.4. Every forecast day
+beyond the first carries the *same* frozen anchor from before the break
+(`apply_forecast_freeze` pins the lag features for the whole 7-day window), so
+the further out the forecast, the more firmly it is attached to the old regime.
+And read down the d+1 column: the model only prints a high number for 08-20,
+after it has seen 08-19's realised price — reactive, not predictive. This is
+also why `mae_by_horizon` cannot be read as horizon decay in normal weeks (see
+[MODEL.md](MODEL.md#current-mae-baseline)) but says something real here: during a
+regime step the horizon *is* the distance back to the last valid anchor.
+
 Four reasons this is not a tuning failure. Each was measured, and together they
 close the obvious routes:
 
@@ -197,16 +218,28 @@ for caches fetched before that.
   information in the far period clusters than in NOW — it is close to constant
   there — which is a caveat on any four-cluster verdict built on A78, including
   the open `avg` candidate above.
-* **A11 range limits move.** The 365-day chunks that fetched five years of
-  physical flows on 2026-08-22 returned **HTTP 400 on every historical chunk on
-  2026-09-12**, while the same 365-day chunks of A78 were fine in the same run.
-  27 minutes of fetching produced 78 rows. The fetcher now asks for the whole
-  range and **halves it on refusal** down to a 16-day floor, so it finds
-  whatever the current limit is instead of encoding a guess, and it logs
-  ENTSO-E's own `Reason` text (which `requests`' `HTTPError` message drops —
-  losing it is why the first failure was undiagnosable). `--into YYYY-MM-DD`
-  re-fetches one document type into an existing cache directory without
-  clobbering the others.
+* **A11 physical flows are capped at one month per request, and that cap is
+  new.** The 365-day chunks that fetched five years of flows on 2026-08-22
+  returned **HTTP 400 on every historical chunk on 2026-09-12**, while the same
+  365-day chunks of A78 were fine in the same run; 27 minutes of fetching
+  produced 78 rows. The API says why, and only in the response body:
+  *"Provided time interval (…) is larger than maximum allowed period `'P1M'`
+  for `'NET_CROSS_BORDER_PHYSICAL_FLOWS_R3:XML'` export."* Measured identical in
+  all three eras (hourly 2024, 15-minute 2026, and the last weeks) with
+  `experiments/probe_a11_range_limit.py`, so it is a per-document-type platform
+  limit, not a data-volume one. Consequences, all already wired into the
+  fetcher: flows are fetched in **28-day** slices (P1M is a calendar month, so
+  30 days is not always inside it) — 66 chunks × 10 border-directions ≈ 660
+  requests for five years, ~25 minutes; any refusal **halves the interval and
+  retries** down to a 7-day floor, so the next limit change costs a slow fetch
+  rather than an empty one; and the `Reason` text is logged, because `requests`'
+  `HTTPError` message drops it and losing it is what made the first failure
+  undiagnosable. `--into YYYY-MM-DD` re-fetches one document type into an
+  existing cache directory without clobbering the others. That request layer —
+  retry, 4xx `Reason` logging, the per-document-type limit table
+  (`DOCUMENT_MAX_RANGE_DAYS`) and the splitting — lives in `sources/entso_e.py`,
+  not in the scratch fetcher, so the next exploratory ENTSO-E fetch (plan 2.7's
+  week-ahead documents) inherits it instead of rediscovering this.
 * **DK2 rows describe one 400 kV cable, not the border.** 69 days show
   `available_mw = 0` while the border keeps flowing. Never min() them into a
   border capacity; DK2 was held at nominal in every round-21 arm.
@@ -219,6 +252,33 @@ One correction to the record: the DE_LU outage running 2026-08-17 → 11-08 that
 IMPROVEMENT_PLAN flagged as a suspected revision is Breared–Söderåsen, an
 SE4-internal line, and it is **cancelled**. The Baltic Cable trip record is
 revision 3, created 2026-08-17 10:32 — its end date was posted on the break day.
+
+## The NaN exchange rate that blanked the payload (2026-07-22)
+
+The only production incident on record, kept because the fix carries a constraint
+that is easy to undo by accident. It is also the standing argument for the
+integration check in [AB_TESTING.md](AB_TESTING.md#how-changes-are-validated): a
+backtest cannot catch this class of bug, because the A/B harness never touches the
+live fetches, the currency conversion or the Home Assistant push.
+
+Symptom: every min/avg/max/cheap2h prediction was pushed to Home Assistant as
+`NaN`. Root cause: `currency.calculate_eur_to_sek_rate` filtered the ENTSO-E
+frame to `date.today()` and averaged it; when that day had no ENTSO-E rows yet
+the mean was NaN, so `rate = nordpool_mean_sek / NaN`. Two things made the day
+empty in practice — a midnight rollover during the run (the function
+re-derived `date.today()` independently of `predict.main()`'s single `today`,
+so a run straddling midnight computed the rate for a day not yet fetched), and
+a structural split where live Nordpool data for today can exist before
+ENTSO-E's day-ahead prices for the same day are published. **Fix constraint
+worth remembering if this is ever touched again: do NOT "just use the latest
+available ENTSO-E day"** — the rate is `SEK_mean / EUR_mean` for the *same
+delivery day* (Nordpool applies a daily ECB fixing), so pairing Nordpool-today
+with ENTSO-E-yesterday gives a **wrong** rate, not merely a stale one. The fix
+takes the single `today` from `predict.main()` and walks back up to
+`_RATE_LOOKBACK_DAYS` (7) to the most recent delivery day present in **both**
+the ENTSO-E frame and Nordpool, computing the rate on that shared day; if no
+common day exists within the window it raises `ValueError` instead of
+silently returning NaN.
 
 ## 1. What this review measured (2026-09-08, snapshot `ab_cache/2026-09-05`)
 
