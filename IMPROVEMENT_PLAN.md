@@ -1,12 +1,16 @@
 # SE4 Prediction — Outstanding Work
 
-Working list of **not-yet-done** accuracy items only. Everything settled —
-architecture, methodology, current MAE baseline, shipped changes, and the full
-"Features Tested and Rejected" ledger — lives in `README.md`; read that first,
-especially "A/B Backtest Flow" (how to run an experiment, which verdict
-function to call, tail-truncated vs sliding grids) and "How changes are
-validated" (the adoption bar). This file assumes that context and does not
-repeat it.
+Working list of **not-yet-done** accuracy items only, carried from the 2026-08
+round. The newer list is [IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md)
+— start there.
+
+Everything settled lives under [docs/](docs/): the current model in
+[MODEL.md](docs/MODEL.md), shipped changes in [DECISIONS.md](docs/DECISIONS.md),
+the rejected ledger in [REJECTED.md](docs/REJECTED.md), and the methodology in
+[AB_TESTING.md](docs/AB_TESTING.md) — read that one first, especially "How to
+run an experiment", "Which verdict function to call", "Measurement grids:
+tail-truncated vs sliding" and "How changes are validated" (the adoption bar).
+This file assumes that context and does not repeat it.
 
 **Priority: `cheap2h` first, then `min`. `avg` improvements are welcome; `max`
 is explicitly not a priority.**
@@ -19,14 +23,17 @@ confirmation bar before looking at the screen. New A/Bs use the round-15b
 sliding grid on a long snapshot (`ab_test.py fetch --days 1825`) — constant
 `min_train`, four period clusters (NOW/−6M/−12M/−21M) — judged with
 `classify_clustered` / `classify_ablation_clustered`, not the plain
-`classify`/`classify_ablation` (see README "Which verdict function to call").
+`classify`/`classify_ablation` (see
+[docs/AB_TESTING.md](docs/AB_TESTING.md#which-verdict-function-to-call)).
 
 **How this file is maintained (2026-09-12).** An item is *deleted* from here
-the moment its verdict is recorded in `README.md` — the rejected table, and a
-section of its own when the round found something worth explaining. This file
-is only what is left to do; the README is the ledger. Item 0 (cross-border
-capacity and flows) was closed that way on 2026-09-12: see README
-"Cross-border capacity and flows (round 21)".
+the moment its verdict is recorded in the ledgers — a row in
+[docs/REJECTED.md](docs/REJECTED.md) or an entry in
+[docs/DECISIONS.md](docs/DECISIONS.md), plus a section in
+[docs/FINDINGS.md](docs/FINDINGS.md) when the round found something worth
+explaining. This file is only what is left to do; the ledgers are the record.
+Item 0 (cross-border capacity and flows) was closed that way on 2026-09-12: see
+[docs/FINDINGS.md](docs/FINDINGS.md#cross-border-capacity-and-flows-round-21).
 
 ## Open items
 
@@ -36,7 +43,7 @@ Idea: multiply radiation features (`mean_radiation`, `radiation_midday`) by an
 installed-PV-capacity index, since SE4 solar has roughly doubled since 2023
 and trees can't learn that monotonic buildout from cyclic calendar features
 alone. A placeholder linear index was tested in 2026-07 and found no
-replicable gain (see README rejected table) — but its own stated cause was
+replicable gain (see [docs/REJECTED.md](docs/REJECTED.md)) — but its own stated cause was
 "already absorbed by `price_se4_min_lag1` / `residual_load_min`", and
 `price_se4_min_lag1` is no longer in `min`'s feature list, so that absorber is
 gone and the mechanism for re-opening still holds.
@@ -145,7 +152,7 @@ electricity-price lags.
 
 **Its sibling, `price_vs_30d`, was tested and rejected** (round 18, 2026-08:
 harmful on both `min` and `cheap2h`, confirmed on three independent
-measurements — see README rejected table), which lowers the prior on this one
+measurements — see [docs/REJECTED.md](docs/REJECTED.md)), which lowers the prior on this one
 too, though it's a fuel-price ratio rather than an own-price ratio and so
 isn't subject to the exact same "own frozen price lag hurts the trough
 targets" mechanism. Gate on walk-forward MAE as usual; expect this to matter

@@ -19,5 +19,10 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# A/B backtest snapshot cache (local-only fetched data, see README "A/B Backtest Flow")
+# A/B backtest snapshot cache (local-only fetched data, see docs/AB_TESTING.md)
 ab_cache/
+
+# Experiment scratch: analysis scripts, runners and raw per-window results.
+# Deliberately untracked -- the condensed verdicts live in docs/ (see README
+# "Working with experiments/"). Never the record.
+experiments/

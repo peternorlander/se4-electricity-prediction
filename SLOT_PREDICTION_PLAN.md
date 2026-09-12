@@ -9,7 +9,7 @@ Goal: alongside `cheap2h` (the mean of the day's two cheapest hours), predict
 round-19c interval: the headline `cheap2h` number is unchanged, three numbers
 are added next to it.
 
-Read first: README "A/B Backtest Flow", "How changes are validated",
+Read first: docs/AB_TESTING.md ("A/B Backtest Flow", "How changes are validated",
 "Measurement grids", "Which verdict function to call", and "Prediction interval
 for cheap2h (round 19c)" — the last one is the closest precedent for how an
 addition is scored and shipped here. `IMPROVEMENT_PLAN.md` carries the standing
@@ -30,7 +30,7 @@ pre-register the bar). This file assumes all of that.
 
 Computed in `features.aggregate_prices_daily` on the **same hourly resample and
 the same Europe/Stockholm date** as `price_cheap2h`, so all four share one
-target definition across the 15-minute MTU boundary (README "Target
+target definition across the 15-minute MTU boundary (docs/MODEL.md "Target
 Definition").
 
 The slot label (`night`/`day`/`evening`) and the ambiguity ("is it close?") are
@@ -163,7 +163,7 @@ No interval for the slot targets in this step. If wanted later it is the
 
 ### 2.5 Local integration check (the "A/B is the gate" trade-off)
 
-Per README "How changes are validated": no Actions run is required, but run
+Per docs/AB_TESTING.md "How changes are validated": no Actions run is required, but run
 the local `train → predict → get_feature_importance` smoke test against a
 cached snapshot (~2 min) and assert: seven keys per day, all finite, the three
 slot values are ≥ the `cheap2h` prediction *only in truth, not necessarily in
@@ -173,7 +173,7 @@ backtest covers.
 
 ### 2.6 Documentation to update on shipping
 
-- README: "Architecture" (4 → 7 regressors), "Target Definition" (the three
+- README "Architecture" (4 → 7 regressors); docs/MODEL.md "Target Definition" (the three
   definitions + the identity), "Home Assistant Integration" (new keys, the
   deadline rule in 5.2 as the worked example, the derivation of label/margin),
   "Model" / "Per-Target Feature Sets" (why they share the trough list), and
@@ -205,7 +205,7 @@ period clusters NOW / −6M / −12M / −21M, `OMP_NUM_THREADS=4`. Use
 Snapshot: prefer a fresh `python ab_test.py fetch --days 1825` (needs
 `ENTSO_E_TOKEN`; Peter runs this locally). `ab_cache/long/2026-08-21` is
 usable if a fresh one is not available, but check the weather tail first
-(README "Snapshot generations"). Slot share drifts strongly with solar build-out
+(docs/AB_TESTING.md "Snapshot generations"). Slot share drifts strongly with solar build-out
 (section 6.3), so the NOW cluster is the one that describes what production
 will see; the older clusters describe robustness, not expected accuracy.
 
@@ -249,7 +249,7 @@ Regret = paid − best reachable actual. Bar, judged with the
 **C must have lower mean regret than both A and E in every cluster.** The
 exploration (section 6.4) found A *worse than never waiting*; if the harness
 confirms that on horizon 2–7, it is the single strongest argument for the
-feature and should be quoted in the README.
+feature and should be quoted in docs/MODEL.md.
 
 Score decision metrics **per cluster, never pooled** — the 19c q90 rule was a
 pooled artefact (`experiments/ROUND19_FINDINGS.md`).
@@ -289,7 +289,7 @@ driven), on ~41 % midday (solar driven), and the mix drifts by year. A feature
 that helps `cheap2h` on average can help `day` and hurt `night`, or the other
 way round, and the pooled `cheap2h` delta hides that. The project has already
 recorded this failure mode once — the cheap2h prune silently expired the
-hurdle's justification (README "Per-Target Feature Sets"). Verdicts are scoped
+hurdle's justification (docs/MODEL.md "Per-Target Feature Sets"). Verdicts are scoped
 to the model they were measured on.
 
 ### 4.3 The rule
@@ -367,7 +367,7 @@ change): the label, the margin, any "stable" threshold. Keep it that way.
 
 ### 5.6 Thread count
 `OMP_NUM_THREADS=4` for every measurement, as for every other table in the
-README.
+docs.
 
 ---
 
