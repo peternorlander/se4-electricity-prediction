@@ -17,6 +17,7 @@ check whether the code it describes still looks that way.
 | [1.2 The regime is moving away from the model](#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it) | 2026-09-08 | Negative-price share 25 % → 7 %, the trough moved from night to midday, DK2/DE coupling rising |
 | [1.3 Sources verified as reachable](#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes) | 2026-09-08 | What each candidate source carries, and the horizon column that decides whether it can be a forecast feature at all |
 | [1.4 No weather point under the northern wind fleet](#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet) | 2026-09-11 | The three northern candidates are each worth more than any existing site but Stockholm |
+| [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
 
@@ -453,6 +454,54 @@ than pooled. Every southern candidate is redundant with DK/DE-north at
 correlation 0.75–0.91. DE-south solar is nil pooled and +0.022 in 2026 — the
 rising solar coupling of 1.2 — and belongs with the day-slot work (2.1-C+, 2.6),
 not with a wind-point addition.
+
+## Solar-capacity buildout is visible in the data, a linear index still doesn't capture it (round 22)
+
+Item 1 of `IMPROVEMENT_PLAN.md` re-opened the 2026-07-rejected solar-capacity
+idea: `price_se4_min_lag1` (the claimed absorber) left `min`'s feature list in
+the 2026-08 prune, and the original test scaled `mean_radiation`/`radiation_midday`
+— neither a `TROUGH_FEATURE_COLUMNS` member — so it measured close to nothing.
+
+**Descriptive screen** (`long/2026-09-12`, Apr–Sep days only): fit
+`price_min`/`price_cheap2h` against 11 non-solar controls (wind, temp
+gradient, fuel, hydro, calendar) plus month dummies, **separately per year**
+so no between-year price level can leak in, then correlate the residual
+against `mean_radiation`:
+
+| year | 2022 | 2023 | 2024 | 2025 | 2026 (partial) |
+|---|---|---|---|---|---|
+| residual corr with `mean_radiation` | +0.04 | −0.03 | −0.12 | −0.21 | −0.20 |
+
+Monotonic, `price_cheap2h` moves the same way, and the 2022–2025 values are
+byte-identical on the independently-fetched `long/2026-08-21`.
+`residual_load_min` itself shows **no such trend** (flat every year) — it's
+built from `mean_radiation / 500`, a fixed divisor with no capacity term.
+2026 (partial year) breaks the monotonic pattern slightly, plausibly the
+Aug-2026 cross-border re-coupling break ([1.2](#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it))
+landing in the same window rather than a reversal of PV buildout.
+
+**The A/B, correctly wired.** `residual_load`/`residual_load_min`/
+`radiation_variability` are computed from hourly inputs before
+`ab.variants.Variant.transform` ever runs, so `experiments/round22_solar_capacity.py`
+builds BASELINE/CANDIDATE frames directly, applying the **same, unchanged**
+`1 + years_since_2023/3` index from the 2026-07 test upstream (self-checked
+byte-identical to production at index≡1 first). Round-15b 16-point/four-cluster
+grid:
+
+| snapshot | cheap2h clmean | clusters (NOW/−6M/−12M/−21M) | verdict |
+|---|---|---|---|
+| `long/2026-09-12` | −0.154 | −0.010 / −0.096 / −0.164 / −0.346 | **REAL** |
+| `long/2026-08-21` (replay) | −0.014 | −0.040 / +0.072 / +0.041 / −0.129 | NOISE |
+
+`min` was NOISE on both snapshots. The REAL result did not survive replay on
+an independently-fetched snapshot — rejected per the standing rule; see
+[REJECTED.md](REJECTED.md#feature-lists-for-the-trough-targets-min--cheap2h).
+
+**Reading.** The trend itself is very likely real; a hand-drawn
+linear-in-calendar-time index just doesn't track its true shape closely
+enough to survive replication. `IMPROVEMENT_PLAN_2026-09.md` §2.1 (calibrate
+wind/solar terms from ENTSO-E actual generation per year, already planned)
+supersedes this — not a new hand-drawn index.
 
 ## Appendix A — Source probes, 2026-09-08
 

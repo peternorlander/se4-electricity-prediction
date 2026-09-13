@@ -87,6 +87,16 @@ when it is warm.
    hand-drawn line, and applies to wind as much as solar. A68 installed
    capacity is the fallback if A75 is patchy for a zone.
 
+   **Round 22 (2026-09-13) adds a reason to prioritize this.** A descriptive
+   screen found the year-over-year trend a hand-drawn linear index is meant to
+   capture is real and replicates (2022→2026, monotonic sign flip in the
+   radiation→price relationship after controlling for wind/temp/fuel/hydro/
+   calendar) — but a linear-in-time index moved correctly upstream still only
+   cleared the A/B bar on one of two snapshots. That is consistent with this
+   item's framing: the *trend* is real, a hand-drawn functional form is not
+   the right way to track it. See
+   [FINDINGS.md](docs/FINDINGS.md#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22).
+
 **Harness note (the trap from old item 1).** `ab.variants.Variant.transform`
 receives the merged daily frame, after these columns were computed from the
 hourly inputs. It cannot rebuild them. Add an optional `build_fn(inputs) ->

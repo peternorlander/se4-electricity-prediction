@@ -34,50 +34,18 @@ the moment its verdict is recorded in the ledgers — a row in
 explaining. This file is only what is left to do; the ledgers are the record.
 Item 0 (cross-border capacity and flows) was closed that way on 2026-09-12: see
 [docs/FINDINGS.md](docs/FINDINGS.md#cross-border-capacity-and-flows-round-21).
+Item 1 (solar-capacity scaling) was closed the same way on 2026-09-13: a
+descriptive screen found a real, replicating year-over-year trend the current
+fixed-divisor solar term can't see, but the correctly-wired A/B (round 22)
+was REAL on one snapshot and did not survive cross-vintage replay — see
+[docs/FINDINGS.md](docs/FINDINGS.md#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22).
+The principled fix (calibrate wind/solar from ENTSO-E actual generation
+instead of a hand-drawn index) is already planned as
+[IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md) §2.1.
 
 ## Open items
 
-### 1. Solar-capacity scaling for min/cheap2h — re-targeted, prior revised down
-
-Idea: multiply radiation features (`mean_radiation`, `radiation_midday`) by an
-installed-PV-capacity index, since SE4 solar has roughly doubled since 2023
-and trees can't learn that monotonic buildout from cyclic calendar features
-alone. A placeholder linear index was tested in 2026-07 and found no
-replicable gain (see [docs/REJECTED.md](docs/REJECTED.md)) — but its own stated cause was
-"already absorbed by `price_se4_min_lag1` / `residual_load_min`", and
-`price_se4_min_lag1` is no longer in `min`'s feature list, so that absorber is
-gone and the mechanism for re-opening still holds.
-
-**The second leg of the case is weaker than it first looked.** A LIGHT/DARK
-seasonal contrast in solar features is real and replicates, but adding
-`day_of_year_sin/cos` alongside the solar features so the model could
-condition on season came back net *harmful* once training-set size was
-controlled for (the apparent gain was a data-starvation artefact of the old
-tail-truncated grid, concentrated in the small-`min_train` clusters and
-reversed at production's training size). "Helps in summer, hurts in winter"
-nets to harmful once the model sees each season more than once.
-
-**If run at all: screen and decide on the NOW cluster only** (closest to
-production's training size) — the far clusters can manufacture a
-training-size artefact that looks exactly like a seasonal win.
-
-**Implementation warning, the part that makes this more work than it looks.**
-Scaling `mean_radiation`/`radiation_midday` as a `transform` on the merged
-daily frame is a **near no-op** for the trough targets: neither column is in
-their feature lists, and `residual_load`/`residual_load_min`/
-`radiation_variability` (which are) get computed from the hourly inputs
-*before* a `transform` would run. The scaling has to move upstream — into the
-hourly weather inputs or the solar term itself, inside
-`add_residual_load` / `aggregate_intraday_features` / `add_weather_variability`
-— or it will "confirm" the rejection for entirely spurious reasons.
-
-Real ENTSO-E A68 per-zone installed capacity would be the theoretically
-cleaner input (the current radiation features blend SE4+DK+DE, which grew at
-different rates), but the first-order interaction test above showed nothing,
-so the prior on this whole item is low. Do not invest in fetching A68 without
-a more specific reason first.
-
-### 2. Time-decay weights on `min`/`cheap2h` — re-test the measurement, not the model
+### 1. Time-decay weights on `min`/`cheap2h` — re-test the measurement, not the model
 
 `avg` keeps time-decay sample weighting (half-life 500) — a drift-free A/B
 showed it helping in all three runs it was tested in. The same lever was
@@ -93,7 +61,7 @@ sign-consistency on this same grid, so 0.2 sits right at its resolution
 floor. Decide what counts as a pass *before* running, and be prepared for
 `INCONCLUSIVE` to be the honest answer rather than a reason to keep pushing.
 
-### 3. `min ≤ cheap2h` coherence
+### 2. `min ≤ cheap2h` coherence
 
 `min` and `cheap2h` are independent models, so nothing stops predicted
 `cheap2h` (mean of the day's two cheapest hours) from coming in *below*
@@ -118,7 +86,7 @@ difference. Expect a small MAE effect at best — the real payoff is that Home
 Assistant stops receiving a logically incoherent pair on a meaningful minority
 of days.
 
-### 4. Richer supply-side data (only if the above plateaus)
+### 3. Richer supply-side data (only if the above plateaus)
 
 Genuinely new information rather than re-encoding what's already fetched,
 roughly in priority order:
@@ -138,7 +106,7 @@ roughly in priority order:
   route (northern wind points, `IMPROVEMENT_PLAN_2026-09.md` §2.13) comes
   first.
 
-### 5. `ttf_vs_30d` — regime-abnormality ratio, low expected yield
+### 4. `ttf_vs_30d` — regime-abnormality ratio, low expected yield
 
 Motivated by the 2026-07 Iran-war energy-crisis price spike: world events
 don't hit SE4 prices directly, they transmit through fuel markets
