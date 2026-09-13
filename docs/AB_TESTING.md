@@ -226,6 +226,25 @@ So a misspelled entry fails **silently and in the dangerous direction** — the 
 looks frozen and is not. Assert, in the variant, that every name you added is
 both a column of the frame and a member of the list you pass.
 
+### The other half: can production serve the quantity you measured?
+
+Horizon honesty asks whether the value was *knowable* at run time. This asks
+whether the value production would actually read is the **same series** you
+measured — and a feature can pass the first test and fail this one.
+
+Round 21 is the worked case, and it cost three rounds of replication to notice.
+`export_headroom_lag1` used the realised cross-border flow for day *R* = T+1.
+That is knowable at run time, but only as the day-ahead *schedule*: the physical
+flow has not happened yet. The two series correlate **0.56** on the feature, so
+the A/B measured something production cannot serve — and the same feature built
+from the freshest realised flow production does have (`lag2`) is NOISE. Three
+REAL verdicts, on two independent snapshots, none of them transferable.
+
+So before running a grid on a new external series, ask where production reads it
+from and *when*: if the answer is "a different publication of roughly the same
+thing", measure that publication instead, or at minimum measure how far the two
+diverge first. It is one cheap probe against several days of replication.
+
 ### Three questions before measuring any new feature
 
 1. **When is it published, relative to the run?** Production runs once, after

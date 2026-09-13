@@ -87,25 +87,37 @@ a commit message, a chat transcript, or a script under `experiments/`.
 |---|---|
 | A/B validated, shipped | An entry in [docs/DECISIONS.md](docs/DECISIONS.md), plus whatever it changes in [docs/MODEL.md](docs/MODEL.md) / [docs/FEATURES.md](docs/FEATURES.md). Delete the item from the improvement plan. |
 | A/B rejected | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round. Delete the item from the improvement plan. |
-| Either, **and** the round explained something beyond its own verdict | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. |
+| Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
 | Not done yet | The improvement plan only — never a ledger. |
 
-Three rules that make this work:
+Four rules that make this work:
 
-1. **An entry must be self-contained.** Grid, snapshot, arms, deltas, how many
-   measurements were favourable — written in the entry itself, in EUR/MWh. A
-   pointer to a script is a courtesy, never the record. For a feature, say how it
-   was made horizon-honest: a number measured with knowledge production will not
-   have is not a result
-   ([docs/AB_TESTING.md](docs/AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know)).
-2. **Quote A/B deltas, not before/after headline MAE.** Headline MAE moves with
+1. **A rejected row is four slots and about 60 words**, not a report:
+   **what** was tested (precisely enough to recognise a re-proposal) · **the
+   number and the instrument** (delta in EUR/MWh, which grid, how many
+   measurements favourable — and whether the arm was leaky or horizon-honest,
+   [why that matters](docs/AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know))
+   · **why** it failed, one sentence · **status**: closed, or what would reopen
+   it. If it will not fit, the overflow is either unnecessary or a finding.
+   This is a *length* rule on purpose: [REJECTED.md](docs/REJECTED.md) is read
+   before trying something, and a ledger nobody finishes reading stops
+   preventing the re-test it exists to prevent.
+2. **One fact, one place.** A row states its verdict and links to the finding;
+   it does not restate it. The same number in two files is the failure mode
+   that makes both unreadable.
+3. **Quote A/B deltas, not before/after headline MAE.** Headline MAE moves with
    the evaluation period more than with the model; two unchanged models once
    moved +1.28 and −1.76 between two windows a few weeks apart. See
    [docs/AB_TESTING.md](docs/AB_TESTING.md#how-changes-are-validated).
-3. **Tag the round.** `experiments/` scripts are named `run_round21_*.py`, so a
+4. **Tag the round.** `experiments/` scripts are named `run_round21_*.py`, so a
    round number in the ledger row is what connects a verdict to the run that
    produced it for as long as that scratch directory survives.
+
+**Do not record**: how you got there, what you tried first, run times, per-point
+or per-window tables, script names beyond the round tag, or a restatement of the
+standing rules. None of it changes a later decision. `experiments/` is where the
+working material lives, and it is expected to disappear.
 
 ## Working with `experiments/`
 

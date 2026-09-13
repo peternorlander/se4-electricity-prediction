@@ -141,98 +141,39 @@ challenge to it.
 
 ## Cross-border capacity and flows (round 21)
 
-Closed 2026-09-12. This was IMPROVEMENT_PLAN item 0, the last route the
+Closed 2026-09-13. This was IMPROVEMENT_PLAN item 0, the last route the
 [2026-08-17 break](#the-2026-08-17-regime-break) left open: ENTSO-E physical
 flows (A11) and transmission unavailability (A78) for the five SE4 borders,
-cached under `ab_cache/crossborder/`. Arms and bar were fixed in advance, before
-any result was read. The scripts, the pre-registration and the raw per-window
-results (`experiments/run_round21_*.py`, `experiments/results/round21_*.jsonl`,
-`experiments/ROUND21_PREREGISTRATION.md`) are scratch and uncommitted — the
-numbers below are the record.
+cached under `ab_cache/crossborder/`. Both verdicts and their numbers are in
+[REJECTED.md](REJECTED.md) — every arm NOISE on the trough targets, and the one
+`avg` candidate that measured REAL three times closed on its serve-time
+encoding. What is worth keeping is the reason, and the data traps.
 
-**For `cheap2h` and `min` the route is closed.** Round-15b sliding grid, 14
-points, four period clusters, `classify_clustered`. Every arm — realised SE3
-import, available southbound export capacity, export headroom, and the
-pre-registered primary `capacity × calm-in-Stockholm` interaction — is NOISE on
-both targets; export headroom is REAL-and-*harmful* on cheap2h (+0.144, 2 of 14
-points favourable). The decisive arm is the control: a **leaky** per-day
-capacity built from outage records production could not have had is NOISE too
-(+0.033 / −0.050), so even perfect foreknowledge of interconnector capacity has
-no year-average value for the trough targets. On the break week itself no arm
-lifts the 08-18/19 day-ahead prediction above ~48 against a realised 128.
+**Foreknowledge of interconnector capacity is not what the trough targets are
+missing.** One arm was deliberately leaky — a per-day capacity schedule built
+from outage records production could never have had — and it is NOISE as well
+(+0.033 cheap2h / −0.050 min). So the ceiling above is not "we cannot see the
+interconnector state": handing the model that state, perfectly and in advance,
+buys nothing on a year-averaged MAE. With round 18 (price signals) and 19b/19e,
+what stays open is physical supply-side information, not market-state
+information.
 
-**The one candidate that survived the trough targets — and why it is closed
-too.** `export_headroom_lag1` is A78-available southbound export capacity minus
-realised net southbound export, on the run day, frozen across the horizon. It is
-the only arm of this whole item that ever measured REAL, and it is worth
-understanding why a three-times-replicated result still did not ship.
+**What the break week actually needed.** The pre-registered `capacity × calm`
+interaction fired on exactly the right days — 1052 / 1010 / 824 MW of southbound
+capacity out, on days whose Stockholm wind sat in the bottom 4% — and changed
+nothing, because the same state in September 2024 came with `cheap2h ≈ 6.6`. What
+separates the two episodes is the northern supply balance: SE3→SE4 net import
+halved through 2026 (quarterly means 3182 → 1629 MW). Crippled export capacity is
+a necessary condition and never a sufficient one, which is an argument for
+[the northern wind points](#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet)
+(plan §2.13), not for more interconnector data.
 
-| snapshot | clmean | NOW | −6M | −12M | −21M | favourable | Δstd |
-|---|---|---|---|---|---|---|---|
-| `long/2026-08-21` | **−0.423** | −0.785 | −0.329 | −0.133 | −0.447 | 11/14 | −0.209 |
-| `long/2026-08-06` (independent fetch) | **−0.218** | −0.524 | −0.144 | −0.056 | −0.148 | 11/14 | −0.266 |
-| `long/2026-09-12` (fresh snapshot **and** fresh cross-border fetch, so the eval year now contains the August break) | **−0.233** | −0.086 | −0.272 | −0.258 | −0.316 | 11/14 | −0.128 |
-
-REAL all three times, every period cluster favourable each time, per-window std
-*falling* each time. Three checks behind it: the A11-only encodings (export flow alone,
-capacity inferred from whether a link flowed) are NOISE, so the A78 capacity
-half is what carries it; the round-19e price-derived congestion feature is
-**not** a substitute (REAL on one snapshot with std +0.23, NOISE on the other,
-and adding it on top of headroom destroys the gain — round 18 again); and a
-vintage-honest rebuild, per window from only the records published by that run
-date, stays favourable on all four NOW points (−0.17 to −0.54). Read the effect
-as **−0.2 to −0.4 EUR/MWh on `avg`**. The gain is concentrated where the avg
-price/market prune's was: windows with Baltic Cable closed improve −1.14
-against −0.23 elsewhere, the worst-MAE quartile −1.18, the calmest quartile
-+0.46.
-
-**Closed 2026-09-13: the feature production can serve is not the feature that
-was measured.** Three measurements, in the order they killed it:
-
-* **It needs tomorrow's value, not yesterday's.** `lag1` here means day *R*, the
-  day before the first forecast day — which at run time exists only as the
-  day-ahead *schedule*, not as a realised flow. The same feature at `lag2`, the
-  freshest flow production could read from A11 without a new source, is
-  **NOISE** (clmean −0.092, −12M +0.014, on the same 14-point grid). So
-  adopting this means fetching scheduled commercial exchanges (ENTSO-E A09 or
-  Nord Pool `DayAheadFlow`); there is no cheaper encoding.
-* **The vintage-honest rebuild is mixed on the current regime.** Rebuilding the
-  capacity half per window from only the A78 records published by that run date
-  — possible for 44 of 52 NOW windows now that the eval year reaches into 2026
-  — gives **+0.264 and −0.631** on the two NOW points, against **+0.464 and
-  −0.256** for the same points with today's records. Both readings sign-flip
-  between two grid points that are one day apart, so NOW cannot presently
-  distinguish this feature from nothing; the verdict rests on the three far
-  clusters, which are the periods where A78 coverage is thinnest (see the
-  coverage bullet below).
-* **And the schedule is a different quantity from the flow.** ENTSO-E A09
-  (`COMMERCIAL_SCHEDULES`, contract type A01) *does* answer for all five SE4
-  borders in both directions — unlike A61 — so the source exists. But compared
-  against realised flow over 85 days on the same grid fill, the headroom built
-  from schedules correlates **0.56** with the headroom the A/B measured, at a
-  mean absolute difference of **501 MW against a day-to-day spread of 380 MW**.
-  Per border the split is exactly what the physics predicts: the DC links track
-  well (DE_LU 0.89, LT 0.87, PL 0.75) and **DK2 — the largest southbound
-  position — is the worst at 0.64**, because the Øresund AC connection carries
-  loop flows no commercial schedule describes. A −0.23 EUR/MWh result measured
-  on one of those series says nothing about the other.
-* `avg` was also not the pre-registered target and ~12 arms were tried on it.
-
-So the honest position is not "it works but we cannot serve it". It is that the
-servable version has never been measured, and measuring it needs a five-year A09
-fetch (~660 requests) plus a fresh four-cluster A/B — to chase −0.2 to −0.4
-EUR/MWh on the lowest-priority of the three targets, with a NOW cluster that
-sign-flips between adjacent grid points, against an `avg` baseline of ~18.3.
-That is not worth it, so the item closes here rather than staying open as a
-standing invitation.
-
-**What would reopen it**, stated so the next round does not have to guess: a
-reason to care about `avg` accuracy specifically (today nothing consumes it —
-Home Assistant schedules on `cheap2h`), or the A09 series arriving for another
-reason, at which point the measurement is one A/B batch away. The capacity half
-is *not* the obstacle — A78 records publish in near-real time since 2025-11, so
-a forward-looking capacity feature is honest in production even though it cannot
-be backtested before that date.
+**What would reopen the `avg` candidate:** something that actually consumes `avg`
+accuracy — today nothing does, Home Assistant schedules on `cheap2h` — or the A09
+schedule series arriving for another reason, at which point the measurement is one
+A/B batch away. The capacity half is not the obstacle: A78 records publish in
+near-real time since 2025-11, so a forward-looking capacity feature is honest in
+production even though it cannot be backtested before that date.
 
 ### If you touch `ab_cache/crossborder/`, read this first
 
@@ -288,6 +229,13 @@ for caches fetched before that.
   `Reason` before they raise (`raise_for_status_with_reason`), so if a limit
   moves under a scheduled run the Actions log says which document and why
   instead of a bare `400 Client Error`.
+* **A schedule is not a flow, and the gap is border-specific.** ENTSO-E A09
+  (`COMMERCIAL_SCHEDULES`, contract type A01) answers for all five SE4 borders —
+  unlike A61 — but over 85 days the daily southbound total correlates only
+  **0.71** with realised A11 flow. Per border: DE_LU 0.89, LT 0.87, PL 0.75, and
+  **DK2 0.64**, because the Øresund AC connection carries loop flows no
+  commercial schedule describes. If a feature needs "the flow", decide which of
+  the two it means before measuring — they are different series.
 * **DK2 rows describe one 400 kV cable, not the border.** 69 days show
   `available_mw = 0` while the border keeps flowing. Never min() them into a
   border capacity; DK2 was held at nominal in every round-21 arm.
