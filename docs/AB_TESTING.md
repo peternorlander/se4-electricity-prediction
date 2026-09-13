@@ -80,6 +80,14 @@ The bar for adoption:
 Additional standing requirements: the per-window **std must not inflate**, and
 priority order is **cheap2h → min → avg** (`max` is not a priority).
 
+**A precondition that outranks the whole table: the candidate must only be able
+to see what production can see.** A REAL verdict on an arm that was handed
+information the live pipeline will not have is not a small error in the
+measurement — it is a measurement of something else entirely, and it will not
+reproduce when the change ships. Before reading any verdict, settle the questions
+in [Horizon honesty](#horizon-honesty-measure-only-what-production-can-know)
+below, and record the answer in the ledger entry.
+
 **The A/B verdict is the gate (changed 2026-08-05).** A change counts as done once
 it clears the bar above; it no longer waits on a confirming Actions run. The
 previous rule required both, which in practice meant a validated improvement sat
@@ -167,6 +175,157 @@ changes as their **A/B deltas** — in that table and as an entry in
 [DECISIONS.md](DECISIONS.md). The fullest worked example of the practice is the
 per-target feature re-validation program, written up in
 [DECISIONS.md](DECISIONS.md#per-target-feature-lists-for-min-and-cheap2h).
+
+## Horizon honesty: measure only what production can know
+
+**This is the precondition for every number in the ledger, and the easiest thing
+in the project to get silently wrong.** A verdict is only worth acting on if the
+candidate was measured under production's own information constraints. A
+candidate handed knowledge production will not have does not measure a better
+model — it measures the leak, and it will not reproduce when it ships.
+
+The canonical case. Suppose a candidate adds "yesterday's DE price". On a
+walk-forward test window every row already carries *its own* true previous-day
+value, so in the eval day+3 gets the real price from the day before day+3.
+Production never has that: it runs once, before tomorrow's prices are published,
+and issues d+1…d+7 in one shot. For d+3 it has two honest options — freeze the
+last known value across the horizon, or predict the DE price too. If the test
+rows take neither, the measured gain is partly "we told the model the answer",
+and the further out the horizon the larger that share.
+
+### How the harness handles it, and where it stops helping you
+
+`features.apply_forecast_freeze` overwrites every column in
+`FORECAST_FROZEN_FEATURES` on the test window with one frozen value, reproducing
+what `build_forecast_features` does in production:
+
+* **Lag-type columns** are frozen at the **first test row** — its lag-1 is the
+  last training day's actual price, exactly what freshened production freezes,
+  and it depends only on training-period data, so it leaks nothing.
+* **Unshifted rolling columns** (`_FORECAST_FROZEN_ROLLING`: `wind_variability`,
+  `radiation_variability`) are frozen at the **last training row** instead,
+  because the first test row's window would include the test day itself.
+* **Per-day columns are deliberately left alone** — weather, HDD, residual load,
+  calendar, planned nuclear outages. Production legitimately recomputes these for
+  every forecast day from the published forecast, so freezing them would make the
+  eval *pessimistic* rather than honest.
+
+**The default for anything new is "not frozen".** `Variant.frozen_features`
+exists precisely so a candidate can freeze a column it invents without editing
+the production list — but if you leave it `None`, your new lag-type column is
+treated as per-day forecastable and the run measures a leak. Worse,
+`apply_forecast_freeze` skips names that are not columns of the frame:
+
+```python
+for col in features_to_freeze:
+    if col not in frozen.columns:
+        continue
+```
+
+So a misspelled entry fails **silently and in the dangerous direction** — the run
+looks frozen and is not. Assert, in the variant, that every name you added is
+both a column of the frame and a member of the list you pass.
+
+### Three questions before measuring any new feature
+
+1. **When is it published, relative to the run?** Production runs once, after
+   tomorrow's day-ahead result and before delivery. A source that only ever
+   describes d+1 cannot be a *forecast* feature for d+2…d+7 at all — it can still
+   be valuable for calibration or as a quasi-static regime state, but say which.
+2. **Does its value change per forecast day in production?** If yes, it must
+   change in the eval too. Round 18's `days_since_price_anchor` is deliberately
+   *not* frozen: the anchor's age varies by horizon and that variation is the whole
+   feature. If no, freeze it — and freeze it from data that predates the test
+   window.
+3. **Is it revised after the fact?** A snapshot holds *today's* version of
+   history, not what was knowable then. ENTSO-E A78 is the worked example: every
+   outage record for an event before 2025-11 was re-published that month, so no
+   vintage exists for the older clusters and a forward-looking feature built from
+   it **cannot be backtested honestly at all** (see
+   [FINDINGS.md](FINDINGS.md#if-you-touch-ab_cachecrossborder-read-this-first)).
+   Prices and weather get revised too, which is why a cross-snapshot replay is
+   part of the bar.
+
+### The case worth knowing by heart: what "lag1" actually means
+
+`export_headroom_lag1` (round 21, on `avg`) is the sharpest instance in the repo,
+because the leak was not in the harness — it was in the *column name*.
+
+The arm was REAL on three independently fetched snapshots (clmean −0.423 / −0.218
+/ −0.233, every period cluster favourable, per-window std falling). Nothing in the
+verdict looked suspect. But `lag1` means **day R**, the day before the first
+forecast day — and at run time a realised A11 physical flow for day R **does not
+exist yet**. Production can only know day R as a day-ahead *schedule*, from a
+source the pipeline does not fetch. Re-encoded to `lag2`, the freshest realised
+flow production could actually read, the same feature is **NOISE** (clmean
+−0.092, −12M +0.014, same 14-point grid).
+
+So a three-times-replicated REAL result turned out to rest entirely on one day of
+unavailable freshness. The feature may still be adoptable — but only by fetching
+scheduled commercial exchanges (ENTSO-E A09 or Nord Pool `DayAheadFlow`), which is
+new production work, not a feature-list edit. See
+[FINDINGS.md](FINDINGS.md#cross-border-capacity-and-flows-round-21).
+
+Two lessons, both general:
+
+* **A lag number is a claim about a publication calendar, not about an offset.**
+  `lag1` is honest for SE4/DE/DK2 day-ahead prices, which are published the
+  afternoon before delivery. It is dishonest for realised flows, actual
+  generation, or anything settled after the fact. Ask *when the value exists*,
+  every time, per source — not what the column is called.
+* **A REAL verdict cannot detect this.** Both arms shared the same impossible
+  freshness, so it cancelled out of every delta, on every snapshot, in every
+  cluster. Replication does not help either: replicating a leak reproduces the
+  leak. Only reading the source's publication schedule catches it, which is why
+  it is question 1 above and why it happens before the run, not after.
+
+### Three kinds of leak, each with a case in this repo
+
+| leak | what it is | the case |
+|---|---|---|
+| **Per-day freshness** | test rows carry each day's own true lag; production freezes one value for the week, and for some sources cannot even know day R | the DE-price example above, and `export_headroom_lag1` — REAL on three snapshots, NOISE once re-encoded to what production can read |
+| **Training tail** | the eval fits right up to its test window; production fits where its slowest source ends | the archive lag — invisible for a year, worth **+1.70 avg / +0.59 min / +0.37 cheap2h**, residual **+0.591 / +0.258 / +0.155** even after the fix ([DECISIONS.md](DECISIONS.md#closing-the-weather-archive-lag-round-19a)) |
+| **Vintage / revision** | the cached history is the corrected one, not the one production saw | A78 outage records, re-published wholesale in 2025-11 |
+
+The middle row is the one to take seriously as a warning. It was not a subtle
+effect — for `avg` it was larger than any change ever adopted — and it sat
+unmeasured through dozens of A/Bs, because every arm shared it so it cancelled
+out of each delta. **A leak shared by both arms is invisible in the delta and
+still wrong in production.** When a candidate changes *what production can know*
+rather than just what the model does with it, the paired design stops protecting
+you and the arm has to model the constraint explicitly.
+
+### Build the leaky arm on purpose
+
+The most useful thing to do with a leak is to measure it deliberately, as an upper
+bound. If a candidate does not help **even when cheating**, no honest encoding of
+it will, and the route closes properly:
+
+* Round 21 built a per-day interconnector capacity schedule from outage records
+  production could never have had. **NOISE** (+0.033 cheap2h / −0.050 min) — which
+  is what actually closed cross-border capacity for the trough targets, far more
+  firmly than the honest arm could have.
+* Round 19 handed the model the **same-day** German price, impossible in
+  production. Spike MAE 51.30 against production's 52.84, still predicting 41.6
+  for a realised 127.9 — so the continental price was never the missing
+  information.
+
+Label such an arm as leaky in the ledger entry, with the honest arm beside it. An
+upper bound is evidence; an upper bound mistaken for a result is not.
+
+### Smells that mean "check the wiring before believing it"
+
+* The gain **grows with horizon**. Honest features decay with horizon or hold
+  flat; a leak gets stronger the further out you go, because that is where the
+  information gap is widest.
+* The effect is **larger than anything comparable in the ledger**. Real effects on
+  the priority targets are a few tenths of a EUR/MWh. A candidate worth several is
+  a wiring claim first and a finding second.
+* The new column **dominates feature importance immediately**. That is what a
+  column containing the answer looks like.
+* The untouched targets **moved**. They must be bit-identical unless the change
+  legitimately touches them; if they moved, the harness is not measuring what you
+  think it is.
 
 ## How it works
 
@@ -262,7 +421,10 @@ Follow this whenever testing a feature or model change from the improvement plan
      column has no effect until the column is added to `feature_cols` here).
    - `frozen_features` / `frozen_rolling` — override only if the change adds a
      lag-type feature that must be frozen in the horizon-honest eval (default `None` =
-     production lists).
+     production lists). **Decide this before running anything** — the default
+     leaves a new column per-day fresh, which is a leak for anything lag-like.
+     See "Horizon honesty" above; it is the difference between a number that
+     survives production and one that does not.
 3. **Run it.** `python ab_test.py run` (add `--snapshot YYYY-MM-DD` to pick a
    specific one, `--shifts 0-5` to change the grid). Read the per-target verdict
    table. **Priority order is cheap2h first, then min**; `avg` is welcome, `max` is

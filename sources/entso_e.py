@@ -77,7 +77,8 @@ def _extract_xml_files(content: bytes) -> list[bytes]:
 # experiments/probe_a11_range_limit.py; fetch_range() recovers if a limit moves
 # again, this table only saves the refusals.
 DOCUMENT_MAX_RANGE_DAYS = {
-    "A11": 28,     # cross-border physical flows
+    "A11": 28,     # cross-border physical flows (NET_CROSS_BORDER_PHYSICAL_FLOWS)
+    "A09": 28,     # scheduled commercial exchanges (COMMERCIAL_SCHEDULES), same P1M
 }
 
 

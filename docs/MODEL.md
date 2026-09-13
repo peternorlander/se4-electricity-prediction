@@ -164,7 +164,7 @@ said during the 2026-08-17 break:
 
 Evaluation uses **52-window (1-year) walk-forward validation** on 3 years of training data. Each target is reported **individually** — min, avg, max and cheap2h have different physical drivers, so a blended metric would hide the per-target movement that matters when tuning. `cheap2h` and `min` are the numbers to watch for scheduling; `max` is not a priority.
 
-The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives.
+The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives. The same constraint binds every A/B, and it is the single easiest thing to get wrong when testing a new feature — see [AB_TESTING.md "Horizon honesty"](AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know).
 
 Current, measured on the **2026-08-21** data snapshot with the production code as
 it stands (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature

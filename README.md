@@ -95,7 +95,10 @@ Three rules that make this work:
 
 1. **An entry must be self-contained.** Grid, snapshot, arms, deltas, how many
    measurements were favourable — written in the entry itself, in EUR/MWh. A
-   pointer to a script is a courtesy, never the record.
+   pointer to a script is a courtesy, never the record. For a feature, say how it
+   was made horizon-honest: a number measured with knowledge production will not
+   have is not a result
+   ([docs/AB_TESTING.md](docs/AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know)).
 2. **Quote A/B deltas, not before/after headline MAE.** Headline MAE moves with
    the evaluation period more than with the model; two unchanged models once
    moved +1.28 and −1.76 between two windows a few weeks apart. See

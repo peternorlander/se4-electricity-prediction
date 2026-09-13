@@ -10,6 +10,12 @@ scratch and is not committed (see the README's "Working with `experiments/`"),
 so an entry carries its own numbers: grid, snapshot, arms, deltas, how many
 measurements were favourable. A script name is a courtesy, never the record.
 
+An entry that adds or changes a feature also states **how it was made
+horizon-honest** — frozen across the forecast window, recomputed per day, or
+explicitly leaky as an upper bound. Without that, a future reader cannot tell
+whether the number was ever achievable in production
+([AB_TESTING.md](AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know)).
+
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
 | [Prediction interval for cheap2h](#prediction-interval-for-cheap2h-round-19c) | 2026-09-05 | not MAE-measurable — coverage 0.542 → 0.788 |

@@ -160,17 +160,20 @@ capacity built from outage records production could not have had is NOISE too
 no year-average value for the trough targets. On the break week itself no arm
 lifts the 08-18/19 day-ahead prediction above ~48 against a realised 128.
 
-**One open candidate, on `avg`:** `export_headroom_lag1` — A78-available
-southbound export capacity minus realised net southbound export, on the run
-day, frozen across the horizon.
+**The one candidate that survived the trough targets — and why it is closed
+too.** `export_headroom_lag1` is A78-available southbound export capacity minus
+realised net southbound export, on the run day, frozen across the horizon. It is
+the only arm of this whole item that ever measured REAL, and it is worth
+understanding why a three-times-replicated result still did not ship.
 
 | snapshot | clmean | NOW | −6M | −12M | −21M | favourable | Δstd |
 |---|---|---|---|---|---|---|---|
 | `long/2026-08-21` | **−0.423** | −0.785 | −0.329 | −0.133 | −0.447 | 11/14 | −0.209 |
 | `long/2026-08-06` (independent fetch) | **−0.218** | −0.524 | −0.144 | −0.056 | −0.148 | 11/14 | −0.266 |
+| `long/2026-09-12` (fresh snapshot **and** fresh cross-border fetch, so the eval year now contains the August break) | **−0.233** | −0.086 | −0.272 | −0.258 | −0.316 | 11/14 | −0.128 |
 
-REAL on both, every period cluster favourable both times, per-window std
-*falling*. Three checks behind it: the A11-only encodings (export flow alone,
+REAL all three times, every period cluster favourable each time, per-window std
+*falling* each time. Three checks behind it: the A11-only encodings (export flow alone,
 capacity inferred from whether a link flowed) are NOISE, so the A78 capacity
 half is what carries it; the round-19e price-derived congestion feature is
 **not** a substitute (REAL on one snapshot with std +0.23, NOISE on the other,
@@ -182,13 +185,53 @@ price/market prune's was: windows with Baltic Cable closed improve −1.14
 against −0.23 elsewhere, the worst-MAE quartile −1.18, the calmest quartile
 +0.46.
 
-**Not adopted.** `avg` was not the pre-registered target and ~12 arms were tried
-on it, so this is a screen that replicated, not a verdict. What it still needs:
-the serve-time encoding (production knows tomorrow's *scheduled* exchanges and
-the outages posted for it, not realised physical flows), a fresh cross-border
-fetch with the fixed parser, and a re-check after the residual-load rebuild,
-since `residual_load` is in avg's list and
-[verdicts are scoped to the model](AB_TESTING.md#how-changes-are-validated).
+**Closed 2026-09-13: the feature production can serve is not the feature that
+was measured.** Three measurements, in the order they killed it:
+
+* **It needs tomorrow's value, not yesterday's.** `lag1` here means day *R*, the
+  day before the first forecast day — which at run time exists only as the
+  day-ahead *schedule*, not as a realised flow. The same feature at `lag2`, the
+  freshest flow production could read from A11 without a new source, is
+  **NOISE** (clmean −0.092, −12M +0.014, on the same 14-point grid). So
+  adopting this means fetching scheduled commercial exchanges (ENTSO-E A09 or
+  Nord Pool `DayAheadFlow`); there is no cheaper encoding.
+* **The vintage-honest rebuild is mixed on the current regime.** Rebuilding the
+  capacity half per window from only the A78 records published by that run date
+  — possible for 44 of 52 NOW windows now that the eval year reaches into 2026
+  — gives **+0.264 and −0.631** on the two NOW points, against **+0.464 and
+  −0.256** for the same points with today's records. Both readings sign-flip
+  between two grid points that are one day apart, so NOW cannot presently
+  distinguish this feature from nothing; the verdict rests on the three far
+  clusters, which are the periods where A78 coverage is thinnest (see the
+  coverage bullet below).
+* **And the schedule is a different quantity from the flow.** ENTSO-E A09
+  (`COMMERCIAL_SCHEDULES`, contract type A01) *does* answer for all five SE4
+  borders in both directions — unlike A61 — so the source exists. But compared
+  against realised flow over 85 days on the same grid fill, the headroom built
+  from schedules correlates **0.56** with the headroom the A/B measured, at a
+  mean absolute difference of **501 MW against a day-to-day spread of 380 MW**.
+  Per border the split is exactly what the physics predicts: the DC links track
+  well (DE_LU 0.89, LT 0.87, PL 0.75) and **DK2 — the largest southbound
+  position — is the worst at 0.64**, because the Øresund AC connection carries
+  loop flows no commercial schedule describes. A −0.23 EUR/MWh result measured
+  on one of those series says nothing about the other.
+* `avg` was also not the pre-registered target and ~12 arms were tried on it.
+
+So the honest position is not "it works but we cannot serve it". It is that the
+servable version has never been measured, and measuring it needs a five-year A09
+fetch (~660 requests) plus a fresh four-cluster A/B — to chase −0.2 to −0.4
+EUR/MWh on the lowest-priority of the three targets, with a NOW cluster that
+sign-flips between adjacent grid points, against an `avg` baseline of ~18.3.
+That is not worth it, so the item closes here rather than staying open as a
+standing invitation.
+
+**What would reopen it**, stated so the next round does not have to guess: a
+reason to care about `avg` accuracy specifically (today nothing consumes it —
+Home Assistant schedules on `cheap2h`), or the A09 series arriving for another
+reason, at which point the measurement is one A/B batch away. The capacity half
+is *not* the obstacle — A78 records publish in near-real time since 2025-11, so
+a forward-looking capacity feature is honest in production even though it cannot
+be backtested before that date.
 
 ### If you touch `ab_cache/crossborder/`, read this first
 
@@ -239,7 +282,11 @@ for caches fetched before that.
   retry, 4xx `Reason` logging, the per-document-type limit table
   (`DOCUMENT_MAX_RANGE_DAYS`) and the splitting — lives in `sources/entso_e.py`,
   not in the scratch fetcher, so the next exploratory ENTSO-E fetch (plan 2.7's
-  week-ahead documents) inherits it instead of rediscovering this.
+  week-ahead documents) inherits it instead of rediscovering this. Production's
+  own ENTSO-E fetchers (prices, A77 outages, reservoir) now log the same
+  `Reason` before they raise (`raise_for_status_with_reason`), so if a limit
+  moves under a scheduled run the Actions log says which document and why
+  instead of a bare `400 Client Error`.
 * **DK2 rows describe one 400 kV cable, not the border.** 69 days show
   `available_mw = 0` while the border keeps flowing. Never min() them into a
   border capacity; DK2 was held at nominal in every round-21 arm.

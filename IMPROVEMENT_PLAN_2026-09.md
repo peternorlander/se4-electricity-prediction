@@ -22,8 +22,9 @@ what is still open — or deleted outright — as soon as its verdict is in
 the ledgers under [docs/](docs/) — [DECISIONS.md](docs/DECISIONS.md) if it
 shipped, [REJECTED.md](docs/REJECTED.md) if it did not, plus a section in
 [FINDINGS.md](docs/FINDINGS.md) when the round explained something. The ledgers
-are the record; this file is the to-do list. 2.4 is the first item maintained
-that way.
+are the record; this file is the to-do list. 2.4 was the first item maintained
+that way and is now gone from here entirely: three REAL measurements, closed
+anyway, all of it in [REJECTED.md](docs/REJECTED.md).
 
 ---
 
@@ -91,8 +92,7 @@ receives the merged daily frame, after these columns were computed from the
 hourly inputs. It cannot rebuild them. Add an optional `build_fn(inputs) ->
 frame` to `Variant` (default `features.build_training_data`) so a candidate can
 rebuild the frame from the same snapshot; the harness must still assert
-identical `date` columns between arms. Do this once — items 2.3 and 2.4 need it
-too.
+identical `date` columns between arms. Do this once — item 2.3 needs it too.
 
 **Arms, pre-registered.**
 
@@ -204,37 +204,6 @@ next review.
 **Effort.** 2.3a two days (fetch is 6 locations × 3 variables × 7 vintages ×
 ~900 days, well within Open-Meteo's free tier if cached); 2.3b one day; 2.3c
 three days; 2.3d one day.
-
-### 2.4 Cross-border capacity — MEASURED 2026-09-12, closed for the trough targets
-
-Old item 0 was run in full (flows + outages, four period clusters, break-week
-replay). Verdicts and the A78 data traps are in docs/FINDINGS.md "Cross-border
-capacity and flows (round 21)"; the scripts are `experiments/run_round21_*.py`. Three
-results change this plan:
-
-* **Closed for `cheap2h`/`min`.** Every arm NOISE, headroom harmful on cheap2h,
-  and a *leaky* capacity schedule NOISE as well — so there is no version of
-  this data, however privileged, that pays on the trough targets. Do not
-  re-open with another encoding.
-* **The break needs the northern supply balance, not the interconnector.** The
-  `capacity × calm` interaction fired on exactly 08-18/19/20 and moved nothing,
-  because the same state in Sep 2024 came with cheap2h 6.6. This promotes 2.13.
-* **What is left is `avg` only:** `export_headroom_lag1` is REAL on both
-  5-year snapshots (−0.423 / −0.218, all four clusters, std falling) and is the
-  one open candidate from the whole item. To confirm it:
-  1. Re-encode for serve time. The A/B used *realised* A11 flows on the run
-     day; production knows tomorrow's **scheduled** exchanges (Nord Pool
-     `DayAheadFlow`, or ENTSO-E day-ahead scheduled commercial exchanges) plus
-     the outages posted for that day. Fetch whichever has history and rebuild
-     the column from it.
-  2. Run on a **fresh** long snapshot and a fresh cross-border fetch (the
-     parser was fixed 2026-09-12), in the same batch as the other items.
-  3. Re-check after 2.1 ships — `residual_load` is in avg's list and verdicts
-     are scoped to the model.
-  Priority is below 2.1/2.13: it is an `avg`-only, −0.2 to −0.4 effect against
-  two new production fetches.
-
-**Effort.** One day, mostly the scheduled-flow source.
 
 ### 2.5 The hurdle's label under regime drift
 
@@ -428,10 +397,11 @@ version of a record and revisions are invisible, so a backtest could know
 things production could not. **Round 21 settled that the A78 route cannot
 answer it**: every record for an event before 2025-11 was re-published in
 November 2025, so the cache holds no vintage at all before that date
-(docs/FINDINGS.md "If you touch ab_cache/crossborder/"). Since the trough targets rejected the
-data outright, the remaining value of UMM is (a) the MW-weighted nuclear
-feature below and (b) a vintage-honest capacity history for 2.4's `avg`
-candidate. Nord Pool's UMM API is the upstream of those
+(docs/FINDINGS.md "If you touch ab_cache/crossborder/"). With the trough targets
+having rejected this data outright and the `avg` export-headroom candidate now
+closed on its serve-time encoding, **the remaining value of UMM is the
+MW-weighted nuclear feature below** — the interconnector half has no consumer
+left, so build it only if something asks for it. Nord Pool's UMM API is the upstream of those
 records and keeps **every version of every message with its
 `publicationDate`** — `GET /messages/{id}/{version}` returns the record as it
 stood then — for production units (nuclear with installed and available MW per
@@ -453,8 +423,9 @@ the SE2→SE3 and FI→SE3 cuts that set the import price.
   filters all three, 176 SE4 transmission messages for Jun–Dec 2026), keep
   every version, build two daily series
   *as of* a given date: unavailable nuclear MW in SE3 (replaces the event
-  count in `nuclear_outage_se3`, old item 4 / 2.7) and unavailable
-  interconnector MW per SE4 border (feeds 2.4's `export_headroom`).
+  count in `nuclear_outage_se3`, old item 4 / 2.7). The same fetch also yields
+  unavailable interconnector MW per SE4 border; parse it only if a feature
+  needs it, since the one that would have is closed.
 - Cache the full message history once under `ab_cache/umm/`; the daily
   production fetch only needs the current window (events overlapping
   today..today+16).
@@ -466,7 +437,7 @@ the SE2→SE3 and FI→SE3 cuts that set the import price.
   forecast vintages — build it once.
 
 **Bar.** MW-weighted nuclear vs the current count, cheap2h then min then
-`avg`, `classify_clustered`. Interconnector availability is scored inside 2.4.
+`avg`, `classify_clustered`.
 
 **Effort.** One day for the source and cache, one day for the per-window
 builder shared with 2.3a.
@@ -510,10 +481,9 @@ index.
    builder here and reuse it for 2.14.
 7. **2.5 hurdle label**, **2.8 holidays**, **2.9 time-decay**, **2.13
    precipitation** — short A/Bs that share one long snapshot; run as one batch.
-8. **2.14 UMM source** (now justified by nuclear MW, not by interconnectors),
-   then **2.7 week-ahead documents** and the `avg` remainder of **2.4** — the
-   source work; 2.14 needs no token, the ENTSO-E parts do, so Peter runs those
-   fetches.
+8. **2.14 UMM source** (justified by nuclear MW, not by interconnectors), then
+   **2.7 week-ahead documents** — the source work; 2.14 needs no token, the
+   ENTSO-E parts do, so Peter runs those fetches.
 9. **2.10 coherence**, **2.11 horizon** — when convenient.
 
 **Done 2026-09-12: `ab_cache/long/2026-09-12` is fetched** — 1825 days, **1787
