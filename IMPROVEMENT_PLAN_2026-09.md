@@ -59,16 +59,17 @@ supply" carries demand only. A residual load whose three terms are on one scale
 midday, which is what the trough targets are; the current one can only be low
 when it is warm.
 
-**What to build.** Three layers, each testable on its own:
+**Unit fix — SHIPPED 2026-09-17 (round 23).** Divide by 3.6 *inside*
+`_wind_power_curve`; adopted on a cheap2h REAL verdict. Record and numbers:
+[DECISIONS.md](docs/DECISIONS.md#residual-load-wind-curve-unit-fix-round-23).
+**Still open, deliberately not done in that commit:** the raw `mean_wind_*` /
+`max_wind` columns and their unit labels (docs/FEATURES.md, the old
+docstring) are still in km/h — a separate, documentation-only commit. The
+unit fix alone does not cure the scale mismatch below (FINDINGS.md §1.1);
+expect layers 2–3 to matter more, not less, now that 1 is in.
 
-1. **Unit fix.** Divide by 3.6 *inside* `_wind_power_curve` (or request
-   `wind_speed_unit=ms` and fix the raw columns' scale everywhere). Do it inside
-   the curve for the A/B: tree splits are invariant to a linear rescale of a
-   single column, so leaving the raw `mean_wind_*` / `max_wind` columns as-is
-   keeps every untouched target bit-identical, which is the wiring check the
-   docs/AB_TESTING.md asks for. Fix the raw columns' unit in a separate, documented commit
-   after adoption (docs/FEATURES.md says "10m" and the power-curve docstring
-   says "m/s"; both are wrong).
+**What's left to build.** Two more layers, each testable on its own:
+
 2. **Scale.** Express each term in MW-equivalents:
    `residual = demand(T) − Σ_zone cap_wind[zone, year] · curve(v_zone) − Σ_zone cap_solar[zone, year] · f(rad_zone)`,
    with the zone weights `WIND_*_W` / `SOLAR_*_W` retained as coupling
@@ -104,20 +105,20 @@ frame` to `Variant` (default `features.build_training_data`) so a candidate can
 rebuild the frame from the same snapshot; the harness must still assert
 identical `date` columns between arms. Do this once — item 2.3 needs it too.
 
-**Arms, pre-registered.**
+**Arms, pre-registered — U shipped, S/C/C+ still open.**
 
 | arm | change | expectation |
 |---|---|---|
-| U | unit fix only | small; mostly a wiring check, and it moves `wind_night` |
+| ~~U~~ | ~~unit fix only~~ | **shipped 2026-09-17** — see above |
 | S | unit fix + MW scaling with fixed per-zone capacities (one constant per zone) | the primary arm for `residual_load` / `residual_load_min` |
 | C | S with per-year calibrated curves from A75/A65 | the primary arm overall; expected to matter most in the NOW cluster where solar has grown |
 | C+ | C plus `wind_night` and `radiation_midday` re-added to the trough list | the re-opening of the intraday block, on a feature that now varies |
 
-Bar: `classify_clustered` on cheap2h, then min, four clusters; per-window std
-not inflated; untouched targets (`avg`, `max`) bit-identical in arm U. Screen S
-and C on NOW, confirm on −6M/−12M/−21M. C+ is judged against C, not against
-production. Check `corr(delta, min_train)` as always; the grid keeps
-`min_train` constant so it should be ~0.
+Bar for S/C/C+: `classify_clustered` on cheap2h, then min, four clusters;
+per-window std not inflated. Screen S and C on NOW, confirm on
+−6M/−12M/−21M. C+ is judged against C, not against production. Check
+`corr(delta, min_train)` as always; the grid keeps `min_train` constant so it
+should be ~0.
 
 **If it fails.** If S and C are NOISE on both trough targets, the reading is
 that the raw wind columns already carry what the trees need and residual load
@@ -126,8 +127,9 @@ honestly (`demand_proxy_min`) and close the intraday block for good. Either
 answer is worth having; today the ledger has verdicts on a feature nobody knew
 was degenerate.
 
-**Effort.** 1 day for U+S and the harness hook; 2–3 days more for C (three
-ENTSO-E fetches, a calibration module, a production source change).
+**Effort.** ~~1 day for U~~ done. 1 day for S and the harness hook; 2–3 days
+more for C (three ENTSO-E fetches, a calibration module, a production source
+change).
 
 ### 2.2 Production prediction log and realised scorecard
 
@@ -480,8 +482,7 @@ index.
 1. **2.2 prediction log** — start collecting now; every other measurement of
    production accuracy waits on months of history.
 2. **2.12 harness hook + unit test** — half a day, unblocks 2.1 and 2.3.
-3. **2.1 U and S arms** — the cheapest test with the strongest mechanism in
-   the file. Decide on C from S's result.
+3. **2.1 S arm** — U shipped 2026-09-17. Decide on C from S's result.
 4. **2.13 northern wind points** — add the three keys to `WIND_LOCATIONS`
    before the fresh fetch below so the same snapshot serves 2.1 and 2.13; run
    the two A/Bs back to back.

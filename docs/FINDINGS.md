@@ -324,6 +324,13 @@ the feature is rebuilt, not before. `residual_load_min`'s LOO verdict ("keep,
 harmful to remove") is consistent with it being the trough list's only
 temperature channel, not evidence that the trough physics is captured.
 
+**The unit half of this (point 1) is fixed and shipped 2026-09-17** — round 23
+validated it REAL on cheap2h across four independently-fetched snapshots; see
+[DECISIONS.md](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23) for the
+numbers. Point 2 (the scale mismatch) is unfixed and is exactly why arms S/C in
+`IMPROVEMENT_PLAN_2026-09.md` §2.1 are expected to matter more than the unit fix
+did.
+
 ### 1.2 The regime the model was tuned on is moving away from it
 
 | | 2023 (Sep–Dec) | 2024 | 2025 | 2026 (Jan–Sep) |

@@ -411,13 +411,23 @@ def _wind_power_curve(wind_speed: pd.Series, rated_speed: float = 13.0) -> pd.Se
     while 12→15 m/s adds very little.
 
     Args:
-        wind_speed:  Wind speed in m/s.
-        rated_speed: Wind speed at which turbine reaches rated power (default 13 m/s).
+        wind_speed:  Wind speed in km/h -- the raw `mean_wind*` columns' unit
+                     (Open-Meteo's `windspeed_100m` default; no `wind_speed_unit`
+                     override is requested anywhere in sources/open_meteo.py).
+                     Converted to m/s below before the curve is applied.
+        rated_speed: Wind speed at which turbine reaches rated power, in m/s
+                     (default 13 m/s).
 
     Returns:
         Normalized power output in [0, 1].
     """
-    capped = wind_speed.clip(upper=rated_speed)
+    # Fed km/h without this conversion, an ordinary 15-25 km/h breeze already
+    # clips to rated_speed=13 (intended as 13 m/s), so the curve saturated at
+    # 1.0 on ~88% of hours and carried almost no information (docs/FINDINGS.md
+    # "residual_load is temperature in disguise"; validated REAL on cheap2h,
+    # round 23, docs/DECISIONS.md).
+    wind_speed_ms = wind_speed / 3.6
+    capped = wind_speed_ms.clip(upper=rated_speed)
     return (capped / rated_speed) ** 3
 
 

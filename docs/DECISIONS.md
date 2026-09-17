@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Residual-load wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23) | 2026-09-17 | cheap2h −0.11 to −0.16 clmean (REAL on 3/4 independently-fetched snapshots); min favourable on 4/4 but sub-threshold |
 | [Prediction interval for cheap2h](#prediction-interval-for-cheap2h-round-19c) | 2026-09-05 | not MAE-measurable — coverage 0.542 → 0.788 |
 | [Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a) | 2026-08-23 | recovers +0.155 cheap2h / +0.258 min / +0.591 avg of the ~5-day lag's cost |
 | [`avg` drops the price/market lag family](#avg-drops-the-pricemarket-lag-family-round-14b) | 2026-08-21 | −1.2 to −1.97 (clmean) |
@@ -30,6 +31,73 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Residual-load wind-curve unit fix (round 23)
+
+Adopted 2026-09-17. Measured with local experiment scripts under
+`experiments/`, which is **not committed** — the numbers below are the record.
+
+`features._wind_power_curve` clips at `rated_speed=13.0` believing its input is
+m/s (its own docstring said so). `sources/open_meteo.py` never requests
+`wind_speed_unit`, so `windspeed_100m` arrives in Open-Meteo's default **km/h**.
+13 km/h is 3.6 m/s — an ordinary breeze — so the curve was pinned at its rated
+maximum on **~88% of hours**
+([FINDINGS.md §1.1](FINDINGS.md#11-residual_load-is-temperature-in-disguise-and-its-wind-term-is-saturated)),
+collapsing the wind term of `residual_load`, `residual_load_min`,
+`residual_load_range` and `wind_night` to a near-constant. Fixed by dividing
+wind speed by 3.6 *inside* the curve before clipping — the raw `mean_wind*`
+columns are untouched, so every feature reading them directly stays
+bit-identical; only what feeds the curve changes.
+
+A/B result, round-15b 16-point/four-cluster grid, run independently on **all
+four** `ab_cache/long/` snapshots that existed at the time (two 5d-tail, two
+1d-tail — never pooled into one grid across tails, per
+[AB_TESTING.md](AB_TESTING.md#snapshot-generations---check-the-weather-tail-before-building-a-grid)):
+
+| snapshot | tail | cheap2h clmean | verdict | min clmean | verdict |
+|---|---|---|---|---|---|
+| `2026-08-06` | 5d | −0.015 | NOISE | **−0.157** | **REAL** |
+| `2026-08-21` | 5d | **−0.114** | **REAL** | −0.099 | NOISE |
+| `2026-09-12` | 1d | **−0.136** | **REAL** | −0.088 | NOISE |
+| `2026-09-16` | 1d | **−0.162** | **REAL** | −0.053 | NOISE |
+
+cheap2h clears `classify_clustered` on 3 of 4 independently-fetched snapshots
+(the fourth, `2026-08-06`, is inconsistent across its own four clusters, not
+reversed — pooled mean still favourable at −0.015). min clears it on 1 of 4.
+**All eight snapshot×target pooled means are favourable — the direction never
+flips once across four independent fetches.** Per-window std never inflates
+for either target on any snapshot. `avg`/`max` are members of the same
+`residual_load` family (the shared `FEATURE_COLUMNS` list, not just the
+trough list) so are **not** bit-identical either, and stay NOISE with mixed
+sign on all four snapshots — no measured cost, and neither is a priority
+target.
+
+**Horizon-honesty.** No new column and no lag introduced. `residual_load` /
+`residual_load_min` / `residual_load_range` / `wind_night` were already
+correctly left unfrozen as per-day-forecastable features
+([AB_TESTING.md](AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know));
+this changes an existing derivation's physics, not what production can know or
+when — same freeze status as before.
+
+**Verified locally before commit**
+(`features.build_training_data` → `model.train` → `evaluate.get_feature_importance`
+→ `model.predict`, against `ab_cache/2026-09-11`): 1088 rows, 66 columns;
+`min`/`avg`/`cheap2h` feature counts unchanged (14/42/16); all predictions
+finite; hourly SE4 wind-curve saturation measured at 6.8% post-fix (was
+~88%).
+
+**What was deliberately not done.** The raw `mean_wind*` columns and their
+unit labels (docs/FEATURES.md still says "10 m"; the pre-fix docstring said
+m/s) are left alone — that is a separate, purely-documentation commit. Arms S
+(fixed per-zone MW capacities) and C (per-year calibrated from ENTSO-E A75/A65)
+are the next, larger steps in `IMPROVEMENT_PLAN_2026-09.md` §2.1: the unit fix
+alone does not cure the *scale* mismatch between the wind/solar terms and the
+demand proxy — `residual_load` stays ≥0.998 correlated with temperature even
+after this fix (FINDINGS.md §1.1) — so a materially bigger effect is expected
+there, not here.
+
+The general mechanism this closes (temperature-in-disguise, the scale
+mismatch that remains) is [FINDINGS.md §1.1](FINDINGS.md#11-residual_load-is-temperature-in-disguise-and-its-wind-term-is-saturated).
 
 ## Prediction interval for cheap2h (round 19c)
 
