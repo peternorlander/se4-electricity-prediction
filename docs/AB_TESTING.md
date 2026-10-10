@@ -17,6 +17,19 @@ re-running an experiment across several real calendar days to tell signal from n
 — one change every few days. The A/B flow simulates those different run-days from a
 single data snapshot, so a verdict takes one sitting.
 
+## Two shapes of snapshot, and which one a grid needs
+
+`python ab_test.py fetch` caches **~5 years** under `ab_cache/long/` — that is
+the default since 2026-10-10, because a production-shaped fetch cannot measure
+production (see
+[Measurement grids](#measurement-grids-training-geometry-and-period-clusters-read-before-designing-a-run)).
+`--days 1095` still caches a **production-shaped** snapshot (~1088 rows, exactly
+what `predict.py` fits on) under `ab_cache/`; its job is the local
+`train` → `predict` → `get_feature_importance` integration check before
+shipping, not measurement. `run` loads from `ab_cache/long/` and trains each
+test week on a rolling `PRODUCTION_TRAIN_ROWS`-row window; it refuses, with the
+numbers, on a frame too short to do that.
+
 ## Snapshot generations — check the weather tail before building a grid
 
 `python ab_test.py list` reports a **weather tail** per snapshot: how many days
@@ -46,6 +59,29 @@ Backfilling also cannot
 supply a source the cache never fetched, which is the case that actually blocks
 work. If you need a 1d-tail cache, fetch one — the reason to keep fetching is a
 more recent evaluation period, which is what snapshots were always for.
+
+**What a cache holds that a fresh fetch cannot reproduce is narrower than it
+looks — it was measured.** 2026-09-17, every consecutive pair of the 4 long and
+7 production-shaped caches, raw sources and built frames, overlapping dates only
+(see [FINDINGS.md](FINDINGS.md#cached-history-is-stable-except-for-one-column-2026-09-17)):
+SE4 prices, weather deep in history, nuclear outages, TTF and the Swedish
+reservoir series are **identical across fetches**. So "preserving the vintage"
+is not, for this pipeline, a reason to keep a cache. Three exceptions are:
+
+* the Norwegian reservoir series is restated deep in history (up to 117 of 259
+  weeks, max 0.049 TWh — worth ≤0.001 on `reservoir_norway_deviation`);
+* the last ~4 days of a 1d-tail cache are forecast-spliced weather that a later
+  fetch replaces with archive actuals (~90 hourly rows, up to 2.8 °C);
+* `price_de` was a coin flip between two curves on 95 % of hours until
+  [the deterministic selection](DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically),
+  so a cache fetched before that fix is the only record of the draw an older
+  `max` experiment actually used.
+
+Retention, therefore: keep a cache while an experiment that cites it is still
+open, keep `ab_cache/crossborder/` (A78 outage records were republished
+wholesale in 2025-11 and that vintage really is unrecoverable), and otherwise
+retire one when nothing cites it. The ledger row carries the numbers; the
+directory never was the record.
 
 ## How changes are validated
 
@@ -445,13 +481,12 @@ Follow this whenever testing a feature or model change from the improvement plan
 1. **Get a snapshot.** `python ab_test.py fetch` (needs `ENTSO_E_TOKEN`; runnable
    locally from VS Code). Reuse an existing one with `python ab_test.py list` if a
    recent snapshot is already cached — a snapshot a few days old is fine for
-   iterating. `--days N` fetches a longer/shorter window than the default ~3
-   years; a longer one auto-routes to `ab_cache/long/` (`--root` to override)
-   so it can't be picked up as "newest" by a routine run against the normal
-   snapshots. A longer window is wanted when a candidate needs the round-15b
-   sliding grid (constant `min_train`, four evaluation periods) rather than
-   the normal tail-truncation shift grid, which confounds period with
-   training-set size at large shifts.
+   iterating. The default is a **~5-year fetch into `ab_cache/long/`**, which is
+   what a measurement needs: it is the only shape that can give every test week
+   production's own 1088 training rows, and it carries the sliding four-cluster
+   grid. The fetch prints which clusters its rows reach. `--days 1095` caches a
+   production-shaped snapshot in `ab_cache/` instead — for the integration check
+   in step 5, not for measuring.
 2. **Express the change as `CANDIDATE`** in `ab/variants.py`. This is the only file
    you edit, usually a handful of lines. A `Variant` has:
    - `transform(data) -> data` — adds or modifies **columns** on the merged daily
@@ -475,9 +510,12 @@ Follow this whenever testing a feature or model change from the improvement plan
      See "Horizon honesty" above; it is the difference between a number that
      survives production and one that does not.
 3. **Run it.** `python ab_test.py run` (add `--snapshot YYYY-MM-DD` to pick a
-   specific one, `--shifts 0-5` to change the grid). Read the per-target verdict
-   table. **Priority order is cheap2h first, then min**; `avg` is welcome, `max` is
-   not a priority.
+   specific one, `--shifts 0-5` to change the grid). It loads from
+   `ab_cache/long/` and trains every test week on a rolling 1088 rows, printing
+   the geometry it used; `--expanding` reverts to the pre-2026-10 geometry, and
+   is the only way to run against a production-shaped snapshot. Read the
+   per-target verdict table. **Priority order is cheap2h first, then min**;
+   `avg` is welcome, `max` is not a priority.
 4. **Decide by the verdict**, weighing cheap2h/min and checking std isn't inflated:
    - `REAL` → adopt: implement the change properly in the real modules, then revert
      `CANDIDATE` to the no-op `Variant(name="candidate")`.
@@ -528,7 +566,70 @@ CANDIDATE = Variant(name="solar_scaled", transform=_scale_radiation)
 Because it scales an existing feature in place, no `targets` override is needed. Run
 `python ab_test.py run` and read the cheap2h row.
 
-## Measurement grids: tail-truncated vs sliding (read before designing a run)
+## Measurement grids: training geometry and period clusters (read before designing a run)
+
+### The training geometry: a production-shaped snapshot cannot measure production
+
+**Production trains on 1088 rows. Until 2026-10 no A/B point did.**
+`predict.py` fetches `TRAINING_DAYS` = 1095 calendar days; the first 7 cannot
+have their 7-day lags and rolling means computed and are dropped, so the frame
+`model.train()` fits on is **1088 merged rows** (measured on
+`ab_cache/2026-09-11`: 1088 rows, 2023-09-19 → 2026-09-10). Both walk-forward
+loops instead *expand*: `min_train = n − 52·7`, and week *i* trains on
+everything before it. On the canonical 1095-row window that is **731 rows for
+the first test week, 1088 for the last, ~910 on average** — only the final week
+matches production, and the average point trains on 84 % of what production has.
+
+A production-shaped snapshot cannot fix this, and neither can a longer *frame*
+alone: one evaluation year has to come out of the same window, so a
+production-faithful point costs
+
+```
+1088 (train) + 364 (evaluate) + shift  rows
+```
+
+which is 364 rows more than a ~3-year fetch has at all. That is the whole reason
+long snapshots are now the default and `ab_test.py run` passes
+`train_window=ab.harness.PRODUCTION_TRAIN_ROWS`: with it, every test week trains
+on exactly the rows production would have had on that date. `--expanding` falls
+back to the old geometry, which is what every grid before 2026-10 used.
+
+Capacity, measured on the caches that exist:
+
+| long cache | rows | rolling points fit at shifts | clusters reachable |
+|---|---|---|---|
+| `long/2026-09-12` | 1787 | 0–335 | NOW, −6M, (−11M at 326–335) |
+| `long/2026-09-16` | 1791 | 0–339 | NOW, −6M, (−11M) |
+| `long/2026-10-10` | 1815 | 0–363 | NOW, −6M, (−11M); −12M needs 369 |
+
+The canonical −12M cluster (shifts 360–369) therefore needs **1821 rows**, which
+a long fetch from about 2026-10-16 provides; −21M needs 2098 and is not
+reachable before mid-2027 (the frame cannot start before 2021-10-21, see
+[below](#how-long-a-snapshot-to-fetch-and-why-a-long-one-is-shorter-than-you-asked-for)).
+Until then a rolling grid runs NOW / −6M / −11M, which satisfies
+`MIN_CLUSTERS = 3` but buys less period separation than −12M did (~10 % calendar
+overlap with NOW instead of ~2 %).
+
+**What the switch changed when it was measured** (2026-09-16,
+`long/2026-09-12`, 216 walk-forwards, 7 arms picked from the ledger for known
+size sensitivity, both geometries on the same 12 points): the two geometries
+disagree enough to move verdicts. `cheap2h` + `radiation_midday` + `doy_sin/cos`
+went **NOISE (+0.016) → REAL (−0.162)**, with a mode effect of −0.178 that was
+sign-consistent across all three clusters; adding `price_se4_max_lag1` back to
+`min` got more harmful (+0.324 → +0.429); the `min` hurdle went REAL → NOISE.
+Four other arms kept their verdicts, including the +1.15 price-block control.
+Read it as "the geometry is not free", not as a measured bias of known size: the
+mode effect's per-point noise is ±0.27, so ~2 REAL mode effects among 7 null
+arms would happen about 22 % of the time, and the measurement predates the
+[wind-curve unit fix](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23),
+which changed several of the columns involved. The decision rests on the
+arithmetic above, not on those two arms. Absolute MAE moved as well: rolling
+scored **0.37 better** than expanding at NOW on both priority targets, ~0 at
+−6M, and slightly worse at −11M, so the headline eval is mildly pessimistic in
+the period closest to production and the sign is period-dependent — consistent
+with [round 15d](REJECTED.md) closing window length as a lever.
+
+### Tail-truncated vs sliding windows
 
 `ab.harness.apply_shift` truncates the **tail** only, so a shifted point also
 loses training history: on a 3-year snapshot `min_train` falls 721 → 541 → 361
@@ -538,9 +639,14 @@ grumbled readings (round 12's seasonal "gain", round 13.1's r = −0.6, and a
 verdict that nearly removed the cheap2h hurdle; see [REJECTED.md](REJECTED.md)).
 
 **Prefer a sliding constant-length window when a long snapshot is available.**
-`ab_test.py fetch --days 1825` caches ~5 years under `ab_cache/long/`; a window
-of `rows[n-L-s : n-s]` then holds `min_train = L-364` fixed at every shift, so
-each point is "production as it would actually have run on that date".
+`ab_test.py fetch` caches ~5 years under `ab_cache/long/`; a window of
+`rows[n-L-s : n-s]` then holds `min_train = L-364` fixed at every shift, so no
+cluster is starved relative to another. Note what this does **not** give you,
+and what this page claimed until 2026-10: it equalises training size *across*
+points, but within each point the training set still expands 731 → 1088 unless
+`train_window` is set, so a sliding point is "the headline eval as it would have
+run on that date", not "production as it would have run on that date". Pair it
+with `train_window=PRODUCTION_TRAIN_ROWS` (the `run` default) for the latter.
 The worked implementation, and **the canonical 16-point grid** — rounds 14a, 14b,
 16, 17 and 18 all reused it verbatim, which is why their answers are directly
 comparable and why re-using it burns no new day-coverage:

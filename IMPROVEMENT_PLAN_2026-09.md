@@ -456,6 +456,54 @@ builder shared with 2.3a.
 
 ---
 
+### 2.15 German prices: identify the right curve, then re-test the DE lag
+
+**Mechanism (new, and the reason this is not just a re-test of a closed
+question).** Until 2026-10-10 `price_de` was a coin flip between two curves on
+95 % of hours — median gap 9.74, max 695 EUR/MWh — re-rolled on every fetch and
+on every production run
+([FINDINGS.md](docs/FINDINGS.md#cached-history-is-stable-except-for-one-column-2026-09-17),
+[DECISIONS.md](docs/DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically)).
+So every measurement that ever used a German lag used a column that was partly
+noise and not reproducible: round 18's `price_de_lag1` arms on min/cheap2h,
+round 14b's price-family drop on `avg`, the price-block arms in rounds 11 and
+14a, and `max`'s own feature list. The selection is now deterministic. That is a
+changed *instrument*, not a changed hypothesis, which is exactly what the
+scoping rule says re-opens a verdict.
+
+**a. Decide what we should be loading.** Run `python
+experiments/probe_a44_curves.py --probe` (needs `ENTSO_E_TOKEN`) and answer
+three things: how many TimeSeries an A44 response for DE/LU carries, what
+distinguishes them (`contract_MarketAgreement.type`, `businessType`,
+resolution), and whether adding `contract_MarketAgreement.type=A01` to the
+request removes the second curve at the source. If the second curve is an
+intraday auction, pin the request and turn the parser-side tiebreak into a hard
+error — a day-ahead model should never silently train on intraday prices. Check
+SE4 and DK2 the same way: they showed no conflicts across 12 cache pairs, but
+they run through the same function and a conflict there would reach the priority
+targets. Half a day, no model risk. **Before b**, which can only measure
+whatever a settles on.
+
+**b. Re-test the DE lag on a deterministic series.** Pre-registered arms:
+`price_de_lag1` alone on cheap2h and min (round 18's exact arm), and the
+nine-column price family back on `avg` (round 14b's arm, inverted). Rolling
+grid, `classify_clustered`, on a long snapshot fetched after a. The honest prior
+is that nothing moves: a noisy column is a handicap, so cleaning it can only
+help arms that were rejected as *harmful*, and round 18's were harmful by
++0.21…+0.61 — more than noise in one of fifteen columns plausibly explains.
+Both outcomes are worth the day. If an arm turns favourable, the trough targets'
+blanket rejection of a price level ([REJECTED.md](docs/REJECTED.md)) was partly
+an artefact of a broken column and has to be re-read. If nothing moves, that
+rejection is finally measured on a clean instrument and can be closed instead of
+being re-opened every time someone notices that DE leads SE4. Note that `max` is
+the only target that currently reads the column and has never been audited: if a
+changes which curve gets loaded, re-baseline `max` in
+[MODEL.md](docs/MODEL.md) too — not as a priority, but because the number there
+was measured on the coin flip.
+
+**Effort.** Half a day for a; one A/B batch for b, sharing a snapshot with the
+2.5 / 2.8 / 2.9 batch.
+
 ## 3. Carried at low priority, and what stays closed
 
 **Low priority, carried:** `ttf_vs_30d` (old item 5, unchanged reasoning);
@@ -496,6 +544,9 @@ index.
    **2.7 week-ahead documents** — the source work; 2.14 needs no token, the
    ENTSO-E parts do, so Peter runs those fetches.
 9. **2.10 coherence**, **2.11 horizon** — when convenient.
+10. **2.15a DE curve probe** — a token-only probe, runnable any time and
+    independent of everything above; **2.15b** then joins the batch in 7, on a
+    snapshot fetched after a.
 
 **Done 2026-09-12: `ab_cache/long/2026-09-12` is fetched** — 1825 days, **1787
 usable rows** from 2021-10-21, weather tail **1d**. It is the first long cache

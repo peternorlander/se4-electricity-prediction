@@ -265,6 +265,124 @@ def _parse_period(period: ET.Element) -> list:
     return records
 
 
+# --------------------------------------------------------------------------
+# ONE HOUR CAN COME BACK TWICE, WITH TWO DIFFERENT PRICES.
+#
+# Measured 2026-09-17 across the 7 normal and 4 long snapshot caches:
+# 43,696 of 46,105 overlapping DE/LU hours (95%) carry exactly TWO distinct
+# values across independently fetched snapshots, and which one landed in a
+# given cache was effectively random -- the gap between the pair has median
+# 9.74 and max 695 EUR/MWh, and the resulting daily mean (`price_de_lag1`)
+# moved by up to 99 EUR/MWh between fetches. It was not a source revision and
+# not a code version: it reproduced in pairs fetched two days apart with
+# identical code, both before and after the 2026-09-12 change here.
+#
+# The cause was in this file: every <Period> in the response was parsed and the
+# result ended with sort_values("timestamp").drop_duplicates("timestamp"), so
+# the surviving row was whichever one the response happened to list first.
+# predict.py re-fetches three years through this same path on every daily run,
+# so `max` (the only target using price_de_lag1/price_dk2_lag1) trained on a
+# slightly different German history every day, and no A/B on a cached snapshot
+# could reproduce what production did. SE4 and DK2 showed no conflicts in that
+# measurement, but they run through the same code and get the same protection.
+#
+# So the choice is now explicit, and identical on every fetch:
+#   1. if the document labels a day-ahead curve (contract_MarketAgreement.type
+#      = A01), keep only that curve and drop the rest;
+#   2. otherwise order candidates by (businessType, TimeSeries mRID, price) and
+#      keep the first -- an arbitrary rule, but the same arbitrary rule every
+#      time, which is what makes production and a snapshot agree;
+#   3. warn, with examples, whenever step 2 had to break a real disagreement.
+#      That means the curves are NOT labelled by contract type, so run
+#      experiments/probe_a44_curves.py (needs ENTSO_E_TOKEN) to find out what
+#      the second curve is before trusting the series for anything but `max`.
+# --------------------------------------------------------------------------
+_DAY_AHEAD_CONTRACT = "A01"
+
+
+def _timeseries_meta(ts: ET.Element) -> dict:
+    """Curve identity for one TimeSeries: what it is, and which publication."""
+    def text(local_name):
+        el = _find_first(ts, local_name)
+        return el.text.strip() if el is not None and el.text else None
+
+    return {
+        "contract_type": text("contract_MarketAgreement.type"),
+        "business_type": text("businessType"),
+        "ts_mrid": text("mRID"),
+    }
+
+
+def _parse_price_document(root: ET.Element) -> list:
+    """
+    Parse an A44 document into records tagged with the curve they came from.
+
+    Falls back to the bare Period walk when a response has no TimeSeries
+    wrapper, so an unexpected document shape degrades to the old behaviour
+    rather than returning nothing.
+    """
+    all_series = _find_all(root, "TimeSeries")
+    if not all_series:
+        return [{**record, "contract_type": None, "business_type": None, "ts_mrid": None}
+                for period in _find_all(root, "Period")
+                for record in _parse_period(period)]
+
+    records = []
+    for ts in all_series:
+        meta = _timeseries_meta(ts)
+        for period in _find_all(ts, "Period"):
+            for record in _parse_period(period):
+                records.append({**record, **meta})
+    return records
+
+
+def _select_one_price_per_timestamp(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    """
+    Reduce possibly-several curves to exactly one price per timestamp,
+    deterministically. See the comment block above for why this exists.
+
+    Returns a frame with just timestamp and price_eur_mwh, sorted by timestamp.
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp", "price_eur_mwh"])
+
+    if (df["contract_type"] == _DAY_AHEAD_CONTRACT).any():
+        day_ahead = df["contract_type"] == _DAY_AHEAD_CONTRACT
+        dropped = int((~day_ahead).sum())
+        if dropped:
+            logger.info("%s: kept the %s day-ahead curve, dropped %d point(s) "
+                        "from other curves", label, _DAY_AHEAD_CONTRACT, dropped)
+        df = df[day_ahead]
+
+    # A timestamp carrying two DIFFERENT prices is the condition that used to be
+    # resolved by response order. Count it before collapsing, so the warning can
+    # say how often the rule had to choose rather than just that it ran.
+    conflicting = df.groupby("timestamp")["price_eur_mwh"].nunique() > 1
+    n_conflicts = int(conflicting.sum())
+
+    ordered = df.assign(
+        _business=df["business_type"].fillna(""),
+        _mrid=df["ts_mrid"].fillna(""),
+    ).sort_values(["timestamp", "_business", "_mrid", "price_eur_mwh"], kind="mergesort")
+    selected = ordered.drop_duplicates("timestamp", keep="first")
+
+    if n_conflicts:
+        examples = []
+        for timestamp in conflicting[conflicting].index[:3]:
+            values = sorted(round(float(v), 2) for v in
+                            df.loc[df["timestamp"] == timestamp, "price_eur_mwh"].unique())
+            examples.append(f"{pd.Timestamp(timestamp).isoformat()} {values}")
+        logger.warning(
+            "%s: %d of %d timestamps came back with more than one price and no "
+            "day-ahead contract label to choose by -- resolved deterministically "
+            "by (businessType, mRID, price), but run "
+            "experiments/probe_a44_curves.py to identify the second curve. "
+            "Examples: %s",
+            label, n_conflicts, int(df["timestamp"].nunique()), "; ".join(examples),
+        )
+
+    return selected[["timestamp", "price_eur_mwh"]].reset_index(drop=True)
+
 
 def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
     """Fetch a single chunk (max 365 days) of day-ahead prices from ENTSO-E."""
@@ -282,15 +400,15 @@ def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> 
         response, f"day-ahead prices (A44) {area_code} {start_date}..{end_date}")
 
     root = ET.fromstring(response.content)
-    records = []
+    df = pd.DataFrame(_parse_price_document(root))
 
-    for period in _find_all(root, "Period"):
-        records.extend(_parse_period(period))
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp", "price_eur_mwh"])
 
-    df = pd.DataFrame(records)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 
-    return df
+    return _select_one_price_per_timestamp(
+        df, f"A44 {area_code} {start_date}..{end_date}")
 
 
 def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
@@ -323,7 +441,22 @@ def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.Dat
         chunk_start = chunk_end
 
     df = pd.concat(chunks, ignore_index=True)
-    df = df.sort_values("timestamp").drop_duplicates("timestamp").reset_index(drop=True)
+
+    # Chunk ranges touch at their boundary, so a duplicated timestamp across two
+    # chunks is normal -- but now that each chunk is resolved deterministically
+    # the two copies must AGREE. A disagreement means the same hour resolved
+    # differently in two requests, i.e. the defect above is still live.
+    disagreeing = df.groupby("timestamp")["price_eur_mwh"].nunique() > 1
+    if disagreeing.any():
+        logger.warning(
+            "A44 %s: %d timestamp(s) resolved to different prices in different "
+            "request chunks -- keeping the earlier chunk's value, but this should "
+            "not happen now that each chunk is selected deterministically",
+            area_code, int(disagreeing.sum()))
+
+    df = (df.sort_values("timestamp", kind="mergesort")
+            .drop_duplicates("timestamp", keep="first")
+            .reset_index(drop=True))
 
     return df
 

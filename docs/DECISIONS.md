@@ -18,6 +18,8 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
+| [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was a coin flip between two curves on 95 % of hours, in production as well as in every cache |
 | [Residual-load wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23) | 2026-09-17 | cheap2h −0.11 to −0.16 clmean (REAL on 3/4 independently-fetched snapshots); min favourable on 4/4 but sub-threshold |
 | [Prediction interval for cheap2h](#prediction-interval-for-cheap2h-round-19c) | 2026-09-05 | not MAE-measurable — coverage 0.542 → 0.788 |
 | [Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a) | 2026-08-23 | recovers +0.155 cheap2h / +0.258 min / +0.591 avg of the ~5-day lag's cost |
@@ -31,6 +33,111 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Production-length training in the A/B grid
+
+Adopted 2026-10-10. Not an accuracy change but a change to what every later
+measurement *means*, so it has no A/B delta of its own.
+
+**What was wrong.** `predict.py` fits on **1088 merged rows**: `TRAINING_DAYS`
+= 1095 calendar days minus the 7 head rows whose 7-day lags and rolling means
+cannot be computed (measured on `ab_cache/2026-09-11` — 1088 rows,
+2023-09-19 → 2026-09-10). Both walk-forward loops *expand* instead: on the
+canonical 1095-row window the first test week trains on 731 rows and the last on
+1088, ~910 on average. So the average measurement saw **84 % of production's
+training set**, and only the final week of the year matched production at all.
+Round 15b's sliding grid fixed the *between-cluster* form of this and was
+documented as giving "production as it would actually have run on that date" —
+it did not: within each point the expansion remained, unmeasured, through every
+round from 11 to 23.
+
+**What changed.** `ab.harness.run_walk_forward` takes `train_window`. `None`
+keeps the expanding geometry, so the acceptance test against
+`evaluate.walk_forward_validate` still holds (verified bit-for-bit against the
+previous implementation); an int trains every test week on exactly that many
+rows. `ab_test.py run` passes `PRODUCTION_TRAIN_ROWS = 1088` and loads from
+`ab_cache/long/` by default, printing the geometry it used; `--expanding`
+restores the old one and is the only way to run against a production-shaped
+snapshot. A production-faithful point costs `1088 + 364 + shift` rows, so the
+harness now refuses a frame that cannot supply them — naming the numbers —
+rather than quietly expanding, and `ab_test.py fetch` defaults to ~5 years and
+prints which clusters its rows reach.
+
+**Evidence that the geometry matters** (2026-09-16, `long/2026-09-12`, 216
+walk-forwards, 7 arms picked from the ledger for known size sensitivity, both
+geometries on the same 12 points across NOW / −6M / −11M): verdicts moved.
+cheap2h + `radiation_midday` + `doy_sin/cos` went **NOISE (+0.016) → REAL
+(−0.162)**, a mode effect of −0.178 that was sign-consistent in all three
+clusters; adding `price_se4_max_lag1` back to `min` got more harmful
+(+0.324 → +0.429); the `min` hurdle went REAL → NOISE. Four arms kept their
+verdicts, including the +1.15 price-block control. Absolute MAE: rolling scored
+**0.37 better at NOW** on both priority targets, ~0 at −6M and slightly worse at
+−11M, so the headline eval is mildly pessimistic in the period closest to
+production and the sign is period-dependent — consistent with round 15d closing
+window length as a lever.
+
+Two caveats, recorded because the ledger is where they belong: the mode effect's
+per-point noise is ±0.27, so two REAL mode effects among seven null arms would
+happen by chance about 22 % of the time; and that run predates the
+[wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23), which
+changed several of the columns the moved arms use. **The decision rests on the
+arithmetic, not on those two arms** — a measurement that trains on 84 % of
+production's data is measuring a different model — which is also why it was
+adopted without waiting for a re-run on the current feature set.
+
+**Cost.** ~20 % more compute per point, and a narrower grid until the data
+catches up: the canonical −12M cluster needs 1821 rows (a long fetch from about
+2026-10-16), −21M needs 2098 (mid-2027), so a rolling grid runs NOW / −6M /
+−11M — three clusters, satisfying `MIN_CLUSTERS`, but with ~10 % calendar
+overlap against NOW where −12M had ~2 %. Rounds 11–23 remain comparable with
+each other and are **not** comparable with rolling-geometry numbers; a new row
+should say which geometry produced it. The headline eval stays expanding by
+necessity: production fetches three years, exactly one evaluation year short of
+being able to do anything else.
+
+## One day-ahead price per hour, chosen deterministically
+
+Adopted 2026-10-10, in `sources/entso_e.py`. A data-integrity fix that affects
+production as much as the backtest, so it is recorded here even though it has no
+A/B delta.
+
+**The defect.** An A44 response for DE/LU carries more than one price curve for
+the same hour. The parser walked every `<Period>` in the document and finished
+with `sort_values("timestamp").drop_duplicates("timestamp")`, so the surviving
+value was whichever row the response happened to list first. Measured across the
+7 production-shaped and 4 long caches (2026-09-17, overlapping hours only):
+**43,696 of 46,105 hours — 95 % — carry exactly two distinct values**, and which
+one a given cache holds was effectively random (11 hours had three). Gap between
+the pair: median 9.74, mean 16.66, **max 695 EUR/MWh**; the daily mean
+`price_de_lag1` moved by up to 99 EUR/MWh between fetches. It reproduced in
+pairs fetched two days apart with identical code, both before and after the
+2026-09-12 edits to this file, so it was neither a source revision nor a code
+version. SE4 and DK2 showed no conflicts in that measurement, but they run
+through the same function and get the same protection.
+
+**Consequences.** `predict.py` re-fetches three years through this path on every
+daily run, so `max` — the only target whose feature list holds `price_de_lag1` /
+`price_dk2_lag1` — trained on a slightly different German history every day, and
+no A/B on a cached snapshot could reproduce what production did. The priority
+targets never used the column. Every price-block arm in rounds 11, 14a and 18
+measured a partly random column; all came back harmful, so the direction stands
+and the magnitudes do not.
+
+**The fix.** Parse per `TimeSeries`, carrying its
+`contract_MarketAgreement.type`, `businessType` and `mRID`, then: (1) keep only
+the day-ahead curve when the document labels one (`A01`); (2) otherwise order
+the candidates by `(businessType, mRID, price)` and keep the first — arbitrary,
+but the *same* arbitrary rule on every fetch, which is what makes production and
+a snapshot agree; (3) log a warning with examples whenever step 2 had to break a
+real disagreement, since that means the curves are unlabelled and the second one
+is still unidentified. Cross-chunk duplicates are now required to agree and warn
+if they do not. `experiments/probe_a44_curves.py --selftest` checks the
+determinism offline (synthetic two-curve documents must resolve identically in
+either document order); `--probe` needs `ENTSO_E_TOKEN` and answers what is
+still open — what the second curve is, and whether pinning
+`contract_MarketAgreement.type=A01` on the request removes it at the source.
+**Caches fetched before this fix keep their draw**, so re-fetch before doing
+`max` work on one.
 
 ## Residual-load wind-curve unit fix (round 23)
 

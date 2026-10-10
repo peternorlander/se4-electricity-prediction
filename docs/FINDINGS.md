@@ -17,6 +17,7 @@ check whether the code it describes still looks that way.
 | [1.2 The regime is moving away from the model](#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it) | 2026-09-08 | Negative-price share 25 % → 7 %, the trough moved from night to midday, DK2/DE coupling rising |
 | [1.3 Sources verified as reachable](#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes) | 2026-09-08 | What each candidate source carries, and the horizon column that decides whether it can be a forecast feature at all |
 | [1.4 No weather point under the northern wind fleet](#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet) | 2026-09-11 | The three northern candidates are each worth more than any existing site but Stockholm |
+| [Cached history is stable, except for one column](#cached-history-is-stable-except-for-one-column-2026-09-17) | 2026-09-17 | 12 snapshot pairs: SE4 prices, weather, nuclear and TTF are byte-identical across fetches, so a cache is not a vintage — but `price_de` was a coin flip between two curves on 95 % of hours, in production too |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
@@ -457,6 +458,53 @@ linear-in-calendar-time index just doesn't track its true shape closely
 enough to survive replication. `IMPROVEMENT_PLAN_2026-09.md` §2.1 (calibrate
 wind/solar terms from ENTSO-E actual generation per year, already planned)
 supersedes this — not a new hand-drawn index.
+
+## Cached history is stable, except for one column (2026-09-17)
+
+The retention rule in [AB_TESTING.md](AB_TESTING.md#snapshot-generations--check-the-weather-tail-before-building-a-grid)
+said "do not delete or backfill old snapshots", on the assumption that a cache
+preserves a vintage a later fetch cannot reproduce. That was tested rather than
+assumed: every consecutive pair of the 4 long and 7 production-shaped caches
+(July–September 2026), raw sources and built frames, overlapping dates only,
+tolerance 1e-6, differences split into **deep** (older than the older cache's
+last day − 10) and **tail**.
+
+| source | result across all 12 pairs |
+|---|---|
+| `prices_hourly` (SE4) | identical, every hour |
+| `weather_hourly`, `wind_intl_hourly` | identical deep in history |
+| `nuclear_daily`, `ttf_daily`, `sweden_reservoir_weekly` | identical |
+| `norway_reservoir_weekly` | restated deep in history — up to 117 of 259 weeks, max 0.049 TWh, worth ≤0.001 on `reservoir_norway_deviation` |
+| 1d-tail caches, last ~4 days of weather | forecast-spliced values that a later fetch replaces with archive actuals: ~90 hourly rows, up to 2.8 °C and 457 W/m² |
+| `market_prices_hourly` → `price_de` | **differs in every pair** — ~47 % of hours, deep in history, max 22–1310 EUR/MWh |
+
+Two of the three reasons for keeping old caches therefore do not survive contact
+with the data: SE4 prices are not revised, and the ENTSO-E restatement that
+motivated the rule (A78 outage records, republished wholesale in 2025-11) does
+not touch anything inside this window. A production-shaped cache is also
+reproducible from a long one — `long/2026-09-16` sliced to its last 1088 rows
+matches `ab_cache/2026-09-11` on all 1088 overlapping dates except
+`price_de_lag1` and the splice zone — so the production-shaped shape is a
+convenience, not an archive.
+
+**What `price_de` turned out to be.** Not a revision. Across the 7
+production-shaped caches, **43,696 of 46,105 overlapping hours (95 %) carry
+exactly two distinct values**, 11 carry three, and which one a cache holds is
+random per fetch (the per-snapshot patterns are ~900 each, i.e. a coin flip).
+The two candidates differ by a median of 9.74 and up to 695 EUR/MWh, while their
+distributions are indistinguishable (mean 117.87 vs 117.89, std 93.73 vs 93.98,
+correlation 0.90 on the differing hours) — two similar curves for the same hour,
+not a correction to one. The cause was in our own parser and is fixed; see
+[DECISIONS.md](DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically).
+Only `max` reads the column, so no priority target was affected — but production
+re-rolled the draw on every daily run, which is why this is a production finding
+and not a backtest curiosity.
+
+**What it changes in practice.** Keep a cache while an open experiment cites it,
+keep `ab_cache/crossborder/` (that A78 vintage really is gone), retire the rest
+when nothing cites them — the ledger row, not the directory, is the record. One
+question stays open: what the second curve actually is. `python
+experiments/probe_a44_curves.py --probe` answers it with a token.
 
 ## Appendix A — Source probes, 2026-09-08
 

@@ -28,12 +28,13 @@ def _apply_variant(data: pd.DataFrame, variant) -> pd.DataFrame:
     return transformed
 
 
-def _mean_mae(data: pd.DataFrame, variant, shift: int) -> dict:
+def _mean_mae(data: pd.DataFrame, variant, shift: int, train_window=None) -> dict:
     shifted = apply_shift(data, shift)
     transformed = _apply_variant(shifted, variant)
     per_window = run_walk_forward(
         transformed, variant.fit_fn, variant.targets,
         frozen_features=variant.frozen_features, frozen_rolling=variant.frozen_rolling,
+        train_window=train_window,
     )
     return {name: float(np.mean(arr)) for name, arr in per_window.items()}
 
@@ -410,7 +411,8 @@ def classify_ablation_clustered(cluster_deltas: dict, baseline_mae: float = None
     return "INCONCLUSIVE"
 
 
-def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES) -> dict:
+def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
+           train_window=None) -> dict:
     """
     Build training data once from a snapshot, then run BASELINE and
     CANDIDATE through run_walk_forward at each shift, printing a verdict
@@ -420,6 +422,10 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES) -> dic
         inputs:       fetch_training_inputs()-shaped dict (from a snapshot).
         shifts:       List of shift values (see ab.harness.apply_shift).
         target_names: Which targets to report (default: all of model.TARGETS).
+        train_window: Rows each test week trains on; None = the headline eval's
+                      expanding window. ab_test.py passes
+                      harness.PRODUCTION_TRAIN_ROWS by default, which needs a
+                      long snapshot (see ab.harness.run_walk_forward).
 
     Returns:
         {target_name: {"deltas": [...], "mean_delta": float, "spread": float,
@@ -427,15 +433,23 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES) -> dic
     """
     print("Building training data from snapshot...")
     data = build_training_data(**inputs)
-    print(f"  -> {len(data)} days of merged data\n")
+    print(f"  -> {len(data)} days of merged data")
+    if train_window:
+        print(f"  training geometry: rolling {train_window} rows per test week "
+              f"(what production fits on)\n")
+    else:
+        expanding_first = len(data) - 364
+        print(f"  training geometry: expanding, {expanding_first} -> "
+              f"{expanding_first + 357} rows across the evaluation year "
+              f"(headline-eval geometry)\n")
 
     base_by_shift = {}
     cand_by_shift = {}
 
     for shift in shifts:
         print(f"--- shift={shift} ---")
-        base_by_shift[shift] = _mean_mae(data, BASELINE, shift)
-        cand_by_shift[shift] = _mean_mae(data, CANDIDATE, shift)
+        base_by_shift[shift] = _mean_mae(data, BASELINE, shift, train_window=train_window)
+        cand_by_shift[shift] = _mean_mae(data, CANDIDATE, shift, train_window=train_window)
         line = "  ".join(
             f"{name}: base={base_by_shift[shift][name]:.2f} cand={cand_by_shift[shift][name]:.2f} "
             f"delta={cand_by_shift[shift][name] - base_by_shift[shift][name]:+.2f}"
