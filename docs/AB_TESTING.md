@@ -618,16 +618,21 @@ went **NOISE (+0.016) → REAL (−0.162)**, with a mode effect of −0.178 that
 sign-consistent across all three clusters; adding `price_se4_max_lag1` back to
 `min` got more harmful (+0.324 → +0.429); the `min` hurdle went REAL → NOISE.
 Four other arms kept their verdicts, including the +1.15 price-block control.
-Read it as "the geometry is not free", not as a measured bias of known size: the
-mode effect's per-point noise is ±0.27, so ~2 REAL mode effects among 7 null
-arms would happen about 22 % of the time, and the measurement predates the
-[wind-curve unit fix](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23),
-which changed several of the columns involved. The decision rests on the
-arithmetic above, not on those two arms. Absolute MAE moved as well: rolling
-scored **0.37 better** than expanding at NOW on both priority targets, ~0 at
-−6M, and slightly worse at −11M, so the headline eval is mildly pessimistic in
-the period closest to production and the sign is period-dependent — consistent
-with [round 15d](REJECTED.md) closing window length as a lever.
+**Re-run on `long/2026-10-10` after the wind-curve fix, the seasonal arm
+replicated** — exp NOISE (+0.070) → roll REAL (−0.217), mode effect −0.287,
+negative in all three clusters — while the `min` + `price_se4_max_lag1` mode
+effect did not (+0.106 → −0.012). Per-point noise on a mode effect is ±0.27, so
+one REAL among seven arms is a chance event and the arm that survives two
+independently fetched snapshots is the one to believe. Three further verdicts
+moved in the re-run without a replicating mode effect (hurdle removal
+KEEP_LOAD_BEARING → INCONCLUSIVE, the 13.1 combo BORDERLINE → NOISE, `min` +
+fuel/CO2 NOISE → BORDERLINE): all sit within ~0.1 of a bar. The decision rests
+on the arithmetic above, not on any one arm. Absolute MAE moved as well, and the same way in both
+runs: rolling scored **0.29–0.39 better** than expanding at NOW on the priority
+targets, ~0 at −6M, and 0.2 *worse* at −11M, so the headline eval is mildly
+pessimistic in the period closest to production and the sign is
+period-dependent — consistent with [round 15d](REJECTED.md) closing window
+length as a lever.
 
 ### Tail-truncated vs sliding windows
 

@@ -76,14 +76,29 @@ verdicts, including the +1.15 price-block control. Absolute MAE: rolling scored
 production and the sign is period-dependent — consistent with round 15d closing
 window length as a lever.
 
-Two caveats, recorded because the ledger is where they belong: the mode effect's
-per-point noise is ±0.27, so two REAL mode effects among seven null arms would
-happen by chance about 22 % of the time; and that run predates the
-[wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23), which
-changed several of the columns the moved arms use. **The decision rests on the
-arithmetic, not on those two arms** — a measurement that trains on 84 % of
-production's data is measuring a different model — which is also why it was
-adopted without waiting for a re-run on the current feature set.
+**Replicated on a second snapshot and the current feature set** (2026-10-10,
+`long/2026-10-10`, 1815 rows, the same 12 points, another 216 walk-forwards, run
+after the [wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23)
+changed several of the columns involved). The seasonal arm behaves the same way:
+exp **NOISE (+0.070) → roll REAL (−0.217)**, mode effect **−0.287**, negative in
+all three clusters (−0.153 / −0.280 / −0.429) and larger than the first run's
+−0.178. The base-MAE pattern repeats too — rolling better by **0.392** (cheap2h)
+and **0.294** (min) at NOW, ~0 at −6M, 0.21–0.23 *worse* at −11M, so the
+geometry's absolute effect is period-dependent in the same direction both times.
+
+What did *not* replicate: the `min` + `price_se4_max_lag1` mode effect
+(+0.106 REAL → −0.012 NOISE). That is what the noise estimate predicted for the
+weaker arm — per-point noise is ±0.27, so one REAL mode effect among seven arms
+is expected by chance, and the arm that survived two independent snapshots is
+the one to believe. Three other verdicts moved between geometries in the second
+run without a replicating mode effect (hurdle removal on cheap2h
+KEEP_LOAD_BEARING → INCONCLUSIVE, the 13.1 combo BORDERLINE → NOISE, `min` +
+fuel/CO2 NOISE → BORDERLINE); all three sit within ~0.1 of a verdict boundary,
+which says the bar is close there, not that the geometry decided it.
+
+**The decision still rests on the arithmetic, not on any one arm** — a
+measurement that trains on 84 % of production's data is measuring a different
+model — but it is no longer unsupported on the current model.
 
 **Cost.** ~20 % more compute per point, and a narrower grid until the data
 catches up: the canonical −12M cluster needs 1821 rows (a long fetch from about

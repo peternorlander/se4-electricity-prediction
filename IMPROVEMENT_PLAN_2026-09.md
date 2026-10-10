@@ -504,6 +504,42 @@ was measured on the coin flip.
 **Effort.** Half a day for a; one A/B batch for b, sharing a snapshot with the
 2.5 / 2.8 / 2.9 batch.
 
+### 2.16 Seasonal interaction on cheap2h, re-opened by the training geometry
+
+**Mechanism (stated before any run of its own).** Round 12 closed
+`radiation_midday` + `day_of_year_sin/cos` on cheap2h as NOISE and wrote "do not
+re-test this combination". Both calibration runs behind
+[production-length training](docs/DECISIONS.md#production-length-training-in-the-ab-grid)
+tested that exact arm as a side effect, and it is the one arm whose behaviour
+*depends on the geometry*: NOISE under the expanding window (+0.016 and +0.070)
+and **REAL under production-length training** (−0.162 and −0.217), with a mode
+effect negative in all three clusters on two independently fetched snapshots
+(−0.178, then −0.287). Round 12's rejection was therefore measured on a model
+trained on 84 % of production's data, and a plausible reading is that a
+calendar-indexed interaction needs three full annual cycles to generalise rather
+than the two the early test weeks saw. That is a mechanism, not "a lot has
+changed".
+
+**What it is not yet.** Those two runs were calibration runs: the arm rode along
+to measure the *geometry*, with no pre-registered bar of its own, and its NOW
+cluster — the period closest to production — is the weakest in both runs
+(−0.080 and −0.013 against −0.429 at −11M). So this is a candidate to test
+properly, not a result to adopt.
+
+**The round.** Pre-register the bar, rolling grid on a fresh long snapshot,
+`classify_clustered`, arms as in round 12 (S1 `radiation_midday` + doy pair, S2
+the 5-column solar block + doy, S3 the intraday block + doy) so the comparison
+with that round is direct. Add the plain doy pair alone as the control round 11
+already measured (+0.060 NOISE then). Check per-window std and
+`corr(delta, min_train)` as always. If S1 holds up, the LIGHT/DARK cancellation
+documented in [REJECTED.md](docs/REJECTED.md) is the mechanism to write up; if it
+does not, the geometry finding stands on its own and this closes for good.
+Replication across a second snapshot is required either way — the two
+calibration runs already provide two vintages' worth of hints, and that is
+exactly why the round should be cheap to decide.
+
+**Effort.** One A/B batch, shares a snapshot with 2.15b.
+
 ## 3. Carried at low priority, and what stays closed
 
 **Low priority, carried:** `ttf_vs_30d` (old item 5, unchanged reasoning);
@@ -547,6 +583,8 @@ index.
 10. **2.15a DE curve probe** — a token-only probe, runnable any time and
     independent of everything above; **2.15b** then joins the batch in 7, on a
     snapshot fetched after a.
+11. **2.16 seasonal interaction** — the one arm the geometry change re-opened;
+    run it with 2.15b on the same snapshot.
 
 **Done 2026-09-12: `ab_cache/long/2026-09-12` is fetched** — 1825 days, **1787
 usable rows** from 2021-10-21, weather tail **1d**. It is the first long cache
