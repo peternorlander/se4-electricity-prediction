@@ -534,11 +534,29 @@ already measured (+0.060 NOISE then). Check per-window std and
 `corr(delta, min_train)` as always. If S1 holds up, the LIGHT/DARK cancellation
 documented in [REJECTED.md](docs/REJECTED.md) is the mechanism to write up; if it
 does not, the geometry finding stands on its own and this closes for good.
-Replication across a second snapshot is required either way — the two
-calibration runs already provide two vintages' worth of hints, and that is
-exactly why the round should be cheap to decide.
 
-**Effort.** One A/B batch, shares a snapshot with 2.15b.
+**Start with the cheap replication on an older cache.** Before the full S1/S2/S3
+batch, run just `base` + `S1` in both geometries on **`long/2026-08-21`** — an
+independently fetched cache 50 days earlier than the second calibration run, so
+it carries different DE draws, a different splice zone and different reservoir
+revisions. It has 1762 rows, so rolling points reach shift 310: clusters NOW
+(0/1/4/7), −6M (180–189) and a far cluster at 301–310. It is a 5d-tail cache, so
+it gets its own grid and must not share one with the 1d caches
+([AB_TESTING.md](docs/AB_TESTING.md#snapshot-generations--check-the-weather-tail-before-building-a-grid)).
+About 30 minutes on four workers, and it decides whether the full batch is worth
+running: if S1's geometry-dependence shows up on a third vintage it is real, and
+if it does not, two of three vintages disagree and the arm goes back to being
+round 12's NOISE.
+
+Be precise about what that buys. All five long caches lie within two months of
+each other, so their evaluation years overlap **82–99 %**: another cache tests
+*fetch* dependence, which is what the replay bar is for, and **not** period
+independence — only large shifts inside one snapshot move the period. And no
+snapshot can validate the arithmetic behind the geometry switch itself; that is a
+fact about the pipeline, not a measurement.
+
+**Effort.** ~30 min for the replication, then one A/B batch for S1/S2/S3 sharing
+a snapshot with 2.15b if the replication holds.
 
 ## 3. Carried at low priority, and what stays closed
 
