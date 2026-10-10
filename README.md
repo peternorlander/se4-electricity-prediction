@@ -177,7 +177,7 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `wo
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
 - `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`)
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
-- `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from horizon-honest walk-forward validation
+- `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from horizon-honest walk-forward validation. **Monitoring only — never quote these in documentation**: each run measures whatever window that day ends on, so the value moves with the evaluation period more than with the model ([docs/AB_TESTING.md](docs/AB_TESTING.md#how-changes-are-validated))
 - `mae_by_horizon` — per-target MAE broken down by forecast horizon (day+1 … day+7); shows how accuracy decays with forecast distance
 - `cheap2h_interval` — the band's own calibration for this run: `coverage_raw`, `coverage_calibrated`, `nominal_coverage`, `correction_eur_mwh`, `n_holdout`. **Watch `coverage_calibrated` against `nominal_coverage`** — if it drifts away from 0.80 the band has stopped meaning what it says
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)

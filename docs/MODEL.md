@@ -166,6 +166,11 @@ Evaluation uses **52-window (1-year) walk-forward validation** on 3 years of tra
 
 The evaluation is **horizon-honest**: each test window's price/market/fuel/reservoir lags are frozen to their last-known value, exactly as `build_forecast_features` does in production for all 8 forecast days. A validation that instead fed each test day its *true* previous-day price as `lag1` — knowledge the live model only has for day+1 — would make days 2–8 look far more accurate than they are. This baseline is the accuracy Home Assistant actually receives. The same constraint binds every A/B, and it is the single easiest thing to get wrong when testing a new feature — see [AB_TESTING.md "Horizon honesty"](AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know).
 
+These numbers come from a **deliberate re-measurement on one named snapshot**,
+never from a production run's own `mae_*` output — that moves with the evaluation
+period and cannot be reproduced or compared later
+([AB_TESTING.md](AB_TESTING.md#how-changes-are-validated)).
+
 Current, measured on the **2026-08-21** data snapshot with the production code as
 it stands (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
 trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06; `avg`

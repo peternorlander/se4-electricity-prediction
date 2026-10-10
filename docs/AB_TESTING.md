@@ -169,11 +169,28 @@ apparent shrinkage was the old grid starving its classifier of negative-price
 days at the far clusters. The methodological point stands regardless of how
 that particular case resolved.)
 
-When updating the MAE table in [MODEL.md](MODEL.md#current-mae-baseline), quote
-the run it came from and the snapshot it was measured on, and record adopted
-changes as their **A/B deltas** — in that table and as an entry in
-[DECISIONS.md](DECISIONS.md). The fullest worked example of the practice is the
-per-target feature re-validation program, written up in
+**Where documented numbers come from, and where they must never come from.**
+Every number in the docs is a *measurement you can re-run*, not an observation of
+a production run:
+
+| what | where it comes from |
+|---|---|
+| the headline MAE table in [MODEL.md](MODEL.md#current-mae-baseline) | one named snapshot, re-measured deliberately, `OMP_NUM_THREADS=4` pinned, with the snapshot date and the code state quoted beside it |
+| the evidence for any change | its **A/B delta** on the four-cluster grid — never a before/after of the headline table, and never a single run |
+| the production `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` attributes | **monitoring only.** Do not copy them into any document. |
+
+The last row is the easy mistake. Those attributes are a real walk-forward result
+and still useless as a record: each Actions run computes them on whatever
+window that day happens to end on, and the headline moves ±1.3 EUR/MWh with the
+evaluation period while the model is unchanged. A number lifted from one run
+cannot be compared with the one before it or reproduced afterwards. Watch them for
+drift and alarms; document the snapshot measurement.
+
+So when you update the table, re-measure it: quote the snapshot it was measured on
+and the code state it describes, and record the adopted change as its **A/B
+delta** — in that table and as an entry in [DECISIONS.md](DECISIONS.md). The
+fullest worked example of the practice is the per-target feature re-validation
+program, written up in
 [DECISIONS.md](DECISIONS.md#per-target-feature-lists-for-min-and-cheap2h).
 
 ## Horizon honesty: measure only what production can know
@@ -279,13 +296,19 @@ source the pipeline does not fetch. Re-encoded to `lag2`, the freshest realised
 flow production could actually read, the same feature is **NOISE** (clmean
 −0.092, −12M +0.014, same 14-point grid).
 
-So a three-times-replicated REAL result turned out to rest entirely on one day of
-unavailable freshness. The feature may still be adoptable — but only by fetching
-scheduled commercial exchanges (ENTSO-E A09 or Nord Pool `DayAheadFlow`), which is
-new production work, not a feature-list edit. See
-[FINDINGS.md](FINDINGS.md#cross-border-capacity-and-flows-round-21).
+So a three-times-replicated REAL result rested entirely on one day of
+unavailable freshness. The obvious repair — fetch the day-ahead schedule
+production *can* read (ENTSO-E A09) and rebuild the column from that — was then
+measured, and it closed the item on 2026-09-13 rather than rescuing it: the
+servable version correlates only **0.56** with the realised-flow version the A/B
+had measured. A09 does answer for all five SE4 borders, but a commercial schedule
+is a different series from a physical flow — the raw daily southbound totals
+correlate 0.71, and DK2 only 0.64, because Øresund carries loop flows no schedule
+describes. See
+[FINDINGS.md](FINDINGS.md#cross-border-capacity-and-flows-round-21) and the two
+rows in [REJECTED.md](REJECTED.md).
 
-Two lessons, both general:
+Three lessons, all general:
 
 * **A lag number is a claim about a publication calendar, not about an offset.**
   `lag1` is honest for SE4/DE/DK2 day-ahead prices, which are published the
@@ -297,6 +320,13 @@ Two lessons, both general:
   cluster. Replication does not help either: replicating a leak reproduces the
   leak. Only reading the source's publication schedule catches it, which is why
   it is question 1 above and why it happens before the run, not after.
+* **Re-encoding to what production can know is a new experiment, not a haircut on
+  the old one.** It is tempting to treat the honest version as "the same effect,
+  somewhat smaller". It need not be the same effect at all: here the servable
+  series correlates 0.56 with the measured one, so the re-encoded arm tests a
+  different hypothesis and needs its own pre-registered bar. Budget for that
+  before promising a result, and never carry the leaky arm's magnitude forward as
+  an estimate of the honest one's.
 
 ### Three kinds of leak, each with a case in this repo
 
