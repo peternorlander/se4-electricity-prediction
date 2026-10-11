@@ -20,7 +20,7 @@ whether the number was ever achievable in production
 |---|---|---|
 | [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
 | [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
-| [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was a coin flip between two curves on 95 % of hours, in production as well as in every cache |
+| [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was SDAC or the German 15-min intraday auction, re-drawn per hour and per fetch; now the SDAC curve (sequence 1), 100 % equal to SMARD 2021–2026 |
 | [Residual-load wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23) | 2026-09-17 | cheap2h −0.11 to −0.16 clmean (REAL on 3/4 independently-fetched snapshots); min favourable on 4/4 but sub-threshold |
 | [Prediction interval for cheap2h](#prediction-interval-for-cheap2h-round-19c) | 2026-09-05 | not MAE-measurable — coverage 0.542 → 0.788 |
 | [Closing the weather-archive lag](#closing-the-weather-archive-lag-round-19a) | 2026-08-23 | recovers +0.155 cheap2h / +0.258 min / +0.591 avg of the ~5-day lag's cost |
@@ -127,9 +127,10 @@ fill, DE/DK2 by replaying the saved raw A44 responses through the filling
 parser; the checks and the exact DE/DK2 numbers (`price_de_lag1` /
 `price_dk2_lag1` move on 392 days, max 25.4 / 21.3) are in
 [FINDINGS.md](FINDINGS.md#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10).
-Originals sit beside each file as `*.pkl.pre_a03.bak`, so a result measured on
-a cache before 2026-10-11 — including the A/B above, which ran on the first
-2026-10-10 fetch — reproduces only from those. The headline table in
+The gappy originals were deleted once the repair was verified, so a result
+measured on a cache before 2026-10-11 — including the A/B above, which ran on
+the first 2026-10-10 fetch — no longer reproduces bit-for-bit; its ledger row
+is the record. The headline table in
 [MODEL.md](MODEL.md#current-mae-baseline) was not re-measured for this change
 and will move slightly when it next is.
 
@@ -211,14 +212,19 @@ being able to do anything else.
 
 ## One day-ahead price per hour, chosen deterministically
 
-Adopted 2026-10-10, in `sources/entso_e.py`. A data-integrity fix that affects
+Adopted 2026-10-10, in `sources/entso_e.py`, in two steps the same day: a
+deterministic rule in the morning, then — once the curves were identified — the
+SDAC curve by sequence (item 2.15a, below). A data-integrity fix that affects
 production as much as the backtest, so it is recorded here even though it has no
 A/B delta.
 
 **The defect.** An A44 response for DE/LU carries more than one price curve for
 the same hour. The parser walked every `<Period>` in the document and finished
-with `sort_values("timestamp").drop_duplicates("timestamp")`, so the surviving
-value was whichever row the response happened to list first. Measured across the
+with `sort_values("timestamp").drop_duplicates("timestamp")`. That default sort
+is an unstable quicksort, so which of two equal timestamps survived depended on
+the whole array — and the yearly request chunks start on the fetch date, so the
+draw changed per hour and per fetch even though the response order itself is
+stable (two probe fetches listed the TimeSeries identically). Measured across the
 7 production-shaped and 4 long caches (2026-09-17, overlapping hours only):
 **43,696 of 46,105 hours — 95 % — carry exactly two distinct values**, and which
 one a given cache holds was effectively random (11 hours had three). Gap between
@@ -226,8 +232,8 @@ the pair: median 9.74, mean 16.66, **max 695 EUR/MWh**; the daily mean
 `price_de_lag1` moved by up to 99 EUR/MWh between fetches. It reproduced in
 pairs fetched two days apart with identical code, both before and after the
 2026-09-12 edits to this file, so it was neither a source revision nor a code
-version. SE4 and DK2 showed no conflicts in that measurement, but they run
-through the same function and get the same protection.
+version. SE4 showed no conflicts in that measurement and DK2 none above float
+rounding (its sequence-2 copy, below); both run through the same function.
 
 **Consequences.** `predict.py` re-fetches three years through this path on every
 daily run, so `max` — the only target whose feature list holds `price_de_lag1` /
@@ -237,21 +243,66 @@ targets never used the column. Every price-block arm in rounds 11, 14a and 18
 measured a partly random column; all came back harmful, so the direction stands
 and the magnitudes do not.
 
-**The fix.** Parse per `TimeSeries`, carrying its
-`contract_MarketAgreement.type`, `businessType` and `mRID`, then: (1) keep only
-the day-ahead curve when the document labels one (`A01`); (2) otherwise order
-the candidates by `(businessType, mRID, price)` and keep the first — arbitrary,
-but the *same* arbitrary rule on every fetch, which is what makes production and
-a snapshot agree; (3) log a warning with examples whenever step 2 had to break a
-real disagreement, since that means the curves are unlabelled and the second one
-is still unidentified. Cross-chunk duplicates are now required to agree and warn
-if they do not. `experiments/probe_a44_curves.py --selftest` checks the
-determinism offline (synthetic two-curve documents must resolve identically in
-either document order); `--probe` needs `ENTSO_E_TOKEN` and answers what is
-still open — what the second curve is, and whether pinning
-`contract_MarketAgreement.type=A01` on the request removes it at the source.
-**Caches fetched before this fix keep their draw**, so re-fetch before doing
-`max` work on one.
+**What the two curves are (2.15a, probed 2026-10-10).** Every TimeSeries of six
+DE windows (2022-02, 2023-06, 2024-09, the 2025-10 switch, 2025-11, 2026-09) was
+scored against the SMARD/Bundesnetzagentur day-ahead price, and every hour the
+caches disagreed on was checked against SMARD back to 2021-10:
+
+| | sequence 1 | sequence 2 |
+|---|---|---|
+| matches SMARD / Nord Pool SDAC | **100 %** of points, every window | < 0.5 % |
+| resolution | PT60M until 2025-09-30, PT15M after | PT15M throughout |
+| hourly-mean corr with SDAC | — | 0.90–0.97, gap median 5–10 EUR/MWh |
+| shape | — | first quarter of each hour +2.5…+7 above the hour mean until SDAC itself went to 15 min, then flat |
+
+Both carry `contract_MarketAgreement.type = A01` and `auction.type = A01`, and
+they differ **only** in `classificationSequence_AttributeInstanceComponent.position`.
+Sequence 2 is most consistent with the German 15-minute intraday auction (the
+sawtooth is that auction's signature); ENTSO-E does not label it, so that
+identification is an inference. What is measured is that it is not SDAC. Before
+2025-10 its `:15/:30/:45` rows vanished in `fetch_market_prices`' inner merge with
+hourly DK2, so the caches held SDAC or the intraday `:00` quarter — the quarter
+that carries the sawtooth's peak, which is why the "other" value ran 6–8 EUR/MWh
+high in 2021–2023 and its |gap| to SDAC had a median of 20–37 there.
+
+The morning's rule ordered unlabelled candidates by `(businessType, mRID,
+price)`. `mRID` is just the TimeSeries' position in the document and sequence 2
+is listed first, so the string sort (`"1" < "2"`, but `"10" < "9"`) picked the
+**intraday curve on 14 of 15 days**: 6.7 % of points SDAC in the hourly era,
+15–21 % after. Deterministic, and wrong — production's `max` trained on mostly
+intraday German prices for the hours between the two commits.
+
+**The fix as it stands.** (1) The DE/LU request is pinned to
+`classificationSequence_AttributeInstanceComponent.position=1`, which removes the
+second curve at the source; `contract_MarketAgreement.type=A01` does nothing (both
+curves are A01). SE4 and DK2 are **not** pinned: they label SDAC with no sequence
+element and the pinned request returns no data for them. (2) The parser keeps the
+A01 contract and drops every curve labelled with a sequence other than 1 —
+SDAC is "sequence 1 or unlabelled". That second half is not cosmetic: since
+2026-01-23 DK2 also publishes an explicit sequence-2 *copy* of its SDAC prices
+on most days (equal to within 3·10⁻⁵, float rounding), and a keep-only-sequence-1
+rule emptied DK2's whole last year on the first fetch through it. (3) Anything
+ambiguous is now a hard error (`AmbiguousPriceError`): two prices for one
+timestamp after the selection, a document whose every curve is non-SDAC, two
+request chunks disagreeing, or an empty chunk (every chunk lies in the past, so
+empty means lost data; that is how the DK2 year vanished silently, the frame
+shrinking 1815 → 1452 rows). A day-ahead model must never silently train on an
+intraday price.
+
+**Verified.** The new parser on every saved raw response — pinned and unpinned,
+DE, SE4, DK2, 2022 to 2026 — gives 100 % SDAC, and a five-year fetch
+(`ab_cache/long/2026-10-10`, 69,712 rows, no missing day) matches SMARD for
+DE-LU and Energy-Charts for DK2 on **100 % of points in every year**. SE4 from
+ENTSO-E is identical to Nord Pool. `experiments/probe_a44_curves.py --selftest`
+covers the real DE shape (sequence 2 listed first, the `"9"/"10"` mRID trap), the
+DK2 shape, the hard errors and the DE-only pin offline.
+
+**The caches are corrected in place.** All five long caches in `ab_cache/long/`
+now hold the SDAC series; the four older ones had their market prices replaced
+from the clean fetch, verified column by column (see
+[AB_TESTING.md](AB_TESTING.md#snapshot-generations--check-the-weather-tail-before-building-a-grid)).
+The coin-flip draws earlier rounds measured are gone with them, so those rounds'
+`max` and price-lag numbers live only in their ledger rows.
 
 ## Residual-load wind-curve unit fix (round 23)
 
@@ -505,6 +556,13 @@ production runs** depending on how many regime-shift weeks the evaluation
 window happens to contain — a single-snapshot before/after landed at +0.07
 (see [Current MAE Baseline](MODEL.md#current-mae-baseline)) purely because that one
 window was calm; that is expected, not a contradiction of the A/B.
+
+**Re-confirmed on a clean German series (round 2.15b, 2026-10-11).** Both 14b
+fetches carried a `price_de_lag1` that was half intraday auction. Adding the
+family back on the SDAC series, rolling 12-point grid (NOW / −6M / −11M): **REAL
+harmful +1.080**, 0 of 12 favourable, against +0.932 on the same day's coin-flip
+cache — the decision stands, and a cleaner anchor if anything hurts more
+([REJECTED.md](REJECTED.md)).
 
 ## Per-target feature lists for min and cheap2h
 

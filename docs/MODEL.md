@@ -189,6 +189,17 @@ on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21):
 | max     | 37.40        | ±19.94 |
 | cheap2h | **15.04**    | ±6.17 |
 
+**The `max` row was measured on a German price that was half intraday auction**
+(round 2.15, [FINDINGS.md](FINDINGS.md#german-prices-two-auctions-in-one-response-round-215)).
+Re-measured 2026-10-11 on the same snapshot's production-shaped slice with
+today's code, coin-flip cache vs its SDAC-corrected copy: `min` / `avg` /
+`cheap2h` **bit-identical** (14.57 / 18.84 / 14.93), `max` **37.17 → 37.30**.
+A single before/after run is not evidence
+([AB_TESTING.md](AB_TESTING.md#how-changes-are-validated)); the A/B
+evidence is the rolling 12-point grid, where the clean series improves `max` by
+**−0.32** (−0.30 / −0.39 / −0.27, every cluster). The other three rows predate
+the 2026-09-17 wind-curve fix and are not re-measured here.
+
 **These numbers are measured in the `gap0` condition** — the evaluator fits right
 up to its test window, which it can only do because the whole evaluation year
 sits in one contiguous frame. Production cannot: its frame ends where the

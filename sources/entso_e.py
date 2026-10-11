@@ -351,26 +351,61 @@ def _parse_period(period: ET.Element, curve_type: str | None = None) -> list:
 # identical code, both before and after the 2026-09-12 change here.
 #
 # The cause was in this file: every <Period> in the response was parsed and the
-# result ended with sort_values("timestamp").drop_duplicates("timestamp"), so
-# the surviving row was whichever one the response happened to list first.
+# result ended with sort_values("timestamp").drop_duplicates("timestamp"). The
+# default sort is an unstable quicksort, so which of two equal timestamps came
+# out first depended on the whole array -- and the yearly request chunks start
+# on the fetch date, so the array, and the per-hour draw, changed with every
+# fetch even though the response order itself is stable (probed 2026-10-10:
+# two fetches list the TimeSeries identically). Before 2025-10 the second
+# curve's :15/:30/:45 rows vanished in fetch_market_prices' inner merge with
+# hourly DK2, which is why the caches only ever showed a conflict at :00.
 # predict.py re-fetches three years through this same path on every daily run,
 # so `max` (the only target using price_de_lag1/price_dk2_lag1) trained on a
 # slightly different German history every day, and no A/B on a cached snapshot
 # could reproduce what production did. SE4 and DK2 showed no conflicts in that
 # measurement, but they run through the same code and get the same protection.
 #
-# So the choice is now explicit, and identical on every fetch:
-#   1. if the document labels a day-ahead curve (contract_MarketAgreement.type
-#      = A01), keep only that curve and drop the rest;
-#   2. otherwise order candidates by (businessType, TimeSeries mRID, price) and
-#      keep the first -- an arbitrary rule, but the same arbitrary rule every
-#      time, which is what makes production and a snapshot agree;
-#   3. warn, with examples, whenever step 2 had to break a real disagreement.
-#      That means the curves are NOT labelled by contract type, so run
-#      experiments/probe_a44_curves.py (needs ENTSO_E_TOKEN) to find out what
-#      the second curve is before trusting the series for anything but `max`.
+# WHAT THE SECOND CURVE IS (probed 2026-10-10, every TimeSeries scored against
+# the SMARD/Bundesnetzagentur day-ahead price, DE windows 2022-02 .. 2026-09):
+# a DE/LU response carries two TimeSeries per delivery day, told apart ONLY by
+# classificationSequence_AttributeInstanceComponent.position. Position 1 is
+# the SDAC day-ahead price (100% of points equal SMARD in every window; PT60M
+# until 2025-09-30, PT15M after). Position 2 is a separate PT15M curve that
+# matches SDAC on <0.5% of points -- an hourly-mean corr of 0.90-0.97 and a
+# first-quarter premium of +2.5..+7 EUR/MWh until SDAC itself went to 15
+# minutes, which is the signature of the German 15-minute intraday auction.
+# Both carry contract_MarketAgreement.type = A01 and auction.type = A01, so
+# the contract label cannot tell them apart and pinning the request to A01
+# changes nothing. SE4 and DK2 label their SDAC curve with no sequence element
+# at all (a request pinned to position=1 returns NOTHING for them) -- and since
+# 2026-01-23 DK2 also publishes an explicit "sequence 2" copy of the same SDAC
+# prices on most days, equal to within 3e-5 (float rounding). So SDAC is
+# "sequence 1 or unlabelled", and only an explicit other sequence is dropped.
+#
+# The first version of this fix ordered unlabelled candidates by
+# (businessType, mRID, price). mRID is just the TimeSeries' number in the
+# document and sequence 2 is listed first, so the string sort ("1" < "2",
+# "21" < "22", but "10" < "9") picked the INTRADAY curve on 14 of 15 days.
+# Deterministic, and wrong. Hence the rule now:
+#   1. the DE/LU request is pinned to sequence position 1 at the source
+#      (_SEQUENCE_PINNED_AREAS), so the second curve never arrives;
+#   2. the parser keeps only the A01 contract and drops every curve labelled
+#      with a sequence other than 1 -- the same rule enforced on whatever comes
+#      back, so a response that ignores the pin is still read correctly, and
+#      raises if that leaves nothing;
+#   3. if two different prices for one timestamp survive that, it RAISES. A
+#      day-ahead model must never silently train on an intraday price, and
+#      there is no longer an arbitrary tiebreak to hide behind.
+# experiments/probe_a44_curves.py --selftest checks this offline.
 # --------------------------------------------------------------------------
 _DAY_AHEAD_CONTRACT = "A01"
+_SDAC_SEQUENCE = "1"
+_SEQUENCE_PARAM = "classificationSequence_AttributeInstanceComponent.position"
+_SEQUENCE_PINNED_AREAS = {DE_LU_AREA_CODE}
+
+
+class AmbiguousPriceError(ValueError):
+    """An A44 document left more than one price for a timestamp."""
 
 
 def _timeseries_meta(ts: ET.Element) -> dict:
@@ -381,7 +416,7 @@ def _timeseries_meta(ts: ET.Element) -> dict:
 
     return {
         "contract_type": text("contract_MarketAgreement.type"),
-        "business_type": text("businessType"),
+        "sequence": text(_SEQUENCE_PARAM),
         "ts_mrid": text("mRID"),
     }
 
@@ -396,7 +431,7 @@ def _parse_price_document(root: ET.Element) -> list:
     """
     all_series = _find_all(root, "TimeSeries")
     if not all_series:
-        return [{**record, "contract_type": None, "business_type": None, "ts_mrid": None}
+        return [{**record, "contract_type": None, "sequence": None, "ts_mrid": None}
                 for period in _find_all(root, "Period")
                 for record in _parse_period(period)]
 
@@ -413,10 +448,12 @@ def _parse_price_document(root: ET.Element) -> list:
 
 def _select_one_price_per_timestamp(df: pd.DataFrame, label: str) -> pd.DataFrame:
     """
-    Reduce possibly-several curves to exactly one price per timestamp,
-    deterministically. See the comment block above for why this exists.
+    Reduce the document to the SDAC day-ahead curve, one price per timestamp.
+    See the comment block above for why this exists.
 
     Returns a frame with just timestamp and price_eur_mwh, sorted by timestamp.
+    Raises AmbiguousPriceError if two different prices for one timestamp
+    survive the selection.
     """
     if df.empty:
         return pd.DataFrame(columns=["timestamp", "price_eur_mwh"])
@@ -425,37 +462,42 @@ def _select_one_price_per_timestamp(df: pd.DataFrame, label: str) -> pd.DataFram
         day_ahead = df["contract_type"] == _DAY_AHEAD_CONTRACT
         dropped = int((~day_ahead).sum())
         if dropped:
-            logger.info("%s: kept the %s day-ahead curve, dropped %d point(s) "
-                        "from other curves", label, _DAY_AHEAD_CONTRACT, dropped)
+            logger.info("%s: kept the %s day-ahead contract, dropped %d point(s) "
+                        "from other contracts", label, _DAY_AHEAD_CONTRACT, dropped)
         df = df[day_ahead]
 
-    # A timestamp carrying two DIFFERENT prices is the condition that used to be
-    # resolved by response order. Count it before collapsing, so the warning can
-    # say how often the rule had to choose rather than just that it ran.
+    # SDAC is sequence 1 where a zone labels it (DE/LU) and UNLABELLED where it
+    # does not (SE4, DK2). Only an explicitly different sequence is dropped:
+    # DK2 has carried an unlabelled SDAC curve plus a "sequence 2" duplicate of
+    # it (equal to within 3e-5) since 2026-01-23, and a keep-only-"1" rule
+    # emptied DK2's whole last year (2026-10-10, see below).
+    other = df["sequence"].notna() & (df["sequence"] != _SDAC_SEQUENCE)
+    if other.any():
+        logger.info("%s: dropped %d point(s) from sequences other than %s (SDAC)",
+                    label, int(other.sum()), _SDAC_SEQUENCE)
+        df = df[~other]
+        if df.empty:
+            raise AmbiguousPriceError(
+                f"{label}: every curve in the document carries a sequence other than "
+                f"{_SDAC_SEQUENCE} -- no SDAC curve to keep")
+
     conflicting = df.groupby("timestamp")["price_eur_mwh"].nunique() > 1
-    n_conflicts = int(conflicting.sum())
-
-    ordered = df.assign(
-        _business=df["business_type"].fillna(""),
-        _mrid=df["ts_mrid"].fillna(""),
-    ).sort_values(["timestamp", "_business", "_mrid", "price_eur_mwh"], kind="mergesort")
-    selected = ordered.drop_duplicates("timestamp", keep="first")
-
-    if n_conflicts:
+    if conflicting.any():
         examples = []
         for timestamp in conflicting[conflicting].index[:3]:
             values = sorted(round(float(v), 2) for v in
                             df.loc[df["timestamp"] == timestamp, "price_eur_mwh"].unique())
             examples.append(f"{pd.Timestamp(timestamp).isoformat()} {values}")
-        logger.warning(
-            "%s: %d of %d timestamps came back with more than one price and no "
-            "day-ahead contract label to choose by -- resolved deterministically "
-            "by (businessType, mRID, price), but run "
-            "experiments/probe_a44_curves.py to identify the second curve. "
-            "Examples: %s",
-            label, n_conflicts, int(df["timestamp"].nunique()), "; ".join(examples),
+        raise AmbiguousPriceError(
+            f"{label}: {int(conflicting.sum())} of {int(df['timestamp'].nunique())} "
+            "timestamps still carry more than one price after keeping the A01 "
+            f"contract and SDAC sequence {_SDAC_SEQUENCE}. Refusing to pick one: "
+            "it may be an intraday curve. Run experiments/probe_a44_identify.py "
+            f"to see what the response now contains. Examples: {'; '.join(examples)}"
         )
 
+    selected = (df.sort_values("timestamp", kind="mergesort")
+                  .drop_duplicates("timestamp", keep="first"))
     return selected[["timestamp", "price_eur_mwh"]].reset_index(drop=True)
 
 
@@ -469,6 +511,8 @@ def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> 
         "periodEnd": f"{end_date}0000",
         "securityToken": _get_token()
     }
+    if area_code in _SEQUENCE_PINNED_AREAS:
+        params[_SEQUENCE_PARAM] = _SDAC_SEQUENCE
 
     response = get_with_retry(ENTSO_E_API_URL, params)
     raise_for_status_with_reason(
@@ -477,8 +521,16 @@ def _fetch_prices_area_chunk(area_code: str, start_date: str, end_date: str) -> 
     root = ET.fromstring(response.content)
     df = pd.DataFrame(_parse_price_document(root))
 
+    # A chunk always starts in the past, so an empty answer is lost data, not
+    # "nothing published yet". On 2026-10-10 the first fetch through the
+    # sequence pin came back with the whole last year (2025-10-10..2026-10-10)
+    # of DE empty, and the old early return let it through: the frame silently
+    # shrank from 1815 to 1452 rows.
     if df.empty:
-        return pd.DataFrame(columns=["timestamp", "price_eur_mwh"])
+        raise ValueError(
+            f"A44 {area_code} {start_date}..{end_date}: HTTP {response.status_code} "
+            f"with no prices ({root.tag.split('}')[-1]}: {reason_text(response.content)}) "
+            f"-- refusing to continue with a hole in the series")
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
 
@@ -523,11 +575,10 @@ def _fetch_prices_area(area_code: str, start_date: str, end_date: str) -> pd.Dat
     # differently in two requests, i.e. the defect above is still live.
     disagreeing = df.groupby("timestamp")["price_eur_mwh"].nunique() > 1
     if disagreeing.any():
-        logger.warning(
-            "A44 %s: %d timestamp(s) resolved to different prices in different "
-            "request chunks -- keeping the earlier chunk's value, but this should "
-            "not happen now that each chunk is selected deterministically",
-            area_code, int(disagreeing.sum()))
+        raise AmbiguousPriceError(
+            f"A44 {area_code}: {int(disagreeing.sum())} timestamp(s) resolved to "
+            "different prices in different request chunks -- each chunk is "
+            "reduced to the SDAC curve, so this means the source changed shape")
 
     df = (df.sort_values("timestamp", kind="mergesort")
             .drop_duplicates("timestamp", keep="first")
