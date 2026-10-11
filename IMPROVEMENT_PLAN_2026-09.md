@@ -458,6 +458,18 @@ builder shared with 2.3a.
 
 ### 2.15 German prices: identify the right curve, then re-test the DE lag
 
+**DONE 2026-10-11.** a: the second curve is sequence 2, the German 15-minute
+intraday auction (both curves labelled A01); production now loads SDAC
+(sequence 1, request pinned for DE/LU only), 100 % equal to SMARD 2021–2026, and
+ambiguity is a hard error. b: nothing favourable on the clean series — best arm
+cheap2h + `price_de_lag1` NOISE −0.047; the trough targets' price-level rejection
+and 14b are closed on a clean instrument; `max` −0.32 from the fix itself.
+All long caches in `ab_cache/long/` are corrected in place to SDAC. Record:
+[DECISIONS.md](docs/DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically),
+[REJECTED.md](docs/REJECTED.md),
+[FINDINGS.md](docs/FINDINGS.md#german-prices-two-auctions-in-one-response-round-215).
+The text below is the plan as written.
+
 **Mechanism (new, and the reason this is not just a re-test of a closed
 question).** Until 2026-10-10 `price_de` was a coin flip between two curves on
 95 % of hours — median gap 9.74, max 695 EUR/MWh — re-rolled on every fetch and

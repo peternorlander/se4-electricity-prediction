@@ -72,10 +72,24 @@ is not, for this pipeline, a reason to keep a cache. Three exceptions are:
   weeks, max 0.049 TWh — worth ≤0.001 on `reservoir_norway_deviation`);
 * the last ~4 days of a 1d-tail cache are forecast-spliced weather that a later
   fetch replaces with archive actuals (~90 hourly rows, up to 2.8 °C);
-* `price_de` was a coin flip between two curves on 95 % of hours until
-  [the deterministic selection](DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically),
-  so a cache fetched before that fix is the only record of the draw an older
-  `max` experiment actually used.
+* `price_de` was SDAC or the German intraday auction, re-drawn per hour and per
+  fetch, until
+  [the SDAC selection](DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically)
+  (2026-10-10). That draw is **no longer in any cache** — see below — so an
+  older `max` or price-lag result cannot be reproduced bit-for-bit; its ledger
+  row is the record.
+
+**Every long cache in `ab_cache/long/` holds the SDAC series (corrected in place
+2026-10-11).** `long/2026-10-10` is the clean five-year fetch (69,712 rows, 100 %
+equal to SMARD/Energy-Charts in every year). Since SDAC prices are never revised,
+the four older caches (`2026-08-06`, `-08-21`, `-09-12`, `-09-16`) had their
+market prices replaced by that fetch over each cache's own window, and say so
+in their `meta.json`. Checked per cache before the swap: same frame dates, only
+`price_de_lag1` and `price_dk2_lag1` change, and both equal the clean fetch on
+every common date; nothing else any experiment reads was touched, so every
+other cached result reproduces. `price_dk2_lag1` moves on ~250–280 days (up to
+13 EUR/MWh) because the hours SDAC omits as repeats are no longer filled from a
+second curve — which is what the fixed parser loads.
 
 Retention, therefore: keep a cache while an experiment that cites it is still
 open, keep `ab_cache/crossborder/` (A78 outage records were republished

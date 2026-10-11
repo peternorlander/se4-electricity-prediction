@@ -18,6 +18,7 @@ check whether the code it describes still looks that way.
 | [1.3 Sources verified as reachable](#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes) | 2026-09-08 | What each candidate source carries, and the horizon column that decides whether it can be a forecast feature at all |
 | [1.4 No weather point under the northern wind fleet](#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet) | 2026-09-11 | The three northern candidates are each worth more than any existing site but Stockholm |
 | [Cached history is stable, except for one column](#cached-history-is-stable-except-for-one-column-2026-09-17) | 2026-09-17 | 12 snapshot pairs: SE4 prices, weather, nuclear and TTF are byte-identical across fetches, so a cache is not a vintage — but `price_de` was a coin flip between two curves on 95 % of hours, in production too |
+| [German prices: two auctions in one response](#german-prices-two-auctions-in-one-response-round-215) | 2026-10-11 | `price_de` was SDAC or the German intraday auction per hour; the clean series moves the DE-lag arms ~0.1 and changes no verdict's direction; `max` −0.32 |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
@@ -494,7 +495,9 @@ random per fetch (the per-snapshot patterns are ~900 each, i.e. a coin flip).
 The two candidates differ by a median of 9.74 and up to 695 EUR/MWh, while their
 distributions are indistinguishable (mean 117.87 vs 117.89, std 93.73 vs 93.98,
 correlation 0.90 on the differing hours) — two similar curves for the same hour,
-not a correction to one. The cause was in our own parser and is fixed; see
+not a correction to one. (Round 2.15 identified them: one is the SDAC day-ahead
+price, the other the `:00` quarter of the German 15-minute intraday auction —
+[below](#german-prices-two-auctions-in-one-response-round-215).) The cause was in our own parser and is fixed; see
 [DECISIONS.md](DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically).
 Only `max` reads the column, so no priority target was affected — but production
 re-rolled the draw on every daily run, which is why this is a production finding
@@ -502,9 +505,67 @@ and not a backtest curiosity.
 
 **What it changes in practice.** Keep a cache while an open experiment cites it,
 keep `ab_cache/crossborder/` (that A78 vintage really is gone), retire the rest
-when nothing cites them — the ledger row, not the directory, is the record. One
-question stays open: what the second curve actually is. `python
-experiments/probe_a44_curves.py --probe` answers it with a token.
+when nothing cites them — the ledger row, not the directory, is the record. The
+open question — what the second curve is — was answered on 2026-10-10, see
+[the next section](#german-prices-two-auctions-in-one-response-round-215).
+
+## German prices: two auctions in one response (round 2.15)
+
+2026-10-10/11. **What we were loading.** An A44 day-ahead response for DE/LU
+carries two TimeSeries per delivery day, both labelled
+`contract_MarketAgreement.type = A01`, told apart only by
+`classificationSequence_AttributeInstanceComponent.position`. Sequence 1 equals
+the SMARD / Nord Pool SDAC price on **100 %** of points in every year 2021–2026;
+sequence 2 matches on < 0.5 % and is a PT15M curve with the first-quarter
+sawtooth of the German 15-minute intraday auction. Until 2026-10-10 the cached
+`price_de` was one or the other per hour (49 % SDAC in every long cache), and the
+first deterministic fix chose the intraday curve on 14 days in 15. DK2 has a
+milder version since 2026-01-23: an explicit sequence-2 *copy* of its own SDAC
+curve, equal to within 3·10⁻⁵. Numbers and the fix:
+[DECISIONS.md](DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically).
+
+**What the clean series changed** (paired grid: the same day's coin-flip and
+clean fetches — the coin-flip cache has since been corrected in place — everything else bit-identical — `min`/`cheap2h`/`avg` base MAE
++0.0000 in every cluster):
+
+| arm | delta, clean | delta, coin flip | clean − coin |
+|---|---|---|---|
+| cheap2h + `price_de_lag1` | −0.047 NOISE | +0.055 NOISE | −0.102 |
+| min + `price_de_lag1` | +0.151 NOISE | +0.223 REAL | −0.071 |
+| cheap2h + DE + DK2 | +0.155 NOISE | +0.145 REAL | +0.010 |
+| min + DE + DK2 | +0.430 REAL | +0.472 REAL | −0.042 |
+| avg + 9-column price family | +1.080 REAL | +0.932 REAL | +0.148 |
+| `max` base (the fix itself) | | | **−0.319** (−0.30 / −0.39 / −0.27) |
+
+The noise was a real handicap — about 0.1 EUR/MWh on the DE-alone arms, the same
+sign in all three clusters — and nowhere near the reason the trough targets
+reject a price level. The pre-registered expectation (|clean − coin| ≤ 0.10 per
+cluster) was slightly too tight: three arms reached 0.14–0.15 in one cluster.
+For `max`, the only production target that reads the column, the rolling grid
+gives −0.32 in every cluster; a single headline run on the 2026-08-21 slice gave
+37.17 → 37.30, which is the period noise such a run carries. Ledger rows:
+[REJECTED.md](REJECTED.md).
+
+Three lessons that carry to other sources:
+
+* **Deterministic is not correct.** The first fix made production and every
+  snapshot agree — on the wrong curve. Score each candidate series against an
+  independent publication of the same quantity (here SMARD, Nord Pool,
+  Energy-Charts — all free) before choosing between them by any rule.
+* **A source's own labels can be wrong for your purpose.** Both German curves
+  say `A01` (day-ahead). The field that separated them was one the parser did
+  not read; the probe that found it dumped *every* leaf field of every
+  TimeSeries rather than the ones we expected to matter.
+* **Empty must be loud.** A whole year of DK2 vanished without an error: the
+  selection emptied it, and the DE × DK2 inner merge then made it look like
+  missing German data. The only symptom was a frame 363 rows short. An empty
+  chunk and an emptied selection now raise; the inner merge still drops
+  unmatched hours silently, which is how the A03 holes below reach the frame.
+
+A third ENTSO-E behaviour surfaced on the way and is a separate item: price
+documents use `curveType A03`, which omits a point that repeats the previous
+price, and the parser does not forward-fill — 546 SE4 points over five years,
+287 of 1826 days, worth up to 14 EUR/MWh on a day's `price_cheap2h`.
 
 ## Appendix A — Source probes, 2026-09-08
 
