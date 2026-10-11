@@ -240,12 +240,75 @@ def _parse_point(point: ET.Element, start_dt: datetime, resolution: str) -> dict
     offset = _get_offset_for_position(position, resolution)
 
     return {
+        "position": position,
         "timestamp": start_dt + offset,
         "price_eur_mwh": price
     }
 
 
-def _parse_period(period: ET.Element) -> list:
+# --------------------------------------------------------------------------
+# A POINT IS ONLY SENT WHEN THE PRICE CHANGES.
+#
+# A44 TimeSeries carry <curveType>A03</curveType>, "variable sized block": a
+# <Point> marks the start of a block and the price holds until the next Point,
+# or to the end of the Period. Two equal consecutive prices therefore arrive as
+# ONE point, and the positions in between are simply absent. Read point by
+# point, those hours/quarter-hours went missing -- 546 of 70,827 SE4 points
+# over five years (measured on ab_cache/long_sdac/2026-10-10), on 287 of 1826
+# days, and growing: 9 in 2021, 246 in 2026 once 15-minute MTUs made repeats
+# common. A missing hour drops out of price_avg (a repeated price is
+# under-weighted) and out of price_cheap2h (a cheapest price repeated twice
+# counts once, so the second-cheapest DIFFERENT price takes its place -- biased
+# upward, on exactly the cheap days). See docs/DECISIONS.md.
+#
+# So an A03 Period is expanded to every position 1..N, N = Period length /
+# resolution, each omitted position carrying the previous point's price. A01
+# ("sequential fixed size block", every position present) is left untouched.
+# --------------------------------------------------------------------------
+_VARIABLE_BLOCK_CURVE = "A03"
+_RESOLUTION_STEPS = {
+    "PT15M": timedelta(minutes=15),
+    "PT30M": timedelta(minutes=30),
+    "PT60M": timedelta(hours=1),
+}
+
+
+def _period_positions(period: ET.Element, start_dt: datetime, resolution: str) -> int | None:
+    """Number of positions in a Period (its length / resolution), or None if unknown."""
+    end_el = _find_first(period, "end")
+    step = _RESOLUTION_STEPS.get(resolution)
+    if end_el is None or step is None:
+        return None
+    end_dt = datetime.fromisoformat(end_el.text.replace("Z", "+00:00"))
+    return int((end_dt - start_dt) / step)
+
+
+def _fill_variable_blocks(records: list, n_positions: int | None,
+                          start_dt: datetime, resolution: str) -> list:
+    """Expand A03 block starts to one record per position, carrying prices forward."""
+    by_position = {}
+    for record in records:
+        by_position[record["position"]] = record["price_eur_mwh"]
+    if not by_position:
+        return records
+
+    # Without a usable Period end, at least close the gaps between the points
+    # that did arrive rather than guessing how long the last block runs.
+    last = max(n_positions or 0, max(by_position))
+    filled, price = [], None
+    for position in range(1, last + 1):
+        price = by_position.get(position, price)
+        if price is None:
+            continue  # nothing to carry yet: A03 should always send position 1
+        filled.append({
+            "position": position,
+            "timestamp": start_dt + _get_offset_for_position(position, resolution),
+            "price_eur_mwh": price,
+        })
+    return filled
+
+
+def _parse_period(period: ET.Element, curve_type: str | None = None) -> list:
     start_el = _find_first(period, "start")
     resolution_el = _find_first(period, "resolution")
 
@@ -262,6 +325,16 @@ def _parse_period(period: ET.Element) -> list:
         if record is not None:
             records.append(record)
 
+    if curve_type == _VARIABLE_BLOCK_CURVE:
+        n_positions = _period_positions(period, start_dt, resolution)
+        if n_positions is None:
+            logger.warning("A03 Period at %s with resolution %s and no usable end: "
+                           "filling only between the points received",
+                           start_dt.isoformat(), resolution)
+        records = _fill_variable_blocks(records, n_positions, start_dt, resolution)
+
+    for record in records:
+        del record["position"]
     return records
 
 
@@ -330,8 +403,10 @@ def _parse_price_document(root: ET.Element) -> list:
     records = []
     for ts in all_series:
         meta = _timeseries_meta(ts)
+        curve_el = _find_first(ts, "curveType")
+        curve_type = curve_el.text.strip() if curve_el is not None and curve_el.text else None
         for period in _find_all(ts, "Period"):
-            for record in _parse_period(period):
+            for record in _parse_period(period, curve_type):
                 records.append({**record, **meta})
     return records
 

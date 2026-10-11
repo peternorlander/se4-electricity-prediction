@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
 | [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
 | [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was a coin flip between two curves on 95 % of hours, in production as well as in every cache |
 | [Residual-load wind-curve unit fix](#residual-load-wind-curve-unit-fix-round-23) | 2026-09-17 | cheap2h −0.11 to −0.16 clmean (REAL on 3/4 independently-fetched snapshots); min favourable on 4/4 but sub-threshold |
@@ -33,6 +34,104 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## A03 forward-fill of ENTSO-E price curves
+
+Adopted 2026-10-10, in `sources/entso_e.py`. A correctness fix that changes the
+**targets themselves**, so it was evaluated differently from a feature and
+gated by a harm check rather than by an improvement bar.
+
+**The defect.** A44 price curves are `curveType` A03, "variable sized block": a
+point is sent only when the price changes, and omitted positions repeat the
+previous point to the end of the Period. The parser read point by point, so a
+repeated price disappeared from `prices_hourly` and `market_prices_hourly` —
+543 of 70,824 SE4 points over five years, 9 in 2021 rising to 246 in 2026 with
+15-minute MTUs. `price_avg` was wrong on 286 of 1815 days (max 16.2 EUR/MWh),
+`price_cheap2h` on 84 (max 14.1, biased upward on cheap days because a cheapest
+price held for two hours counted once), and the EUR/SEK rate on 30 % of 2026
+days. Full measurement:
+[FINDINGS.md](FINDINGS.md#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10).
+
+**The fix.** `_parse_period` takes the TimeSeries' curve type; for A03 it
+expands the Period to every position 1..N, N = Period length / resolution, each
+omitted position carrying the previous point. 23- and 25-hour DST days fall out
+of the Period length; A01 curves and documents without a curve type are left
+exactly as before. Offline self-test (synthetic documents: PT60M and PT15M,
+omitted interior and tail positions, single-point days, 23/25-hour days,
+multi-Period documents, A01 untouched, the DE ⋈ DK2 merge in the fetch path) —
+`experiments/probe_a44_a03.py --selftest`, which also proves that filling an
+already-parsed cache gives the parser's result exactly, on 71 random days
+straddling DST changes and the PT60M → PT15M switch. That equivalence is what
+allowed the measurement below on existing caches.
+
+**How it was evaluated, and why.** A normal A/B scores each arm against its own
+frame's labels, which here would compare two different questions. Instead both
+pipelines were fitted once and scored against the **corrected** targets (the
+decision), and again against the old ones (secondary):
+
+* `old` — today's pipeline: unfilled frame for training and test features;
+* `new` — SE4 and DE/DK2 filled;
+* `new_se4` — SE4 filled only, fitted for `max` alone (the only target reading
+  `price_de_lag1` / `price_dk2_lag1`; for the others it equals `new`).
+
+Grid: `long/2026-10-10` (1815 rows), rolling 1088-row training, production
+`model.TARGETS`, horizon-honest freeze, 12 points in NOW / −6M / −11M (shifts
+0,1,4,7 / 180,183,186,189 / 326,329,332,335), `OMP_NUM_THREADS=4`. Harness
+check: the `old` arm on old labels reproduced the
+[calibration re-run's](#production-length-training-in-the-ab-grid) `base` roll
+`min` at shift 0 bit-for-bit (mean 16.4136).
+
+**Pre-registered bar** (agreed with Peter before the run): ship unless
+`classify_clustered` on the corrected-label deltas is REAL *and harmful* on
+cheap2h, min or avg. A fix that makes the training data match the source
+should not have to prove an MAE gain; it only has to not cost one.
+
+| target | NOW | −6M | −11M | clmean | verdict | favourable points |
+|---|---|---|---|---|---|---|
+| cheap2h | −0.107 | +0.066 | −0.044 | −0.029 | NOISE | 7 / 12 |
+| min | −0.004 | +0.039 | +0.009 | +0.014 | NOISE | 1 / 12 |
+| avg | +0.018 | +0.050 | +0.044 | +0.038 | BORDERLINE | 5 / 12 |
+| max (SE4 + DE/DK2, approximate — see below) | +0.072 | +0.023 | −0.680 | −0.195 | NOISE | 7 / 12 |
+| max (SE4 only) | +0.004 | +0.014 | −0.175 | −0.052 | NOISE | — |
+
+Deltas are new − old in EUR/MWh, negative = new better. Scored against the old
+labels the table is the same to within 0.002, and the label change alone moves
+the old model's MAE by at most 0.02 per point (cheap2h −0.0002, min +0.001,
+avg +0.003 on average) — the corrected days are too few and the corrections too
+small for the *score* to notice; what moves is the fit. Per-window std did not
+inflate (cheap2h +0.05 on average, range −0.09..+0.24; min −0.01).
+
+**Verdict: ship.** Nothing is REAL-harmful. `avg` is the one to name: the same
+sign in all three clusters, +0.038, below the 0.10 floor, with its 12 point
+deltas spread from −0.234 to +0.322 and 5 of 12 favourable — the grid cannot
+tell it from zero, and the bar was set before the run precisely so a
+sub-threshold drift on a correctness fix would not decide it. The `max` DE/DK2
+arm was approximate and is not a result: it post-hoc filled a joined market
+frame whose DE still mixed curves, and the exact replay later showed 859 of the
+1016 restored market hours had been omitted by one zone only — so the other
+zone's real price was unknowable from that frame.
+
+**Horizon honesty.** No new column, nothing frozen or unfrozen. Every changed
+value — targets, SE4 lags, `price_volatility_7d`, DE/DK2 lags — is the same
+quantity as before, now read completely; production reads it from the same
+document at the same time.
+
+**Verified locally before commit**: the filled `long/2026-10-10` frame cut to
+production's 1088 rows (2023-10-18 → 2026-10-09; no production-shaped cache is
+kept any more) → `model.train` → `train_interval` → `model.predict` →
+`evaluate.get_feature_importance`: 66 columns, feature counts 14 / 42 / 51 / 15,
+importance 14 / 42 / 16, all 42 predictions finite.
+
+**Every long cache was corrected in place, 2026-10-11** — SE4 by the post-hoc
+fill, DE/DK2 by replaying the saved raw A44 responses through the filling
+parser; the checks and the exact DE/DK2 numbers (`price_de_lag1` /
+`price_dk2_lag1` move on 392 days, max 25.4 / 21.3) are in
+[FINDINGS.md](FINDINGS.md#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10).
+Originals sit beside each file as `*.pkl.pre_a03.bak`, so a result measured on
+a cache before 2026-10-11 — including the A/B above, which ran on the first
+2026-10-10 fetch — reproduces only from those. The headline table in
+[MODEL.md](MODEL.md#current-mae-baseline) was not re-measured for this change
+and will move slightly when it next is.
 
 ## Production-length training in the A/B grid
 

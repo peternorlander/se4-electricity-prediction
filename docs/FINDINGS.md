@@ -18,6 +18,7 @@ check whether the code it describes still looks that way.
 | [1.3 Sources verified as reachable](#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes) | 2026-09-08 | What each candidate source carries, and the horizon column that decides whether it can be a forecast feature at all |
 | [1.4 No weather point under the northern wind fleet](#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet) | 2026-09-11 | The three northern candidates are each worth more than any existing site but Stockholm |
 | [Cached history is stable, except for one column](#cached-history-is-stable-except-for-one-column-2026-09-17) | 2026-09-17 | 12 snapshot pairs: SE4 prices, weather, nuclear and TTF are byte-identical across fetches, so a cache is not a vintage — but `price_de` was a coin flip between two curves on 95 % of hours, in production too |
+| [ENTSO-E omits a price point when the price repeats](#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10) | 2026-10-10 | A44 curves are A03 "variable sized block"; read point by point, repeated prices vanished from every target, every lag and the EUR/SEK rate — growing 9 → 246 points a year as 15-minute MTUs made repeats common |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
@@ -505,6 +506,81 @@ keep `ab_cache/crossborder/` (that A78 vintage really is gone), retire the rest
 when nothing cites them — the ledger row, not the directory, is the record. One
 question stays open: what the second curve actually is. `python
 experiments/probe_a44_curves.py --probe` answers it with a token.
+
+## ENTSO-E omits a price point when the price repeats (2026-10-10)
+
+Every A44 price `TimeSeries` — SE4, DE/LU and DK2 alike — carries
+`<curveType>A03</curveType>`, "variable sized block". A `<Point>` marks where a
+price *starts*; it holds until the next point or the end of the `<Period>`. Two
+consecutive equal prices therefore arrive as one point, and the positions in
+between are simply not in the document. The parser read point by point and never
+looked at the curve type, so those hours (quarter-hours since 2025-10-01) were
+missing from `prices_hourly` and `market_prices_hourly` in production and in
+every cache.
+
+**Measured on `long/2026-10-10`** (SE4 identical, hour for hour, across both
+fetches of that day, made by different code):
+
+| | omitted points | on days | by year (2021 → 2026) |
+|---|---|---|---|
+| SE4 | 543 of 70,824 | 288 of 1826 | 9 / 46 / 52 / 82 / 108 / 246 |
+| DE ⋈ DK2 (SDAC, post-join) | 1016 of 70,728 | 395 of 1825 | 10 / 50 / 69 / 89 / 168 / 630 |
+
+The shape is unambiguous A03: across 68,023 adjacent same-day SE4 pairs that
+*were* sent, **zero** carry the same price (an encoder that only sends changes
+never does), and no day's first point is anything but position 1. The growth is
+the 15-minute MTU — four quarters of one hour clearing at the same price is
+common, 24 hours in a row at the same price was not.
+
+**What it did to the frame** (1815 rows, 2021-10-21 → 2026-10-09; SE4 fill applied
+to the parsed cache, which an offline self-test shows is identical to filling
+in the parser):
+
+| column | days changed | mean change | max \|change\| | why |
+|---|---|---|---|---|
+| `price_avg` | 286 | −0.042 | 16.17 | a repeated price counted once, so the daily mean under-weighted it |
+| `price_cheap2h` | 84 | −0.012 | 14.12 | a cheapest price that held for two hours counted once, so the second-cheapest *different* price replaced it — biased **upward on exactly the cheap days** |
+| `price_min` / `price_max` | 32 / 3 | ~0 | 0.45 / 0.33 | only after 2025-10: a partial hour's resample mean shifts when its missing quarter returns |
+| `price_volatility_7d` | 1103 | −0.009 | 3.77 | inherits `price_avg` over a 7-day window |
+| `price_de_lag1` / `price_dk2_lag1` | 392 / 392 | −0.39 / −0.33 | 25.4 / 21.3 | exact, from the raw responses (below) |
+
+DE and DK2 lose more than their own omissions: `fetch_market_prices`
+inner-joins the two zones, so an hour **either** zone omitted was dropped for
+**both** (hence the identical counts). Of the 1016 market hours the fill
+restores on the SDAC series, **859 were omitted by one zone only** — the other
+zone had a real, different price there that the join threw away. That makes a
+post-hoc fill of the joined frame badly approximate; the DE/DK2 numbers above
+come instead from replaying the saved raw A44 responses
+(`experiments/results/probe_a44/raw/`, production's own ten requests,
+2021-10-11 → 2026-10-10) through the filling parser. Only `max` reads either
+column.
+
+**Every long cache was corrected in place on 2026-10-11.** SE4 by the post-hoc
+fill (identical to the parser's, and SE4 is identical across fetches), DE/DK2
+from that replay over each cache's own window. Checked per cache before
+writing: the replay with the fill switched off reproduces the cached market
+file exactly; every cached point survives with its value; every restored point
+repeats its predecessor in at least one zone; the built frame keeps its dates
+and only `price_*` columns move; on common dates every cache agrees with
+`long/2026-10-10`. The originals are kept beside each file as
+`*.pkl.pre_a03.bak` and `meta.json` records the repair — so a ledger result
+measured before 2026-10-11 reproduces only from those.
+
+**The EUR/SEK rate was wrong on the same days.**
+`currency.calculate_eur_to_sek_rate` divides Nordpool's full-day SEK mean by the
+mean of whatever ENTSO-E points arrived for that day. On a day with an omitted
+point the two means describe different sets of hours. In 2026 that was **85 of
+283 days (30 %)**: median relative error 1.0 %, p90 5.0 %, max 35 % (2026-07-26,
+a low-price day where a small absolute gap is a large ratio). Every SEK value
+pushed to Home Assistant on a run that picked such a day was scaled by that
+error — the same class of bug as
+[the NaN rate](#the-nan-exchange-rate-that-blanked-the-payload-2026-07-22), and
+just as invisible to a backtest. The parser fix corrects it with no change to
+`currency.py`.
+
+What was decided, and the A/B that scored old and new pipelines against the
+corrected targets:
+[DECISIONS.md](DECISIONS.md#a03-forward-fill-of-entso-e-price-curves).
 
 ## Appendix A — Source probes, 2026-09-08
 
