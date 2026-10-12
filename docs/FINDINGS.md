@@ -22,7 +22,7 @@ check whether the code it describes still looks that way.
 | [German prices: two auctions in one response](#german-prices-two-auctions-in-one-response-round-215) | 2026-10-11 | `price_de` was SDAC or the German intraday auction per hour; the clean series moves the DE-lag arms ~0.1 and changes no verdict's direction; `max` −0.32 |
 | [The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast](#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25) | 2026-10-11 | Two columns from three northern wind points: cheap2h −1.04 … −1.18 on all five caches, ~40–75 % of it surviving forecast-vintage weather, gone at a 7-day lead; Stockholm stays; a fourth site adds nothing |
 | [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar |
-| [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) |
+| [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26) |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
@@ -810,8 +810,19 @@ the production parser's own logic: over 2021-08 → 2026-10 the daily count aver
 **2.38 against 1.13** for nuclear-only, non-cancelled, latest-revision records,
 differs on 1318 of 1888 days (70 %), correlates 0.70, and the gap grows (2025: 3.34
 vs 1.03). `nuclear_outage_se3` is in `FEATURE_COLUMNS`, so `avg` and `max` read it;
-the trough lists do not (pruned), so the priority targets are unaffected. **Not fixed
-yet** — it is the mechanism behind plan 2.7.
+the trough lists do not (pruned), so the priority targets are unaffected.
+
+**And the obvious fix makes `avg` worse (round 26, 2026-10-12).** Counting distinct,
+non-cancelled B14 units — equal to an independent computation on all 1908 days and
+applied to the same rows — costs `avg` **+0.13** (REAL-harmful on 3 of 5 caches,
+including the primary; NOISE on the other two), and `max` moves −0.18 … +0.17;
+`min` and `cheap2h` are bit-identical, so the harness is sound. A parser that makes the
+column mean what its name says removes information the old one carried — plausibly the
+outages of hydro and gas units, which are a proxy for SE3 generation outage load, and
+the cancelled/duplicate structure — so **a defect in what a feature is called is not the
+same as a defect in what it does**. Production keeps the old behaviour (the fixed parser
+is saved as `experiments/results/nuclear_parser_fix.patch`); the follow-up is to split the
+column into its components and test each ([plan 2.7](../IMPROVEMENT_PLAN_2026-09.md)).
 
 ## Appendix A — Source probes, 2026-09-08
 

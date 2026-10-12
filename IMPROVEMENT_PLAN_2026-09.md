@@ -240,26 +240,26 @@ advance* are forecast features. Three qualify and none is used:
 - **A77 nuclear outages weighted by MW** (old item 4). The documents carry
   `nominal_P`; the feature today counts events. A 1400 MW Oskarshamn-3 outage
   and a small unit both score 1.
-  **A production defect sits under this item (found 2026-10-11, not fixed).**
-  `fetch_nuclear_outages_se3` sends `psrType=B14` but the API ignores it for A77:
-  the SE3 response also holds gas CHP (B04), hydro (B12) and wind (B19) units, and
-  the parser (`_parse_outage_timeseries`: mRID/start/end only) counts them, and
-  counts cancelled records (docStatus A09) and every partial derate as a full
-  event. Over five years the daily `nuclear_outage_se3` averages 2.38 against 1.13
-  for nuclear-only, non-cancelled, latest-revision records, and differs on 70 % of
-  days (corr 0.70; 2025: 3.34 vs 1.03). The column is in `FEATURE_COLUMNS`, so
-  `avg` and `max` read it; the trough lists do not. **Fix first, then test:** parse
-  `psr`, `docStatus`, `revision` and available MW; keep `psr == B14`, drop
-  cancelled, latest revision per (unit, interval); the feature is MW unavailable.
-  Judge on `avg` (`classify_clustered`, rolling grid); the same fix goes into the
-  production fetch, which `predict.py` also calls for today..today+10. Parsed data:
-  `ab_cache/entsoe_r25/2026-10-11/unavail.pkl`, raw responses beside it
+  **A production defect sits under this item, and fixing it was tested and rejected
+  (round 26, 2026-10-12).** `fetch_nuclear_outages_se3` sends `psrType=B14` but the API
+  ignores it for A77: the SE3 response also holds gas CHP (B04), hydro (B12) and wind (B19)
+  units, the parser counts them, and it counts cancelled records (docStatus A09) and every
+  partial derate as a full event. Over five years the daily `nuclear_outage_se3` averages
+  2.39 against 1.12 for distinct non-cancelled nuclear units and differs on 70 % of days.
+  The column is in `FEATURE_COLUMNS`, so `avg` and `max` read it; the trough lists do not.
+  **The straightforward fix is REAL-harmful on `avg` (+0.13 on 3 of 5 caches)** — see
+  [REJECTED.md](docs/REJECTED.md) — so production keeps the old, misnamed column and the item
+  becomes a decomposition: from the saved A77 records build (a) distinct non-cancelled nuclear
+  units, (b) the same MW-weighted (`nominal − available`), (c) a count of non-nuclear
+  production units out (hydro, gas, wind), (d) a count of cancelled records, and test each
+  and the old column's replacement by the pair (a)+(c) on `avg` with `classify_clustered`.
+  Keep the old column until one arm beats it. The fixed parser is
+  `experiments/results/nuclear_parser_fix.patch`; it also has a guard worth keeping — it
+  raises if the response stops carrying `psrType`/unit, instead of zeroing the feature.
+  Parsed data: `ab_cache/entsoe_r25/2026-10-11/unavail.pkl`, raw responses beside it
   (`experiments/fetch_round25_entsoe.py`).
-- **A80 aggregated generation unavailability** for SE4 and DK2 — planned
-  outages of CHP, gas and the Karlshamn reserve; and the same for SE3 hydro.
-  Lower prior; group with A77 in one fetch.
 
-**The data is fetched** (`ab_cache/entsoe_r25/2026-10-11`: week-ahead min/max load for SE4, SE3, DK2, DE_LU from 2021-07 with ~98 % day coverage; A77/A80 with unit, `psr`, nominal and available MW, revision and a `cancelled` flag; the traps are in [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11)).
+  **The data is fetched** (`ab_cache/entsoe_r25/2026-10-11`: week-ahead min/max load for SE4, SE3, DK2, DE_LU from 2021-07 with ~98 % day coverage; A77/A80 with unit, `psr`, nominal and available MW, revision and a `cancelled` flag; the traps are in [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11)).
 
 Test as one "week-ahead block" first (block tests are more sensitive than
 singles, docs/AB_TESTING.md), then split if the block wins.
@@ -463,9 +463,9 @@ index.
 2. **2.2 prediction log** — start the clock today; it is the instrument that prices
    everything weather-related for real, and the forward replay for 2.3b and for 2.13
    waits on it.
-3. **2.7: fix `nuclear_outage_se3` first, then the week-ahead block.** The feature
-   counts gas, hydro, wind and cancelled records as nuclear outages (2.38 vs 1.13,
-   wrong on 70 % of days, `avg`/`max` only); the data to rebuild it is in
+3. **2.7: decompose `nuclear_outage_se3`, then the week-ahead block.** The column counts
+   gas, hydro, wind and cancelled records as nuclear outages (2.39 vs 1.12), but the plain fix
+   made `avg` worse, so it is a question of what the extra information is; the data is in
    `ab_cache/entsoe_r25/2026-10-11`.
 4. **2.1 oracle ceiling, then C** — the A75/A65 data is in hand; half a day tells
    whether a calibrated weather→generation mapping has headroom beyond the northern
