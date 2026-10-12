@@ -81,6 +81,16 @@ FEATURE_COLUMNS = [
     "dow_sin", "dow_cos",
 ]
 
+# Northern wind belt (round 25, 2026-10-12; docs/DECISIONS.md "Northern wind points").
+# Three Open-Meteo points under the SE1/SE2/Finnish wind fleets whose surplus sets the SE3
+# price SE4 imports at. north_wind_power is the mean over these sites of the m/s power
+# curve (daily mean of the hourly values), north_wind_night its 00-06 local mean — computed
+# in aggregate_intraday_features, so training and forecast build them identically. Both are
+# per-day forecastable (weather), so neither is frozen. The names in NORTH_WIND_SITES are the
+# WIND_LOCATIONS keys in sources/open_meteo.py.
+NORTH_WIND_SITES = ("norrbotten", "jamtland", "ostrobothnia")
+NORTH_WIND_COLUMNS = ["north_wind_power", "north_wind_night"]
+
 # NO LONGER USED IN PRODUCTION (since 2026-08-05) — cheap2h moved to
 # TROUGH_FEATURE_COLUMNS below, which beat this list on 16 of 16 A/B measurements
 # across three evaluation periods. Retained because the experiment scripts under
@@ -134,7 +144,7 @@ TROUGH_FEATURE_COLUMNS = [
     "reservoir_sweden_change",
     "is_workday",
     "dow_sin",
-]
+] + NORTH_WIND_COLUMNS      # appended last, as measured: XGBoost's column sampling is index-based
 
 # `min`'s list: TROUGH_FEATURE_COLUMNS minus `price_se4_max_lag1`.
 #
@@ -202,7 +212,7 @@ AVG_FEATURE_COLUMNS = [c for c in FEATURE_COLUMNS if c not in {
     "price_se4_avg_lag1", "price_se4_avg_lag2", "price_se4_avg_lag7",
     "price_se4_min_lag1", "price_se4_max_lag1",
     "price_momentum", "price_volatility_7d",
-}]
+}] + NORTH_WIND_COLUMNS     # appended last, as measured (see NORTH_WIND_COLUMNS)
 
 
 # Features that build_forecast_features() holds constant across the entire
@@ -514,6 +524,9 @@ def aggregate_intraday_features(
                            the overnight low-demand, wind-driven trough.
     - radiation_midday:    interconnection-weighted solar supply, 10–16 local mean —
                            the midday window where SE4 increasingly goes negative.
+    - north_wind_power:    mean over NORTH_WIND_SITES of the m/s power curve, daily mean —
+                           the northern fleets behind the SE3 import price (round 25).
+    - north_wind_night:    the same, 00–06 local mean.
 
     The hourly residual load reuses the same cubic wind power curve and the shared
     WIND_*_W / SOLAR_*_W interconnection weights as add_residual_load(), so it is
@@ -528,7 +541,8 @@ def aggregate_intraday_features(
 
     Returns:
         DataFrame with one row per Swedish date and columns: date,
-        residual_load_min, residual_load_range, wind_night, radiation_midday.
+        residual_load_min, residual_load_range, wind_night, radiation_midday,
+        north_wind_power, north_wind_night.
     """
     w = weather_hourly[["timestamp", "temperature", "windspeed", "radiation"]].copy()
     w["timestamp"] = pd.to_datetime(w["timestamp"], utc=True)
@@ -560,6 +574,12 @@ def aggregate_intraday_features(
     m["_wind_power"] = wind_power
     m["_solar_supply"] = solar_supply
 
+    # Northern wind belt: unweighted mean of the sites' power curves. A missing site column
+    # is a KeyError on purpose: silently dropping it would shrink the frame through dropna.
+    m["_north_wind_power"] = sum(
+        _wind_power_curve(m[f"windspeed_{site}"]) for site in NORTH_WIND_SITES
+    ) / len(NORTH_WIND_SITES)
+
     # Swedish local time — the intraday windows and daily boundaries must match
     # the market day and the other daily aggregations (all Europe/Stockholm).
     local = m["timestamp"].dt.tz_convert("Europe/Stockholm")
@@ -583,6 +603,11 @@ def aggregate_intraday_features(
 
     daily["wind_night"] = night_wind.reindex(daily.index).fillna(all_wind)
     daily["radiation_midday"] = midday_solar.reindex(daily.index).fillna(all_solar)
+
+    all_north = m.groupby("date")["_north_wind_power"].mean()
+    night_north = m[hour.isin(_NIGHT_HOURS)].groupby("date")["_north_wind_power"].mean()
+    daily["north_wind_power"] = all_north.reindex(daily.index)
+    daily["north_wind_night"] = night_north.reindex(daily.index).fillna(all_north)
 
     return daily.reset_index()
 

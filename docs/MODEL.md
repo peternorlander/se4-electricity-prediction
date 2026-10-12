@@ -62,18 +62,24 @@ is therefore deliberately heterogeneous.
 | Model | Feature list | Count |
 |-------|--------------|-------|
 | `max` | `FEATURE_COLUMNS` | 51 |
-| `avg` | `AVG_FEATURE_COLUMNS` — `FEATURE_COLUMNS` minus the 9-column price/market lag family | **42** |
-| `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `neg_price_proba`, appended by the hurdle at fit/serve time | **15** (+1) |
-| `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1` | **14** |
+| `avg` | `AVG_FEATURE_COLUMNS` — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns | **44** |
+| `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `neg_price_proba`, appended by the hurdle at fit/serve time | **17** (+1) |
+| `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1` | **16** |
 
-The 15 kept features (cheap2h's list):
+The 17 kept features (cheap2h's list):
 
 `max_wind`, `mean_wind_de_north`, `mean_wind_stockholm`, `price_se4_max_lag1`,
 `residual_load`, `residual_load_min`, `temp_gradient_se3_se4`, `radiation_variability`,
 `ttf_price_lag1`, `gas_marginal_cost`, `reservoir_norway_deviation`,
-`reservoir_sweden_gwh`, `reservoir_sweden_change`, `is_workday`, `dow_sin`
+`reservoir_sweden_gwh`, `reservoir_sweden_change`, `is_workday`, `dow_sin`,
+`north_wind_power`, `north_wind_night`
 
-**`min` runs 14 of those — everything except `price_se4_max_lag1` (2026-08-06).**
+The last two are the northern wind points (Norrbotten, Jämtland, Ostrobothnia), appended
+2026-10-12 — [DECISIONS.md](DECISIONS.md#northern-wind-points-round-25) has the evidence.
+Appended *last* on purpose: the measured arms had them last, and XGBoost's column
+sampling is index-based. `max` does not use them.
+
+**`min` runs 16 of those — everything except `price_se4_max_lag1` (2026-08-06).**
 The two targets shared one list for a single day, because cheap2h had borrowed
 min's; the first feature audit ever run *on min* then measured that column and got
 the opposite answer for each target on the same grid: **REMOVE_HARMFUL for min**
@@ -114,7 +120,7 @@ re-open without a mechanism that is not about staleness.**
 program, `min` adopting its prune first, `cheap2h` borrowing that list and
 winning on it out-of-sample, and the audit that closed both directions — is
 recorded in [DECISIONS.md](DECISIONS.md#per-target-feature-lists-for-min-and-cheap2h).
-`avg`'s 42-column list comes from a separate block-level re-audit, recorded in
+`avg`'s 42-column base list (44 with the northern columns) comes from a separate block-level re-audit, recorded in
 [DECISIONS.md](DECISIONS.md#avg-drops-the-pricemarket-lag-family-round-14b).
 
 **One property this does not fix:** min and cheap2h are still independent models, so
@@ -178,9 +184,11 @@ period and cannot be reproduced or compared later
 ([AB_TESTING.md](AB_TESTING.md#how-changes-are-validated)).
 
 Current, measured on the **2026-08-21** data snapshot with the production code as
-it stands (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
+it stood then (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
 trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06; `avg`
-on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21):
+on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21). **The table predates the northern
+wind points (2026-10-12, +2 columns on each) and has not been re-measured**; their A/B
+evidence is in [DECISIONS.md](DECISIONS.md#northern-wind-points-round-25):
 
 | Target  | MAE (EUR/MWh) | Std |
 |---------|--------------|------|

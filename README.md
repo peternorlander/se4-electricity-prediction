@@ -14,22 +14,22 @@ The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, an
 Data sources (API)
     │
     ├── ENTSO-E      → SE4/DE/DK2 day-ahead prices, SE3 nuclear outages, Sweden reservoir (A72)
-    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 5 regional locations)
+    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 8 regional locations)
     ├── Yahoo Finance → TTF natural gas futures, EU ETS carbon allowance (EUA)
     ├── NVE          → Norwegian hydro reservoir levels + 20-year seasonal median
     └── Nordpool     → Published prices (to skip days already known)
          │
          ▼
 Feature engineering (features.py)
-    → 51 engineered features, daily resolution, 3-year training window
+    → 51 engineered features (+2 northern-wind columns for min/avg/cheap2h), daily resolution, 3-year training window
          │
          ▼
 Model training (model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
     → per-target feature sets: `max` uses all 51, `avg` runs a validated
-      42-column subset (AVG_FEATURE_COLUMNS), and the two trough targets
-      (cheap2h, min) run validated pruned subsets of 15 / 14 columns
-      (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
+      44-column list (AVG_FEATURE_COLUMNS: a 42-column subset + 2 northern-wind
+      columns), and the two trough targets (cheap2h, min) run validated pruned
+      lists of 17 / 16 columns (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
     → price_cheap2h also gets a conformally calibrated 80% interval from two

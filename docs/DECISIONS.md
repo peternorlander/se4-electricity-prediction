@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead |
 | [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
 | [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
 | [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was SDAC or the German 15-min intraday auction, re-drawn per hour and per fetch; now the SDAC curve (sequence 1), 100 % equal to SMARD 2021–2026 |
@@ -34,6 +35,89 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Northern wind points (round 25)
+
+Adopted 2026-10-12, in `sources/open_meteo.py` and `features.py`. Measured with local
+experiment scripts under `experiments/` (not committed); the numbers below are the
+record. The explanation and the full audit are in
+[FINDINGS.md](FINDINGS.md#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25).
+
+**What changed.** Three Open-Meteo points were added to `WIND_LOCATIONS` —
+Norrbotten (65.3, 20.9), Jämtland (63.2, 14.6) and Ostrobothnia (63.1, 21.6), the wind
+fleets behind the SE3 import price that the grid had no point under
+([FINDINGS.md §1.4](FINDINGS.md#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet)).
+`aggregate_intraday_features` turns them into two columns, `north_wind_power` (mean
+over the sites of the m/s power curve, daily mean) and `north_wind_night` (00–06 local
+mean), which are appended **last** to `TROUGH_FEATURE_COLUMNS` (→ `MIN_FEATURE_COLUMNS`
+follows) and `AVG_FEATURE_COLUMNS`. Lists are now 17 / 16 / 44 (`max` unchanged at 51: it
+was not measured, so the columns are deliberately not in `FEATURE_COLUMNS`). The order is
+part of the change: it is the order that was measured, and XGBoost's column sampling is
+index-based.
+
+**A/B result.** Rolling 1088-row grid, NOW / −6M / FAR, 12 points on each of the five
+`ab_cache/long/` caches (the two 5d-tail and three 1d-tail caches never share a grid),
+`classify_clustered`, N1 − base in EUR/MWh:
+
+| cache | cheap2h | min | avg |
+|---|---|---|---|
+| `2026-10-10` | −1.04 | −0.75 | −0.32 |
+| `2026-09-16` | −1.18 | −0.71 | −0.33 |
+| `2026-08-21` | −1.12 | −0.72 | −0.39 |
+| `2026-09-12` | −1.14 | −0.74 | −0.36 |
+| `2026-08-06` | −1.16 | −0.81 | −0.42 |
+
+REAL on all fifteen cells, every point favourable on cheap2h and min (60 of 60),
+per-window std 0.93–1.02 of base. The FAR cluster is the same calendar window in every
+cache, so only NOW (−1.24 … −1.65) and −6M (−0.96 … −1.10) are independent between
+caches; the table replicates the fetch, not five periods. Neighbours, on three caches:
+each single site gives about half (cheap2h −0.55 … −0.71); a fourth site (Sundsvall)
+adds nothing on cheap2h (+0.09 / +0.19 / +0.01) and was rejected
+([REJECTED.md](REJECTED.md)); removing `mean_wind_stockholm` from the new model costs
++0.57 … +0.79 (cheap2h) and +0.27 … +0.51 (min), so it stays.
+
+**Horizon honesty — and the weather axis.** Both columns are per-day weather quantities
+production recomputes for every forecast day from the forecast, so neither is frozen
+(the test rows carry their own day's value, as production does). The weather *source*
+is the weak point: every eval weather input is ERA5 archive, a perfect forecast.
+Re-scored with the models still trained on archive weather and the test rows fed the
+forecast issued L days earlier (Open-Meteo Previous Runs, `best_match` — what the
+production fetch resolves to — for all nine points, two caches × 12 points), the
+cheap2h gain is **−0.50 / −0.41 / −0.44** (NOW / −6M / FAR, `2026-10-10`) and
+**−1.23 / −0.59 / −0.44** (`2026-09-16`) against −1.24 / −0.96 / −0.92 and
+−1.65 / −0.98 / −0.92 on archive: 40–75 % survives, negative in every cluster. It
+decays with lead (L1–L3 ≈ −1.0, L5 −0.75, L6 −0.45, **L7 ≈ 0**), `min` keeps −0.30 …
+−0.91 (−0.29 at L7), and `avg` keeps almost nothing (`2026-10-10`: +0.05 / −0.12 /
+−0.10) — its archive gain is perfect foresight, shipped anyway because it is not
+harmful and the columns serve the priority targets. Leak smell (archive gain at test
+row 6 over row 0): 1.24 cheap2h, 1.60 min, 1.01 avg, flag at 2. **Expect the headline
+MAE to move about half as far as the archive A/B suggests**, mostly at D+2…D+5.
+
+**Verified locally before commit** (`experiments/integration_check_northwind.py`,
+`OMP_NUM_THREADS=4`): the production frame built by `features.build_training_data` from
+the grafted `long/2026-10-10` cache has the two columns identical to the experiment
+frame and every shared production column identical; the shipped lists equal the old
+lists plus the two columns appended last; the production variant's walk-forward on
+`2026-10-10` shift 0 reproduces the stored N1 arm to six decimals (min 15.0085,
+cheap2h 15.2795, avg 19.4838); `model.train` on production's 1088 rows → importance
+sizes 16 / 44 / 18 (`north_wind_power` importance 0.052 min, 0.013 avg, 0.022 cheap2h);
+and the live forecast path — Open-Meteo forecast for all eight locations →
+`build_forecast_features` → `model.predict` with the interval — gives finite features
+and predictions on every day.
+
+**The long caches were extended in place, 2026-10-12.** `aggregate_intraday_features`
+raises on a missing site column (a silent drop would shrink the frame through `dropna`),
+so every cache taken earlier would no longer build. The three sites were grafted into
+each cache's `wind_intl_hourly` — archive up to the cache's own `today − 5 d`, the recent
+analysis after, the splice `fetch_data` uses — after checking that the method
+reproduces a cached column exactly (fresh archive vs the cached Stockholm wind over
+4344 h: max difference 0.0000) and asserting every existing column unchanged. Each
+`meta.json` records it. Consequence for A/B work: `BASELINE` now includes the northern
+columns; comparing against the pre-change configuration needs an explicit `targets`
+override ([AB_TESTING.md](AB_TESTING.md#how-it-works)).
+
+**Not done.** `max` was not measured and does not read the columns. The 2026-10-16 long
+cache is the first independent NOW window for a replay.
 
 ## A03 forward-fill of ENTSO-E price curves
 

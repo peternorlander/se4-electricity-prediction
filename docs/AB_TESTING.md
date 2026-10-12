@@ -107,6 +107,15 @@ SE4 price lag move on some days, so a ledger number measured on a cache before
 not kept — the ledger row is the record. Keep those raw responses: they are the
 only way to rebuild DE/DK2 exactly without a token.
 
+**…and every long cache carries the three northern wind sites (extended in place
+2026-10-12).** The northern wind points ([DECISIONS.md](DECISIONS.md#northern-wind-points-round-25))
+are read by `aggregate_intraday_features`, which raises on a missing site, so the five caches
+were extended: `wind_intl_hourly` gained `windspeed_/radiation_/temperature_` for `norrbotten`,
+`jamtland`, `ostrobothnia` from Open-Meteo (archive to the cache's own `today − 5 d`, the recent
+analysis after, the same splice as `fetch_data`). Additive — every existing column is asserted
+unchanged and each `meta.json` says so — so no earlier cached result moves. A cache fetched
+before this date and not extended will fail to build; a fresh `ab_test.py fetch` carries the sites.
+
 Retention, therefore: keep a cache while an experiment that cites it is still
 open, keep `ab_cache/crossborder/` (A78 outage records were republished
 wholesale in 2025-11 and that vintage really is unrecoverable), and otherwise

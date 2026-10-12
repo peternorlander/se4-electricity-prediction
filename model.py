@@ -33,7 +33,7 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 # neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS.
 # docs/MODEL.md "Per-Target Feature Sets" has the evidence.
 #
-# min (14) and cheap2h (15) differ by `price_se4_max_lag1`, and that difference
+# min (16) and cheap2h (17) differ by `price_se4_max_lag1`, and that difference
 # is measured, not stylistic: on one 16-point / four-period grid the same
 # removal is REMOVE_HARMFUL for min (-0.552, all four clusters) and
 # KEEP_SCENARIO for cheap2h (-0.439 but one cluster genuinely positive). See

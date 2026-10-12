@@ -649,7 +649,7 @@ corrected targets:
 ## The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast (round 25)
 
 Measured 2026-10-11, plan item 2.13. **Validated by the pre-registered bar on all
-five long caches; not shipped** (the production change is listed at the end).
+five long caches and shipped 2026-10-12** ([DECISIONS.md](DECISIONS.md#northern-wind-points-round-25)).
 
 **What was added.** Open-Meteo 100 m wind at three points the grid did not have —
 Norrbotten (65.3, 20.9), Jämtland (63.2, 14.6), Ostrobothnia (63.1, 21.6) — the
@@ -715,14 +715,10 @@ row 0 is 1.24 (cheap2h), 1.60 (min), 1.01 (avg), flag at 2 — i.e. the gain is 
 or fading with horizon, as an honest feature's should be. Pre-registered survival
 criterion (negative in every cluster on cheap2h) met.
 
-**To ship** (not done): add the three keys to `sources.open_meteo.WIND_LOCATIONS`
-(production-safe on their own: `aggregate_international_weather_daily` emits
-`mean_wind_<key>` and nothing reads it); compute the two columns in
-`features.aggregate_intraday_features` (training and forecast both go through it);
-add them to `TROUGH_FEATURE_COLUMNS` (`MIN_FEATURE_COLUMNS` follows) and to `avg`
-**explicitly** — putting them in `FEATURE_COLUMNS` would silently change `max`,
-which was not measured. Then the local integration check. The 2026-10-16 long cache
-is the next independent NOW window.
+**As shipped:** the three keys in `sources.open_meteo.WIND_LOCATIONS`; the two columns in
+`features.aggregate_intraday_features`; appended last to the trough and `avg` lists and
+deliberately **not** to `FEATURE_COLUMNS`, which would have silently changed `max`. The
+2026-10-16 long cache is the next independent NOW window.
 
 ---
 

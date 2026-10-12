@@ -2,9 +2,9 @@
 
 **Status 2026-10-11 (after round 25).** Written 2026-09-08 as a plan; since then
 2.4, 2.5 (labels), 2.8, 2.9 and 2.16 were measured and rejected and are gone from
-this file (rows in [REJECTED.md](docs/REJECTED.md)), 2.3a and 2.13 were measured and
-written up in [FINDINGS.md](docs/FINDINGS.md), and 2.1-S, 2.3b and 2.10 were
-measured with results that need a decision. What is open, in the order it should
+this file (rows in [REJECTED.md](docs/REJECTED.md)), 2.3a was measured and written up in [FINDINGS.md](docs/FINDINGS.md), 2.13 was
+measured and shipped (2026-10-12, [DECISIONS.md](docs/DECISIONS.md)), and 2.1-S, 2.3b and
+2.10 were measured with results that need a decision. What is open, in the order it should
 be done, is section 4. It is the successor to `IMPROVEMENT_PLAN.md` (2026-08),
 which stays as the record of the round-12 → round-19 follow-ups.
 
@@ -324,38 +324,24 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
   majors so a bit-identity check across machines means something.
 
-### 2.13 Northern wind points — validated, waiting for the ship decision
+### 2.13 Northern wind points — shipped 2026-10-12, replay still owed
 
-Measured 2026-10-11 ([FINDINGS.md](docs/FINDINGS.md#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25)):
-two columns from Norrbotten, Jämtland and Ostrobothnia wind improve cheap2h
-−1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 on all five long caches (60 of
-60 points favourable on the two priority targets); on forecast-vintage weather
-~40–75 % of the cheap2h gain survives, falling to nothing at a 7-day lead.
-`mean_wind_stockholm` stays (removing it costs +0.57 … +0.79), a fourth site adds
-nothing, hydro precipitation is NOISE ([REJECTED.md](docs/REJECTED.md)).
+Record: [DECISIONS.md](docs/DECISIONS.md#northern-wind-points-round-25). Hydro
+precipitation and a fourth site (Sundsvall) were measured and rejected
+([REJECTED.md](docs/REJECTED.md)). Three things are left, all follow-ups:
 
-**To ship** (one commit, then the local integration check of docs/AB_TESTING.md):
+1. **Replay on `ab_cache/long/2026-10-16`** (fetch it with the fix in; the caches
+   carry the sites already) — the first genuinely later NOW window. The expectation
+   to score is "about half the archive gain": cheap2h −0.4 … −0.5 on forecast
+   weather, −1.0 … −1.2 on archive.
+2. **The same vintage re-score on `min`** at the production lead map, per cluster,
+   to put a number next to the cheap2h one (the audit has it for two caches).
+3. **The production log (2.2) is where the real gain shows.** Compare the served
+   `cheap2h` against the realised price before and after 2026-10-12.
 
-1. `sources.open_meteo.WIND_LOCATIONS`: add `norrbotten` (65.3, 20.9), `jamtland`
-   (63.2, 14.6), `ostrobothnia` (63.1, 21.6). Production-safe on its own, and every
-   later fetch carries the columns.
-2. `features.aggregate_intraday_features`: `north_wind_power` (mean over the three
-   sites of the m/s power curve) and `north_wind_night` (its 00–06 local mean,
-   falling back to the all-hours mean like `wind_night`). Training and forecast both
-   go through this function; neither column is frozen.
-3. Lists: add both to `TROUGH_FEATURE_COLUMNS` (`MIN_FEATURE_COLUMNS` follows) and to
-   `AVG_FEATURE_COLUMNS` **explicitly**. Do not put them in `FEATURE_COLUMNS`:
-   `max` would silently change and was not measured.
-4. `docs/MODEL.md`, `docs/FEATURES.md`, a DECISIONS entry with the table above and
-   both weather-axis numbers, and delete this item.
-5. Expect the headline MAE to move less than the archive A/B (the honest gain is
-   ~half) and to lean on D+2…D+5; watch it, do not block on it.
-
-**Afterwards:** the 2026-10-16 long cache is the first later NOW window — replay the
-arm there; the same vintage re-score on min; the production log (2.2) is where the
-real gain shows. Not tested, low prior: other fleets (NO3/NO4, northern Finland
-beyond Ostrobothnia) — each single site gave ~half the three-site gain, so the
-regional average is the signal and three points seem to saturate it.
+Not tested, low prior: other fleets (NO3/NO4, northern Finland beyond Ostrobothnia) —
+each single site gave ~half the three-site gain, so the regional average is the
+signal and three points seem to saturate it.
 
 ### 2.14 Nord Pool UMM as the outage source
 
@@ -495,10 +481,8 @@ index.
 
 ## 4. Suggested order (2026-10-11)
 
-1. **Ship the northern wind points (2.13) and the coherence fix (2.10)** — both
-   validated, both small, both measured on five caches; two commits, each with the
-   integration check. The first is worth roughly 0.5 EUR/MWh or more on cheap2h on a real
-   forecast, the second ~0.15–0.3 on `min`.
+1. **Ship the coherence fix (2.10)** — validated, small, measured on five caches
+   (the northern wind points shipped 2026-10-12; their replay is 2.13 above).
 2. **2.2 prediction log** — start the clock today; it is the instrument that prices
    everything weather-related for real, and the forward replay for 2.3b and for 2.13
    waits on it.
