@@ -32,6 +32,8 @@ Model training (model.py)
       lists of 17 / 16 columns (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
+    → min and cheap2h are made coherent: where predicted min exceeds predicted
+      cheap2h, both become their mean (model.enforce_coherence)
     → price_cheap2h also gets a conformally calibrated 80% interval from two
       quantile regressors on the same features (cheap2h_low / cheap2h_high)
     → Walk-forward validation: 52 windows × 7 days (evaluate.py)

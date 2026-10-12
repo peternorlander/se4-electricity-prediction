@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from features import apply_forecast_freeze
-from model import _fit_models, TARGETS, HURDLE_TARGETS, HURDLE_PROBA_FEATURE_NAME
+from model import _fit_models, TARGETS, HURDLE_TARGETS, HURDLE_PROBA_FEATURE_NAME, enforce_coherence
 
 
 # Target number of walk-forward iterations for evaluation. 52 weekly windows
@@ -88,9 +88,14 @@ def walk_forward_validate(training_data: pd.DataFrame, step: int = 7) -> dict:
 
         frozen = apply_forecast_freeze(raw_test, train_slice)
 
+        # Predict all targets first: enforce_coherence needs min and cheap2h together.
+        preds = enforce_coherence({
+            name: models[name].predict(frozen[feature_cols].values)
+            for name, (_, feature_cols) in TARGETS.items()
+        })
         for name, (target_col, feature_cols) in TARGETS.items():
             actual = raw_test[target_col].values
-            errors = np.abs(models[name].predict(frozen[feature_cols].values) - actual)
+            errors = np.abs(preds[name] - actual)
             mae_lists[name].append(float(errors.mean()))
             for i, err in enumerate(errors):
                 horizon_errs[name][i + 1].append(float(err))

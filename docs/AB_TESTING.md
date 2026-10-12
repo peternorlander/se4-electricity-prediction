@@ -514,7 +514,9 @@ instead of comparing across shifts.
   (pickled, gitignored, local-only; pickle rather than parquet because pyarrow is
   not a dependency). Snapshots accumulate — one directory per `fetch` day, a few MB
   each; nothing prunes them automatically.
-- `ab/harness.py` — `run_walk_forward()`, a copy of the `evaluate.py` loop
+- `ab/harness.py` — `run_walk_forward()`, a copy of the `evaluate.py` loop (both apply
+  `model.enforce_coherence` to the predicted `min`/`cheap2h` pair since 2026-10-12, so they still agree
+  and still describe what Home Assistant receives)
   parameterized by a variant, plus `apply_shift()` (tail truncation). It deliberately
   does **not** import or modify `evaluate.walk_forward_validate`, so the headline eval
   and every recorded baseline stay untouched; the two are pinned together by an

@@ -394,6 +394,33 @@ def train(training_data: pd.DataFrame) -> dict:
     return _fit_models(training_data)
 
 
+def enforce_coherence(preds: dict) -> dict:
+    """
+    Make the predicted pair obey the identity min <= cheap2h.
+
+    The two targets are independent regressors, and the true gap between them is tiny
+    (over the last year the mean of the two cheapest hours sits a median 0.4 EUR/MWh above
+    the cheapest hour), so their predictions cross on 40-50 % of days. Where predicted `min`
+    exceeds predicted `cheap2h`, BOTH are replaced by their mean ("split", round 25,
+    docs/DECISIONS.md "min <= cheap2h coherence"): when the models disagree about the order
+    both are evidently off by about the same, and averaging halves both errors. Days that
+    already obey the identity are untouched, and `avg` / `max` are never touched.
+
+    Applied in predict(), in evaluate.walk_forward_validate and in ab.harness.run_walk_forward
+    -- the three places that turn fitted models into numbers -- so the headline eval and the
+    A/B describe what Home Assistant receives. A no-op unless both targets are present, so a
+    variant that predicts only one of them is unaffected. Mutates and returns `preds`.
+    """
+    if "min" in preds and "cheap2h" in preds:
+        low = np.asarray(preds["min"], dtype=float)
+        cheap = np.asarray(preds["cheap2h"], dtype=float)
+        crossed = low > cheap
+        middle = (low + cheap) / 2.0
+        preds["min"] = np.where(crossed, middle, low)
+        preds["cheap2h"] = np.where(crossed, middle, cheap)
+    return preds
+
+
 def predict(models: dict, forecast_features: pd.DataFrame,
             interval: IntervalModel = None) -> dict:
     """
@@ -412,10 +439,10 @@ def predict(models: dict, forecast_features: pd.DataFrame,
         Dict keyed by date string (YYYY-MM-DD) with min/avg/max/cheap2h in
         EUR/MWh, plus cheap2h_low / cheap2h_high when `interval` is given.
     """
-    preds = {
+    preds = enforce_coherence({
         name: models[name].predict(forecast_features[TARGETS[name][1]].values)
         for name in TARGETS
-    }
+    })
 
     band = {}
     if interval is not None:

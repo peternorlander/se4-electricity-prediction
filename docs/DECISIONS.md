@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [`min ≤ cheap2h` coherence](#min--cheap2h-coherence-round-25) | 2026-10-12 | coherence for Home Assistant (the pair crossed on 40–50 % of days); `min` −0.17 … −0.23 clmean (every cluster, 4 of 5 caches), `cheap2h` −0.08 … 0.00 (not harmful); NOW slightly weaker |
 | [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead |
 | [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
 | [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
@@ -35,6 +36,75 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## `min ≤ cheap2h` coherence (round 25)
+
+Adopted 2026-10-12, as `model.enforce_coherence` — called by `model.predict`,
+`evaluate.walk_forward_validate` and `ab.harness.run_walk_forward`. Measured with local
+experiment scripts under `experiments/` (not committed); the numbers below are the record.
+
+**The problem.** `min` (the cheapest hour) and `cheap2h` (the mean of the two cheapest
+hours) are independent regressors, and the true gap between them is tiny — over the last
+year the mean of the two cheapest hours sits a median 0.4 EUR/MWh (mean 1.3) above the
+cheapest hour. Their predictions therefore cross constantly: **predicted `min` exceeded
+predicted `cheap2h` on 40–50 % of held-out days** on every cache (46 % on `2026-10-10`
+with the northern wind points in), by 2.0–2.4 EUR/MWh on average where it did, and on a
+live forecast taken the day it shipped 7 of 9 days were crossed. A pair that violates the
+identity is incoherent for the Home Assistant rule and, because both are noisy estimates of
+nearly the same number, loses information.
+
+**The fix.** Where predicted `min` > predicted `cheap2h`, replace **both** by their mean
+("split"); other days, `avg` and `max` are untouched, and `cheap2h_low/high` are built around
+the served `cheap2h`. Post-processing only — no input changes, so there is nothing to
+freeze: horizon honesty is untouched.
+
+**Arms, rolling 1088-row grid, five caches, models as shipped (with the northern wind
+points); change in MAE vs the raw pair, EUR/MWh, negative = better.** Per-cache cluster
+means NOW / −6M / FAR:
+
+| cache | `min`, split | `cheap2h`, split | `min`, lower |
+|---|---|---|---|
+| `2026-10-10` | +0.03 / −0.13 / −0.41 | −0.33 / −0.06 / +0.14 | +0.31 / −0.14 / −0.67 |
+| `2026-09-16` | −0.13 / −0.13 / −0.41 | −0.12 / −0.01 / +0.14 | −0.08 / −0.17 / −0.67 |
+| `2026-08-21` | −0.06 / −0.15 / −0.41 | −0.22 / −0.05 / +0.14 | +0.08 / −0.18 / −0.67 |
+| `2026-09-12` | −0.05 / −0.09 / −0.41 | −0.27 / −0.09 / +0.14 | +0.16 / −0.07 / −0.67 |
+| `2026-08-06` | −0.05 / −0.22 / −0.41 | −0.28 / −0.04 / +0.14 | +0.13 / −0.28 / −0.67 |
+
+clmean: split `min` −0.17 … −0.23 (REAL — every cluster negative — on four of five),
+split `cheap2h` −0.08 … +0.00 (NOISE, not harmful); "lower" (`min` = `min(min, cheap2h)`,
+`cheap2h` untouched) `min` −0.17 … −0.31. FAR is the same calendar window in every cache,
+so only NOW and −6M are independent between caches.
+
+**Why split, and not the arm first recommended.** "Lower" looked best on the pooled number
+and leaves the priority target alone, but its gain is carried by −6M and FAR: in **NOW, the
+period closest to production, it is worse on four of five caches (+0.08 … +0.31)**. Split
+improves `min` in all three clusters on four caches and `cheap2h` in NOW on all five
+(−0.12 … −0.33), at a cost of +0.14 in FAR. When the two models disagree about the order
+both are evidently off by about the same, and averaging halves both errors; "lower" trusts
+the one model. The pre-registered rule — ship if not harmful on both targets (pooled clmean
+≤ +0.02 and not REAL-harmful) on at least four of five caches — is met by both; the choice
+between them rests on the per-cluster table above. A third arm, raising `cheap2h` to `min`,
+gained nothing ([REJECTED.md](REJECTED.md)).
+
+**Expect little, and period-dependent.** The freshest NOW cluster is the weak spot (`min`
++0.03 on `2026-10-10`); on that cache at shift 0 the shipped pair gives `min` 15.01 → 15.10
+and `cheap2h` 15.28 → 14.83, at −6M `min` −0.04 / `cheap2h` −0.12, at FAR `min` −0.32 /
+`cheap2h` +0.16. The payoff is a coherent pair, not an accuracy step.
+
+**Verified locally before commit** (`experiments/integration_check_coherence.py`,
+`OMP_NUM_THREADS=4`): the harness with the change equals the stored "split" arm to 1e-9 at a
+NOW, a −6M and a FAR point of `2026-10-10`, with `avg` and `max` bit-identical to the same run
+with coherence switched off; the acceptance test passes — `run_walk_forward(train_window=None)`
+and `evaluate.walk_forward_validate` agree on mean and std for all four targets; and
+`model.predict` on the live forecast gives `min ≤ cheap2h` on every day, untouched days equal the
+raw predictions, crossed days equal the mean, `avg`/`max` are unchanged and the interval contains
+the served `cheap2h`.
+
+**Consequences.** Every A/B number measured through `ab.harness` from now on includes the
+change, as does the headline eval and the `mae_*` values pushed to Home Assistant (monitoring
+only; they move a little). The MAE table in [MODEL.md](MODEL.md#current-mae-baseline) predates it
+and was not re-measured. A slot target set (round 20) would need the sibling identity
+`min(slots) ≥ cheap2h` enforced the same way.
 
 ## Northern wind points (round 25)
 

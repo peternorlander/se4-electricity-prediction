@@ -123,11 +123,13 @@ recorded in [DECISIONS.md](DECISIONS.md#per-target-feature-lists-for-min-and-che
 `avg`'s 42-column base list (44 with the northern columns) comes from a separate block-level re-audit, recorded in
 [DECISIONS.md](DECISIONS.md#avg-drops-the-pricemarket-lag-family-round-14b).
 
-**One property this does not fix:** min and cheap2h are still independent models, so
-their predictions can violate `min ≤ cheap2h` — measured at 31 of 60 held-out days
-after the change, versus 29 of 60 before, though the worst violation shrank from
-+27.9 to +8.9 EUR/MWh. The coherence clamp that would enforce it was tested and
-made cheap2h *worse* (see [Features Tested and Rejected](REJECTED.md)).
+**Coherence (2026-10-12).** `min` and `cheap2h` are still independent models, and their
+predictions crossed on 40–50 % of held-out days (the true gap is a median 0.4 EUR/MWh).
+`model.enforce_coherence` now replaces both by their mean where predicted `min` exceeds
+predicted `cheap2h` — in `predict()`, in the headline eval and in the A/B harness; the
+avg-anchored clamp that was tested and rejected earlier did something different (it only
+ever clipped `cheap2h` toward `avg`). Evidence and the arms that lost:
+[DECISIONS.md](DECISIONS.md#min--cheap2h-coherence-round-25).
 
 ### Negative-Price Hurdle (cheap2h only)
 

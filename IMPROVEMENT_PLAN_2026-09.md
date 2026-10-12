@@ -1,12 +1,13 @@
 # SE4 Prediction — Improvement Plan, September 2026 (round 21 onwards)
 
-**Status 2026-10-11 (after round 25).** Written 2026-09-08 as a plan; since then
+**Status 2026-10-12 (after round 25).** Written 2026-09-08 as a plan. Since then
 2.4, 2.5 (labels), 2.8, 2.9 and 2.16 were measured and rejected and are gone from
-this file (rows in [REJECTED.md](docs/REJECTED.md)), 2.3a was measured and written up in [FINDINGS.md](docs/FINDINGS.md), 2.13 was
-measured and shipped (2026-10-12, [DECISIONS.md](docs/DECISIONS.md)), and 2.1-S, 2.3b and
-2.10 were measured with results that need a decision. What is open, in the order it should
-be done, is section 4. It is the successor to `IMPROVEMENT_PLAN.md` (2026-08),
-which stays as the record of the round-12 → round-19 follow-ups.
+this file (rows in [REJECTED.md](docs/REJECTED.md)); 2.10 (`min ≤ cheap2h`) and 2.13
+(northern wind points) were measured and shipped ([DECISIONS.md](docs/DECISIONS.md));
+2.3a was measured and written up in [FINDINGS.md](docs/FINDINGS.md); 2.1-S and 2.3b
+were measured with results that need a decision. What is open, in the order it should
+be done, is section 4. It is the successor to `IMPROVEMENT_PLAN.md` (2026-08), which
+stays as the record of the round-12 → round-19 follow-ups.
 
 Read first, as before: [docs/AB_TESTING.md](docs/AB_TESTING.md) in full (the
 harness, "How changes are validated", "Measurement grids", "Which verdict
@@ -265,31 +266,6 @@ singles, docs/AB_TESTING.md), then split if the block wins.
 
 **Effort.** 1 day for the fetches, half a day per A/B.
 
-### 2.10 `min ≤ cheap2h` coherence — measured, ready to ship
-
-The two models are independent regressors, and the true gap between them is tiny
-(over the last year the cheapest-hour mean sits a median 0.4, mean 1.3 EUR/MWh above
-the cheapest hour), so their predictions cross constantly:
-**predicted `min` is above predicted `cheap2h` on 40–50 % of days** on every cache
-(46 % on `2026-10-10` with the northern wind points in). Three post-processing
-arms, rolling grid, five caches (EUR/MWh MAE change, negative = better):
-
-| arm | min | cheap2h |
-|---|---|---|
-| raise cheap2h to min | exactly 0 | +0.00 … +0.12, NOISE (rejected) |
-| **lower min to cheap2h** | **−0.13 … −0.23** (with N1: −0.17 … −0.31) | exactly 0 |
-| split (both to their mean) | −0.15 … −0.18 (with N1: −0.17 … −0.23) | −0.02 … −0.09 NOISE |
-
-The rule written before the run — ship if not harmful on both targets on ≥ 4 of 5
-caches — is met by "lower" and "split". **Recommendation: "lower"**
-(`preds["min"] = np.minimum(preds["min"], preds["cheap2h"])` after both are
-predicted): it cannot move the priority target and takes the whole `min` gain. The
-same post-processing has to go into the headline eval (`evaluate.py`) and the A/B
-harness, which score the models directly, or the documented MAE stops describing
-what Home Assistant receives. If 2.6 ships, `min(slots) ≥ cheap2h` gets the same
-treatment. Payoff is the coherence the automation sees plus the `min` gain; one
-DECISIONS entry with these numbers when it ships.
-
 ### 2.11 Longer horizon for the automation (product decision, cheap)
 
 Open-Meteo serves `forecast_days=16`; the pipeline requests 8 and, after
@@ -481,8 +457,9 @@ index.
 
 ## 4. Suggested order (2026-10-11)
 
-1. **Ship the coherence fix (2.10)** — validated, small, measured on five caches
-   (the northern wind points shipped 2026-10-12; their replay is 2.13 above).
+1. **Done 2026-10-12: the northern wind points (2.13) and the `min ≤ cheap2h` coherence**
+   ([DECISIONS.md](docs/DECISIONS.md)). The replay of the first is 2.13 above; the headline
+   MAE table in MODEL.md predates both.
 2. **2.2 prediction log** — start the clock today; it is the instrument that prices
    everything weather-related for real, and the forward replay for 2.3b and for 2.13
    waits on it.
