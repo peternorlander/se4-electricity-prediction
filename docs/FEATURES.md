@@ -45,7 +45,10 @@ cheap-price or average-price forecast, the lists in
 
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
-- `mean_wind`, `max_wind` — daily wind speed (10m)
+- `mean_wind`, `max_wind` — daily mean / max of the hourly 100 m (hub-height) wind speed, in **km/h** —
+  Open-Meteo's default unit; `sources/open_meteo.py` passes no `wind_speed_unit`. Every `mean_wind_<site>`
+  column below is the same quantity. Only the power curve inside `residual_load` / `residual_load_min` /
+  `residual_load_range` / `wind_night` converts to m/s (÷ 3.6, [DECISIONS.md](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23)).
 - `mean_radiation`, `max_radiation` — global horizontal irradiance (GHI W/m²)
 
 ### Regional Wind & Solar (5 locations, 100m hub-height)

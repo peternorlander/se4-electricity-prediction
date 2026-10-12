@@ -428,6 +428,38 @@ it will, and the route closes properly:
 Label such an arm as leaky in the ledger entry, with the honest arm beside it. An
 upper bound is evidence; an upper bound mistaken for a result is not.
 
+### Archive weather is a perfect forecast: re-score weather candidates on vintages
+
+Every weather input in this repo's eval is ERA5 archive — a forecast with no error.
+Production pays the error, and it is not small: scoring the same models on the
+forecast issued L days earlier costs +1.63 cheap2h / +1.69 min / +2.81 avg EUR/MWh
+at production's leads, +3…+5 at a 7-day lead and ~0 under D+3
+([FINDINGS.md](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)).
+That error is shared by both arms of a paired A/B, so it cancels from a *feature set*
+comparison — and it does not cancel from a *weather feature*, whose whole value is
+the forecast skill it carries. The measured case: three northern wind points scored
+cheap2h −1.04 … −1.18 on archive weather on all five caches and **−0.4 … −1.2 on
+forecast vintages** (40–75 % of it), falling to ~0 at a 7-day lead; the `avg`
+version, −0.32 … −0.42 on archive, kept almost nothing.
+
+So, for any addition whose columns derive from weather inputs:
+
+1. Re-score the winner (not every arm) with the model still trained on archive
+   weather and the test rows fed `*_previous_dayL` vintages for **every** weather
+   point it reads, the new ones included (`experiments/run_round25_n1.py` is the
+   worked implementation; fetch with `fetch_round25_vintage*.py`). Row j of the
+   eval maps to lead min(j + 2, 7): the walk-forward's first row is production's
+   first *sent* day, D+2.
+2. Record both numbers in the ledger entry. The survival criterion written before
+   the run for N1 was "negative in every cluster on cheap2h"; a gain that keeps its
+   sign at a fraction of its size is a smaller true effect, not a failure.
+3. Read the gain by lead. An honest weather feature decays with lead (here
+   −1.0 at L1–L3 → −0.45 at L6 → 0 at L7); archive gain at test row 6 over row 0
+   above ~2 would be the leak signature.
+
+Vintages exist from 2024-03 (ECMWF IFS from 2024-04) for the 6 production points
+and any other point; a candidate cannot be scored before that.
+
 ### Smells that mean "check the wiring before believing it"
 
 * The gain **grows with horizon**. Honest features decay with horizon or hold
@@ -719,6 +751,29 @@ clusters is a finding. That is the whole reason `classify_clustered` gives each
 cluster one unweighted vote instead of counting points. Asserting that the points
 have distinct end dates is still worth doing, but distinctness alone is a weak
 guarantee, not independence.
+
+### The rolling grid in practice (round 25): NOW / −6M / FAR, and what five caches replicate
+
+Round 25 used 12 points per cache, offsets from that cache's own end: NOW 0/1/4/7,
+−6M 180/183/186/189 and **FAR at the largest shifts the *expanding* 1095-row frame
+still fits** — `n − 1095 − 364 − {9, 6, 3, 0}`, i.e. 7 fewer than the rolling
+geometry could reach, because a mode comparison (rolling vs expanding) needs both on
+the same points. 5d-tail caches (`2026-08-06`, `-08-21`) and 1d-tail caches
+(`-09-12`, `-09-16`, `-10-10`) each got their own grid and were never pooled.
+Two properties of this set of caches decide what "replicated on all five" means:
+
+* **FAR is the same calendar window in every cache.** The frame cannot start before
+  2021-10-21, so the largest shift ends the evaluation year on 2025-10-11 whatever
+  the cache date; its deltas are identical to the digit across caches (cheap2h N1
+  −0.918 five times). It replicates nothing.
+* **NOW overlaps 92–99 % across the three 1d caches** (4–28 days apart), and ~80 %
+  with the two 5d caches (about two months earlier). Five caches therefore test *fetch*
+  dependence — the cross-vintage replay the bar asks for — and give two independent
+  periods (NOW, −6M), not five. `long/2026-10-16` onward is the first genuinely
+  later NOW window.
+
+The null arm that prices this grid: identical features, xgboost `random_state` 7
+instead of 42, `min` and `cheap2h`. Its cluster-mean delta against the production seed, per cache: **cheap2h 0.010 – 0.115** (0.04 / 0.03 / 0.01 on the three 1d caches, 0.115 / 0.083 on the two 5d caches), **min 0.008 – 0.029**. So a cheap2h effect below ~0.15 on one cache is indistinguishable from refitting with another seed, and `MIN_CLUSTER_EFFECT = 0.10` sits inside that band; `min` resolves ~0.05. What carries a small verdict is agreement across caches and clusters, never the size of one clmean. (The 5d caches' larger floor is one cache each — read it as "up to ~0.1", not as a property of 5d caches.)
 
 ### How long a snapshot to fetch, and why a long one is shorter than you asked for
 

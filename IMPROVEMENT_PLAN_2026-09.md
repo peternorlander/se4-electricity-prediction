@@ -1,10 +1,12 @@
 # SE4 Prediction — Improvement Plan, September 2026 (round 21 onwards)
 
-**Status: PLANNED 2026-09-08. Nothing in this file is implemented.** It is the
-successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays in place as the
-record of the round-12 → round-19 follow-ups. Where an item carries over it is
-said so; where this file changes a priority it says why, with the measurement
-that changed it.
+**Status 2026-10-11 (after round 25).** Written 2026-09-08 as a plan; since then
+2.4, 2.5 (labels), 2.8, 2.9 and 2.16 were measured and rejected and are gone from
+this file (rows in [REJECTED.md](docs/REJECTED.md)), 2.3a and 2.13 were measured and
+written up in [FINDINGS.md](docs/FINDINGS.md), and 2.1-S, 2.3b and 2.10 were
+measured with results that need a decision. What is open, in the order it should
+be done, is section 4. It is the successor to `IMPROVEMENT_PLAN.md` (2026-08),
+which stays as the record of the round-12 → round-19 follow-ups.
 
 Read first, as before: [docs/AB_TESTING.md](docs/AB_TESTING.md) in full (the
 harness, "How changes are validated", "Measurement grids", "Which verdict
@@ -37,7 +39,7 @@ recipes behind them, are now in
 | | Finding | Drives |
 |---|---|---|
 | §1.1 | [`residual_load` is temperature in disguise, and its wind term is saturated](docs/FINDINGS.md#11-residual_load-is-temperature-in-disguise-and-its-wind-term-is-saturated) | 2.1 (the primary item); re-opens the intraday block |
-| §1.2 | [The regime the model was tuned on is moving away from it](docs/FINDINGS.md#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it) | 2.5, 2.6, 2.9 |
+| §1.2 | [The regime the model was tuned on is moving away from it](docs/FINDINGS.md#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it) | 2.5, 2.6 |
 | §1.3 | [Sources verified as reachable, with what they carry](docs/FINDINGS.md#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes) | 2.3, 2.7, 2.14 |
 | §1.4 | [The weather grid has no point under the northern wind fleet](docs/FINDINGS.md#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet) | 2.13 |
 
@@ -68,68 +70,67 @@ docstring) are still in km/h — a separate, documentation-only commit. The
 unit fix alone does not cure the scale mismatch below (FINDINGS.md §1.1);
 expect layers 2–3 to matter more, not less, now that 1 is in.
 
-**What's left to build.** Two more layers, each testable on its own:
+**What's left to build.** Layer 2 (scale) was measured with fixed constants in
+round 25; layer 3 (calibration) is open and its data now exists.
 
-2. **Scale.** Express each term in MW-equivalents:
-   `residual = demand(T) − Σ_zone cap_wind[zone, year] · curve(v_zone) − Σ_zone cap_solar[zone, year] · f(rad_zone)`,
-   with the zone weights `WIND_*_W` / `SOLAR_*_W` retained as coupling
-   multipliers. The daily feature, `residual_load_min`, `residual_load_range`,
-   `wind_night` and `radiation_midday` all derive from the hourly series, so
-   this happens in `add_residual_load` / `aggregate_intraday_features`, not in
-   a `transform` (see the harness note below).
-3. **Calibration instead of constants.** Fit the three mappings on the training
-   window from ENTSO-E actuals, refit at every run: demand(T) from A65 actual
-   total load for SE4 against `mean_temp` / HDD (gives MW per °C); the
-   aggregate wind power curve per zone from A75 actual wind generation
-   (onshore B19 + offshore B18) against Open-Meteo wind speed, per year so the
-   capacity buildout is absorbed; solar likewise from A75 B16 against
-   radiation. This is the principled version of the rejected "solar-capacity
-   index" (old item 1): the scaling comes from measured generation, not a
-   hand-drawn line, and applies to wind as much as solar. A68 installed
-   capacity is the fallback if A75 is patchy for a zone.
-
-   **Round 22 (2026-09-13) adds a reason to prioritize this.** A descriptive
-   screen found the year-over-year trend a hand-drawn linear index is meant to
-   capture is real and replicates (2022→2026, monotonic sign flip in the
-   radiation→price relationship after controlling for wind/temp/fuel/hydro/
-   calendar) — but a linear-in-time index moved correctly upstream still only
-   cleared the A/B bar on one of two snapshots. That is consistent with this
-   item's framing: the *trend* is real, a hand-drawn functional form is not
-   the right way to track it. See
-   [FINDINGS.md](docs/FINDINGS.md#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22).
+2. **Scale — S, measured 2026-10-11.** MW-equivalent terms with fixed per-zone
+   capacities (wind SE4 2.5 / Karlskrona 1.0 / DK2 2.5 / DK1 5.0 / DE-north 30 GW,
+   solar SE4 2.0 / DK2 1.5 / DK1 3.5 / DE-north 20 GW × 0.8, demand 0.5 GW/°C, the
+   existing `WIND_*_W` / `SOLAR_*_W` kept as coupling multipliers); the correlation
+   with temperature falls from −0.999 to −0.78. Rolling grid, five caches:
+   **`avg` −0.35 … −0.40 (VALIDATED, 12/12 points on every cache)**, **`min` −0.06 …
+   −0.17 (REAL on three caches, BORDERLINE one, NOISE one, none harmful)**,
+   **`cheap2h` NOISE on four and REAL-harmful +0.21 on one**
+   ([REJECTED.md](docs/REJECTED.md)). Doubling the supply terms makes cheap2h
+   harmful (+0.34), halving them helps avg more (−0.54): the scale matters, and the
+   constants were guesses — the A68 data now fetched shows several too high (DK2
+   wind 1.4 GW not 2.5, DK1 4.2 not 5.0, SE4 2.1 not 2.5). S stacks on the
+   northern wind points for `min` (−0.20 … −0.31 further) and `avg` (−0.37 … −0.39
+   further). **Not shipped.** Because cheap2h does not want it, shipping means
+   *extra* columns (`residual_load_mw`, `residual_load_min_mw`) in the `avg` and,
+   after a replay, `min` lists only; the cheap2h list keeps today's. Re-score the
+   winner on forecast vintages first ([AB_TESTING.md](docs/AB_TESTING.md#archive-weather-is-a-perfect-forecast-re-score-weather-candidates-on-vintages)).
+3. **Calibration instead of constants — C.** Fit the three mappings on the training
+   window from ENTSO-E actuals, refit at every run: demand(T) from A65 actual load
+   for SE4 against `mean_temp` / HDD (MW per °C); the aggregate wind power curve per
+   zone from A75 actual wind generation (B19 + B18) against Open-Meteo wind speed,
+   per year so the buildout is absorbed; solar likewise from A75 B16 against
+   radiation. This is the principled version of the rejected solar-capacity index:
+   the scaling comes from measured generation, not a hand-drawn line
+   ([FINDINGS.md](docs/FINDINGS.md#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22)).
+   **The data is fetched:** `ab_cache/entsoe_r25/2026-10-11` (A75 wind/solar for
+   SE1–SE4, DK1, DK2, DE_LU, FI from 2021-07; A65 load; A68 only patchy — Swedish
+   zones have 2026 wind only, so calibration must come from A75). Read
+   [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11)
+   first: filter `gen` on `direction == "in"`, A03 is already filled.
+   **Measure the ceiling before building the calibration.** Add the *realised*
+   zonal generation (SE1+SE2 wind MW, DK1/DK2 wind, DE_LU wind and solar — leaky, not
+   knowable at run time) as columns to the trough models. If that oracle arm does
+   not beat the northern-wind points by more than the grid's noise (~0.1 on cheap2h,
+   see AB_TESTING), a calibrated weather→generation mapping has no headroom and C is
+   not worth its 2–3 days. If it does, the same A75 series trains the per-zone
+   mapping, and the honest version is scored on vintages.
 
 **Harness note (the trap from old item 1).** `ab.variants.Variant.transform`
 receives the merged daily frame, after these columns were computed from the
-hourly inputs. It cannot rebuild them. Add an optional `build_fn(inputs) ->
-frame` to `Variant` (default `features.build_training_data`) so a candidate can
-rebuild the frame from the same snapshot; the harness must still assert
-identical `date` columns between arms. Do this once — item 2.3 needs it too.
+hourly inputs. It cannot rebuild them. Round 25 worked around it by building the
+frames in the experiment script (`experiments/run_round25.py`) and feeding them to
+the unmodified `run_walk_forward`; an optional `build_fn(inputs) -> frame` on
+`Variant` is still the clean fix, and 2.3 and 2.7 need it too.
 
-**Arms, pre-registered — U shipped, S/C/C+ still open.**
+**Arms.**
 
-| arm | change | expectation |
+| arm | change | state |
 |---|---|---|
-| ~~U~~ | ~~unit fix only~~ | **shipped 2026-09-17** — see above |
-| S | unit fix + MW scaling with fixed per-zone capacities (one constant per zone) | the primary arm for `residual_load` / `residual_load_min` |
-| C | S with per-year calibrated curves from A75/A65 | the primary arm overall; expected to matter most in the NOW cluster where solar has grown |
-| C+ | C plus `wind_night` and `radiation_midday` re-added to the trough list | the re-opening of the intraday block, on a feature that now varies |
+| ~~U~~ | unit fix only | **shipped 2026-09-17** |
+| ~~S~~ | MW scaling, fixed constants | measured: avg VALIDATED, min PROMISING, cheap2h rejected (above) |
+| C | per-year calibrated curves from A75/A65 | open; gated on the oracle ceiling above |
+| C+ | C plus `wind_night` and `radiation_midday` re-added to the trough list | open; judged against C |
 
-Bar for S/C/C+: `classify_clustered` on cheap2h, then min, four clusters;
-per-window std not inflated. Screen S and C on NOW, confirm on
-−6M/−12M/−21M. C+ is judged against C, not against production. Check
-`corr(delta, min_train)` as always; the grid keeps `min_train` constant so it
-should be ~0.
+Bar for C/C+: `classify_clustered` on cheap2h, then min, NOW / −6M / FAR on the
+rolling grid, per-window std not inflated; a vintage re-score for the winner.
 
-**If it fails.** If S and C are NOISE on both trough targets, the reading is
-that the raw wind columns already carry what the trees need and residual load
-is a temperature channel by accident that happens to work. Then rename it
-honestly (`demand_proxy_min`) and close the intraday block for good. Either
-answer is worth having; today the ledger has verdicts on a feature nobody knew
-was degenerate.
-
-**Effort.** ~~1 day for U~~ done. 1 day for S and the harness hook; 2–3 days
-more for C (three ENTSO-E fetches, a calibration module, a production source
-change).
+**Effort.** U and S done. Oracle ceiling: half a day. C: 2–3 days.
 
 ### 2.2 Production prediction log and realised scorecard
 
@@ -163,83 +164,51 @@ item 2.3 honestly.
 
 **Effort.** Half a day. Zero model risk.
 
-### 2.3 The weather axis: measure it, then improve it
+### 2.3 The weather axis: price it, then improve it
 
-The README's Known Limitations list "weather in evaluation is archive, not
-forecast" as a known
-unmeasured limitation. It is now measurable back to 2024-03 (FINDINGS.md §1.3), which is
-~2.5 years — enough for a four-cluster grid on the last two years.
+**2.3a — measured 2026-10-11, no longer an item.** Archive weather flatters the
+eval by +1.63 cheap2h / +1.69 min / +2.81 avg EUR/MWh at production's leads,
+almost all of it from D+5 (+1.0 … +2.1 at L5, +3.0 … +4.7 at L7 on cheap2h):
+[FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b).
+The README and MODEL.md numbers are read with that in mind until the baseline is
+re-measured on vintages.
 
-**2.3a Forecast-vintage evaluation (measure first).** Fetch, for every hour in
-the window, the value forecast N days earlier (`*_previous_dayN`, N = 1..7) for
-wind, temperature and radiation at the six locations, one model (ECMWF IFS
-0.25° is the natural default; ICON has one more month of history). Build a
-second frame where the *test* rows' weather comes from the vintage matching the
-horizon (`h = 1..7`) while the training rows keep archive weather — that is what
-production does. Report MAE by horizon against the archive-weather eval.
-Expectation: the far horizons are worse by an amount comparable to the whole
-gap5 effect, and this is the number that decides whether 2.3b–d are worth
-anything. Note `mae_by_horizon` is weekday-confounded (docs/MODEL.md); compare
-like
-with like by evaluating both frames on the same grid.
+**2.3b Multi-model blend at serve time — measured, missed its strict bar.** The
+hourly mean of ECMWF, ICON and GFS recovers ~25 % of the penalty (cheap2h −0.37,
+min −0.42, avg 0) and is negative in all 15 cache × cluster cells, but the
+pre-registered per-lead bar was met on 0 of 5 ([REJECTED.md](docs/REJECTED.md)).
+Next step is a *forward* replay, not another backtest: log the blend's inputs next
+to the served forecast from the first day item 2.2 exists, and score both on the
+days the log covers, with a bar written for production's lead mapping (row j at
+lead j + 2): production-mapped cheap2h and min negative in every cluster-equivalent
+period and the pooled change ≤ −0.2. Cost at serve time: three model requests for
+nine points.
 
-**2.3b Multi-model blend at serve time.** Mechanism: forecast error at D+3..D+7
-is the largest un-modelled error source, and averaging independent NWP models
-is the cheapest known reduction of it. Fetch ECMWF + ICON + GFS with `models=`
-and use the mean (or the median) for every weather input; for the Nordic points
-add `metno_seamless` (MET Norway MEPS) and `dmi_seamless`, the regional 2.5 km
-models that are the reference for Scandinavian wind at D+1..D+2 and fall back
-to a global model beyond that. Measurable only on
-the 2.3a frame — Previous Runs serves all three models, so the blend's vintage
-history exists too. Bar: lower MAE at every horizon ≥ 3 in every cluster, on
-cheap2h.
+**2.3c Train on what you serve.** The headroom is now a number: +1 … +5 EUR/MWh on
+cheap2h at L5–L7. Mechanism unchanged — the model learns price = f(analysis
+weather) and is served f(forecast weather) — but vintages exist only from 2024-03,
+so far-lead rows would train on ~2.6 years. Per-lead models or a stacked set with
+a lead column; start only after the 2.3b replay shows whether input quality or
+model mismatch carries the penalty. Bar as 2.3b.
 
-**2.3c Train on what you serve.** Mechanism: the model learns
-price = f(analysis weather) and is served f(forecast weather); at D+5 the
-input distribution differs (smoother, biased). Training the far-horizon rows on
-the previous-run forecast of matching lead time removes the mismatch. This is
-horizon-aware modelling by a different route than the shelved
-`forecast_horizon` feature; it needs per-horizon models or a stacked training
-set with a horizon column. Only worth it if 2.3a shows the far-horizon
-degradation is large. Bar as 2.3b.
+**2.3d Ensemble spread as an interval conditioner.** Mechanism: the conformal band
+is one width for the whole forecast set, adjusted by a single correction. Weather
+uncertainty varies day to day and is observable as the 51-member spread of
+`wind_speed_100m`. Condition the conformity quantile on spread bins (or add spread
+to the two quantile regressors). Scored on pinball loss and coverage per cluster,
+never MAE. Live only — the ensemble has no vintage archive — so scored
+prospectively via 2.2.
 
-**2.3d Ensemble spread as an interval conditioner.** Mechanism: the conformal
-band is one width for the whole forecast set, adjusted by a single correction.
-Weather uncertainty varies day to day and is directly observable as the
-51-member spread of `wind_speed_100m`. Condition the conformity quantile on
-spread bins (or add spread as a feature to the two quantile regressors).
-Scored on pinball loss and coverage per cluster, never MAE (docs/DECISIONS.md,
-the interval entry). Live only — the ensemble has no vintage archive — so this is scored
-prospectively via 2.2, or on the weeks of data that accumulate before the
-next review.
+**Effort.** 2.3b replay: one day plus waiting for data; 2.3c three days; 2.3d one day.
 
-**Effort.** 2.3a two days (fetch is 6 locations × 3 variables × 7 vintages ×
-~900 days, well within Open-Meteo's free tier if cached); 2.3b one day; 2.3c
-three days; 2.3d one day.
+### 2.5 The hurdle's label under regime drift — only the slot-specific arm is left
 
-### 2.5 The hurdle's label under regime drift
-
-**Mechanism.** The classifier predicts `P(price_min < 0)`. Positives were
-23–27 % of days in 2023–2025 and are 7 % in 2026 (30 of the last 365). A rarer
-class is learned worse, and — more importantly — the physical regime the hurdle
-was built to flag (oversupply, low demand) still occurs; it now clears at 0–5
-EUR/MWh instead of below zero (84 days under 5 in the last year). The label has
-drifted away from the regime.
-
-**Arms.**
-- H5: threshold 5 EUR/MWh (`NEG_PRICE_THRESHOLD`).
-- HQ: a trailing-quantile label, `price_min` below the training window's 10th
-  percentile — stationary across regimes by construction.
-- HS: `P(cheap2h_day < 0)` and `P(cheap2h_night < 0)` as two probabilities —
-  the slot-specific hurdle from `SLOT_PREDICTION_PLAN.md` §4.4, which needs
-  the slot targets from 2.6 to exist first.
-
-Bar: `classify_clustered` on cheap2h with the hurdle's own evidence in mind —
-the −6M/−12M clusters are the negative-rich ones and the NOW cluster is the
-one that matters; a candidate that wins only where positives are plentiful is
-not a fix for drift. Do not re-test the hurdle on `min` (closed twice).
-
-**Effort.** Half a day for H5/HQ; HS after 2.6.
+H5 (threshold 5 EUR/MWh) and HQ (trailing 10th-percentile label) were measured on
+five caches and are NOISE ([REJECTED.md](docs/REJECTED.md)). What remains is
+**HS**: `P(cheap2h_day < 0)` and `P(cheap2h_night < 0)` as two probabilities, the
+slot-specific hurdle of `SLOT_PREDICTION_PLAN.md` §4.4, which needs the slot targets
+from 2.6 to exist first. Bar: `classify_clustered` on cheap2h; do not re-test the
+hurdle on `min` (closed twice).
 
 ### 2.6 Slot targets (round 20) — sequencing with 2.1
 
@@ -270,49 +239,56 @@ advance* are forecast features. Three qualify and none is used:
 - **A77 nuclear outages weighted by MW** (old item 4). The documents carry
   `nominal_P`; the feature today counts events. A 1400 MW Oskarshamn-3 outage
   and a small unit both score 1.
+  **A production defect sits under this item (found 2026-10-11, not fixed).**
+  `fetch_nuclear_outages_se3` sends `psrType=B14` but the API ignores it for A77:
+  the SE3 response also holds gas CHP (B04), hydro (B12) and wind (B19) units, and
+  the parser (`_parse_outage_timeseries`: mRID/start/end only) counts them, and
+  counts cancelled records (docStatus A09) and every partial derate as a full
+  event. Over five years the daily `nuclear_outage_se3` averages 2.38 against 1.13
+  for nuclear-only, non-cancelled, latest-revision records, and differs on 70 % of
+  days (corr 0.70; 2025: 3.34 vs 1.03). The column is in `FEATURE_COLUMNS`, so
+  `avg` and `max` read it; the trough lists do not. **Fix first, then test:** parse
+  `psr`, `docStatus`, `revision` and available MW; keep `psr == B14`, drop
+  cancelled, latest revision per (unit, interval); the feature is MW unavailable.
+  Judge on `avg` (`classify_clustered`, rolling grid); the same fix goes into the
+  production fetch, which `predict.py` also calls for today..today+10. Parsed data:
+  `ab_cache/entsoe_r25/2026-10-11/unavail.pkl`, raw responses beside it
+  (`experiments/fetch_round25_entsoe.py`).
 - **A80 aggregated generation unavailability** for SE4 and DK2 — planned
   outages of CHP, gas and the Karlshamn reserve; and the same for SE3 hydro.
   Lower prior; group with A77 in one fetch.
+
+**The data is fetched** (`ab_cache/entsoe_r25/2026-10-11`: week-ahead min/max load for SE4, SE3, DK2, DE_LU from 2021-07 with ~98 % day coverage; A77/A80 with unit, `psr`, nominal and available MW, revision and a `cancelled` flag; the traps are in [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11)).
 
 Test as one "week-ahead block" first (block tests are more sensitive than
 singles, docs/AB_TESTING.md), then split if the block wins.
 
 **Effort.** 1 day for the fetches, half a day per A/B.
 
-### 2.8 Neighbour-zone holiday calendar
+### 2.10 `min ≤ cheap2h` coherence — measured, ready to ship
 
-**Mechanism.** `is_workday` is a top-5 feature and is Swedish. SE4's trough is
-now 0.89-correlated with DK2's and 0.73 with DE's (FINDINGS.md §1.2), and DE/DK
-holidays
-that Sweden does not share (Whit Monday, German Unity Day, Corpus Christi in
-the large southern states, Danish Constitution Day) cut continental demand and
-push export prices down. Forecastable to any horizon, one line with the
-`holidays` package (`holidays.Germany`, `holidays.Denmark`). Also add the
-Swedish bridge days the current calendar misses (only the Friday after
-Ascension is handled).
+The two models are independent regressors, and the true gap between them is tiny
+(over the last year the cheapest-hour mean sits a median 0.4, mean 1.3 EUR/MWh above
+the cheapest hour), so their predictions cross constantly:
+**predicted `min` is above predicted `cheap2h` on 40–50 % of days** on every cache
+(46 % on `2026-10-10` with the northern wind points in). Three post-processing
+arms, rolling grid, five caches (EUR/MWh MAE change, negative = better):
 
-**Bar.** `classify_clustered`, cheap2h then min; expect a small effect and be
-prepared for INCONCLUSIVE — the grid's resolution floor is ~0.2 EUR/MWh.
+| arm | min | cheap2h |
+|---|---|---|
+| raise cheap2h to min | exactly 0 | +0.00 … +0.12, NOISE (rejected) |
+| **lower min to cheap2h** | **−0.13 … −0.23** (with N1: −0.17 … −0.31) | exactly 0 |
+| split (both to their mean) | −0.15 … −0.18 (with N1: −0.17 … −0.23) | −0.02 … −0.09 NOISE |
 
-**Effort.** One hour.
-
-### 2.9 Time-decay on `min` / `cheap2h` — re-test with a stated drift mechanism
-
-Old item 2 said "re-test the measurement". This review supplies the mechanism
-it lacked: FINDINGS.md §1.2 documents a monotone drift in the trough's *composition* (slot
-share, negative-price share, coupling) over exactly the training window. A
-uniform three-year fit averages a regime that no longer exists into one that
-does. Run on the sliding grid, half-life sweep {365, 500, 730}, **screen and
-decide on the NOW cluster** (the far clusters describe a world where the drift
-had not yet happened). Same honest caveat as before: 0.2 is at the resolution
-floor; INCONCLUSIVE is a legitimate answer.
-
-### 2.10 `min ≤ cheap2h` coherence (old item 3, carried unchanged)
-
-Re-measure the violation rate on the current models first (the 31-of-60 figure
-predates the list split), then the three arms (raise cheap2h / lower min /
-split). Payoff is coherence for Home Assistant, not MAE. If 2.6 ships first,
-the sibling identity `min(slots) ≥ cheap2h` gets the same treatment.
+The rule written before the run — ship if not harmful on both targets on ≥ 4 of 5
+caches — is met by "lower" and "split". **Recommendation: "lower"**
+(`preds["min"] = np.minimum(preds["min"], preds["cheap2h"])` after both are
+predicted): it cannot move the priority target and takes the whole `min` gain. The
+same post-processing has to go into the headline eval (`evaluate.py`) and the A/B
+harness, which score the models directly, or the documented MAE stops describing
+what Home Assistant receives. If 2.6 ships, `min(slots) ≥ cheap2h` gets the same
+treatment. Payoff is the coherence the automation sees plus the `min` gain; one
+DECISIONS entry with these numbers when it ships.
 
 ### 2.11 Longer horizon for the automation (product decision, cheap)
 
@@ -348,58 +324,38 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
   majors so a bit-identity check across machines means something.
 
-### 2.13 Northern wind points, and hydro precipitation
+### 2.13 Northern wind points — validated, waiting for the ship decision
 
-**Mechanism.** [FINDINGS.md §1.4](docs/FINDINGS.md#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet). The same mechanism `mean_wind_stockholm` already
-carries — northern surplus sets the SE3 price SE4 imports at — with the actual
-fleet under the measurement instead of a load centre 500 km south of it.
+Measured 2026-10-11 ([FINDINGS.md](docs/FINDINGS.md#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25)):
+two columns from Norrbotten, Jämtland and Ostrobothnia wind improve cheap2h
+−1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 on all five long caches (60 of
+60 points favourable on the two priority targets); on forecast-vintage weather
+~40–75 % of the cheap2h gain survives, falling to nothing at a 7-day lead.
+`mean_wind_stockholm` stays (removing it costs +0.57 … +0.79), a fourth site adds
+nothing, hydro precipitation is NOISE ([REJECTED.md](docs/REJECTED.md)).
 
-**What to build.**
+**To ship** (one commit, then the local integration check of docs/AB_TESTING.md):
 
-1. Add to `sources.open_meteo.WIND_LOCATIONS`: `norrbotten` (65.3, 20.9),
-   `jamtland` (63.2, 14.6), `ostrobothnia` (63.1, 21.6). Adding a key is
-   production-safe on its own — `aggregate_international_weather_daily` emits
-   `mean_wind_<key>` for every key and no model reads it until it is in a
-   feature list — and it means the next `ab_test.py fetch` carries the columns,
-   so this item needs no `build_fn` hook. Existing snapshots do not have them;
-   fetch a fresh long snapshot after the edit.
-2. Two encodings, both pre-registered:
-   - **N-block** (control): the three raw daily means added to the trough list,
-     the same encoding the existing wind columns use.
-   - **`north_wind_power`** (primary): one column, the mean over the three
-     sites of the power curve (in m/s — see 2.1-U; do not feed km/h into it)
-     with a night-window sibling `north_wind_night`. A blend is the encoding
-     that survived for the south, and it is the natural "SE3 import price"
-     term for 2.1's rebuilt residual load if that ships first.
-   Sundsvall is a fourth candidate only if the three leave it something to add
-   (screen it last; its 0.017 is likely absorbed by Jämtland + Norrbotten).
-3. Retire nothing. `mean_wind_stockholm` stays; the question of whether it is
-   still load-bearing next to the northern points is a later ablation
-   (`classify_ablation_clustered`), not part of this A/B.
+1. `sources.open_meteo.WIND_LOCATIONS`: add `norrbotten` (65.3, 20.9), `jamtland`
+   (63.2, 14.6), `ostrobothnia` (63.1, 21.6). Production-safe on its own, and every
+   later fetch carries the columns.
+2. `features.aggregate_intraday_features`: `north_wind_power` (mean over the three
+   sites of the m/s power curve) and `north_wind_night` (its 00–06 local mean,
+   falling back to the all-hours mean like `wind_night`). Training and forecast both
+   go through this function; neither column is frozen.
+3. Lists: add both to `TROUGH_FEATURE_COLUMNS` (`MIN_FEATURE_COLUMNS` follows) and to
+   `AVG_FEATURE_COLUMNS` **explicitly**. Do not put them in `FEATURE_COLUMNS`:
+   `max` would silently change and was not measured.
+4. `docs/MODEL.md`, `docs/FEATURES.md`, a DECISIONS entry with the table above and
+   both weather-axis numbers, and delete this item.
+5. Expect the headline MAE to move less than the archive A/B (the honest gain is
+   ~half) and to lean on D+2…D+5; watch it, do not block on it.
 
-**Bar.** `classify_clustered` on cheap2h, then min; `avg` reported. Screen on
-NOW, confirm on the three far clusters. Expect the effect to be larger in NOW
-than pooled (FINDINGS.md §1.4 shows the 2026 gain above the pooled one), which
-is the
-opposite of the training-size artefact the far clusters used to manufacture,
-but check `corr(delta, min_train)` anyway.
-
-**Hydro precipitation (second-order, `avg` first).** The Nordic hydrological
-balance sets the system price level and the model sees it only through weekly
-reservoir levels, which lag. A 7-day precipitation *forecast* over the hydro
-regions is forecastable at run time and is what hydro producers price against.
-Screen: trailing 7-day precipitation at Bergen correlates −0.33 with `avg`,
-the *leading* 7-day sum −0.17 with `avg` and −0.18 with `cheap2h` (Jämtland
-−0.19 / −0.11 / −0.15). Encode as the run-time 7-day forecast precipitation sum
-at three points — Vestland (60.4, 5.3), Jämtland (already fetched above),
-Lule älv (66.5, 20.0) — as an anomaly against the same-week archive mean, one
-frozen scalar across the horizon (add to `FORECAST_FROZEN_FEATURES`; it is a
-lag-type feature in the eval). Spring snowmelt timing (temperature at the same
-inland points in April–May) is the same mechanism and the same fetch. Judge on
-`avg` first; a trough effect is a bonus. Test after 2.1 and the wind points.
-
-**Effort.** Wind points: an hour to wire, one fresh fetch, one A/B batch.
-Precipitation: half a day.
+**Afterwards:** the 2026-10-16 long cache is the first later NOW window — replay the
+arm there; the same vintage re-score on min; the production log (2.2) is where the
+real gain shows. Not tested, low prior: other fleets (NO3/NO4, northern Finland
+beyond Ostrobothnia) — each single site gave ~half the three-site gain, so the
+regional average is the signal and three points seem to saturate it.
 
 ### 2.14 Nord Pool UMM as the outage source
 
@@ -514,61 +470,7 @@ changes which curve gets loaded, re-baseline `max` in
 was measured on the coin flip.
 
 **Effort.** Half a day for a; one A/B batch for b, sharing a snapshot with the
-2.5 / 2.8 / 2.9 batch.
-
-### 2.16 Seasonal interaction on cheap2h, re-opened by the training geometry
-
-**Mechanism (stated before any run of its own).** Round 12 closed
-`radiation_midday` + `day_of_year_sin/cos` on cheap2h as NOISE and wrote "do not
-re-test this combination". Both calibration runs behind
-[production-length training](docs/DECISIONS.md#production-length-training-in-the-ab-grid)
-tested that exact arm as a side effect, and it is the one arm whose behaviour
-*depends on the geometry*: NOISE under the expanding window (+0.016 and +0.070)
-and **REAL under production-length training** (−0.162 and −0.217), with a mode
-effect negative in all three clusters on two independently fetched snapshots
-(−0.178, then −0.287). Round 12's rejection was therefore measured on a model
-trained on 84 % of production's data, and a plausible reading is that a
-calendar-indexed interaction needs three full annual cycles to generalise rather
-than the two the early test weeks saw. That is a mechanism, not "a lot has
-changed".
-
-**What it is not yet.** Those two runs were calibration runs: the arm rode along
-to measure the *geometry*, with no pre-registered bar of its own, and its NOW
-cluster — the period closest to production — is the weakest in both runs
-(−0.080 and −0.013 against −0.429 at −11M). So this is a candidate to test
-properly, not a result to adopt.
-
-**The round.** Pre-register the bar, rolling grid on a fresh long snapshot,
-`classify_clustered`, arms as in round 12 (S1 `radiation_midday` + doy pair, S2
-the 5-column solar block + doy, S3 the intraday block + doy) so the comparison
-with that round is direct. Add the plain doy pair alone as the control round 11
-already measured (+0.060 NOISE then). Check per-window std and
-`corr(delta, min_train)` as always. If S1 holds up, the LIGHT/DARK cancellation
-documented in [REJECTED.md](docs/REJECTED.md) is the mechanism to write up; if it
-does not, the geometry finding stands on its own and this closes for good.
-
-**Start with the cheap replication on an older cache.** Before the full S1/S2/S3
-batch, run just `base` + `S1` in both geometries on **`long/2026-08-21`** — an
-independently fetched cache 50 days earlier than the second calibration run, so
-it carries different DE draws, a different splice zone and different reservoir
-revisions. It has 1762 rows, so rolling points reach shift 310: clusters NOW
-(0/1/4/7), −6M (180–189) and a far cluster at 301–310. It is a 5d-tail cache, so
-it gets its own grid and must not share one with the 1d caches
-([AB_TESTING.md](docs/AB_TESTING.md#snapshot-generations--check-the-weather-tail-before-building-a-grid)).
-About 30 minutes on four workers, and it decides whether the full batch is worth
-running: if S1's geometry-dependence shows up on a third vintage it is real, and
-if it does not, two of three vintages disagree and the arm goes back to being
-round 12's NOISE.
-
-Be precise about what that buys. All five long caches lie within two months of
-each other, so their evaluation years overlap **82–99 %**: another cache tests
-*fetch* dependence, which is what the replay bar is for, and **not** period
-independence — only large shifts inside one snapshot move the period. And no
-snapshot can validate the arithmetic behind the geometry switch itself; that is a
-fact about the pipeline, not a measurement.
-
-**Effort.** ~30 min for the replication, then one A/B batch for S1/S2/S3 sharing
-a snapshot with 2.15b if the replication holds.
+next batch.
 
 ## 3. Carried at low priority, and what stays closed
 
@@ -591,30 +493,26 @@ index.
 
 ---
 
-## 4. Suggested order
+## 4. Suggested order (2026-10-11)
 
-1. **2.2 prediction log** — start collecting now; every other measurement of
-   production accuracy waits on months of history.
-2. **2.12 harness hook + unit test** — half a day, unblocks 2.1 and 2.3.
-3. **2.1 S arm** — U shipped 2026-09-17. Decide on C from S's result.
-4. **2.13 northern wind points** — add the three keys to `WIND_LOCATIONS`
-   before the fresh fetch below so the same snapshot serves 2.1 and 2.13; run
-   the two A/Bs back to back.
-5. **2.6 slot targets** (or 2.1-C first; see 2.6).
-6. **2.3a forecast-vintage eval** — measure before 2.3b–d; it also re-baselines
-   the docs/MODEL.md table on an honest weather axis. Build the per-window feature
-   builder here and reuse it for 2.14.
-7. **2.5 hurdle label**, **2.8 holidays**, **2.9 time-decay**, **2.13
-   precipitation** — short A/Bs that share one long snapshot; run as one batch.
-8. **2.14 UMM source** (justified by nuclear MW, not by interconnectors), then
-   **2.7 week-ahead documents** — the source work; 2.14 needs no token, the
-   ENTSO-E parts do, so Peter runs those fetches.
-9. **2.10 coherence**, **2.11 horizon** — when convenient.
-10. **2.15a DE curve probe** — a token-only probe, runnable any time and
-    independent of everything above; **2.15b** then joins the batch in 7, on a
-    snapshot fetched after a.
-11. **2.16 seasonal interaction** — the one arm the geometry change re-opened;
-    run it with 2.15b on the same snapshot.
+1. **Ship the northern wind points (2.13) and the coherence fix (2.10)** — both
+   validated, both small, both measured on five caches; two commits, each with the
+   integration check. The first is worth roughly 0.5 EUR/MWh or more on cheap2h on a real
+   forecast, the second ~0.15–0.3 on `min`.
+2. **2.2 prediction log** — start the clock today; it is the instrument that prices
+   everything weather-related for real, and the forward replay for 2.3b and for 2.13
+   waits on it.
+3. **2.7: fix `nuclear_outage_se3` first, then the week-ahead block.** The feature
+   counts gas, hydro, wind and cancelled records as nuclear outages (2.38 vs 1.13,
+   wrong on 70 % of days, `avg`/`max` only); the data to rebuild it is in
+   `ab_cache/entsoe_r25/2026-10-11`.
+4. **2.1 oracle ceiling, then C** — the A75/A65 data is in hand; half a day tells
+   whether a calibrated weather→generation mapping has headroom beyond the northern
+   wind points. In the same pass, the `avg` (and replayed `min`) MW-scale columns.
+5. **2.6 slot targets** — unchanged; the guard-rail targets are better built after
+   the feature set above is settled, so the scoring run measures the final features.
+6. **2.3b forward replay / 2.3c** — once the log has a few weeks.
+7. 2.12 hygiene (incl. the `build_fn` hook), 2.11 horizon, 2.14 UMM, 2.5-HS after 2.6.
 
 **Done 2026-09-12: `ab_cache/long/2026-09-12` is fetched** — 1825 days, **1787
 usable rows** from 2021-10-21, weather tail **1d**. It is the first long cache
