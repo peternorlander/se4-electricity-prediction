@@ -266,6 +266,21 @@ singles, docs/AB_TESTING.md), then split if the block wins.
 
 **Effort.** 1 day for the fetches, half a day per A/B.
 
+### 2.10 `min ≤ cheap2h` coherence — shipped 2026-10-12, re-check in ~3 months
+
+Record and arms: [DECISIONS.md](docs/DECISIONS.md#min--cheap2h-coherence-round-25). Every
+number there is a full evaluation year (52 weekly windows) and the three clusters are three
+such years, so the pooled gain is a year-long effect — but it is modest, and the freshest
+year is its weak spot: `min` in the NOW cluster is +0.03 on the newest cache and only
+−0.05 … −0.13 on the others, while FAR and −6M carry most of the pooled −0.17 … −0.23.
+That is worth confirming rather than assuming. **When a long cache from mid-January 2027
+or later exists**, measure the change on and off (patch `ab.harness.enforce_coherence` to the
+identity for the "off" arm, as `experiments/integration_check_coherence.py` does) on NOW and
+−6M. Bar, written now: `min` NOW ≤ 0 and `cheap2h` NOW not REAL-harmful on at least two of
+three later caches. If `min` NOW is positive on most of them, revert to the raw pair (the
+"lower" arm is already rejected). The production log (2.2) is the second source for the
+same question.
+
 ### 2.11 Longer horizon for the automation (product decision, cheap)
 
 Open-Meteo serves `forecast_days=16`; the pipeline requests 8 and, after
@@ -304,6 +319,14 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   in the trough lists — and XGBoost treats it as missing without a word. The training side
   forward-fills, the forecast side does not. Fix: take the last non-NaN value (and log it);
   add the case to the test suite above.
+- **Does ENTSO-E A72 (Swedish reservoir) omit repeated weeks?** Prices (A44) and, found in
+  round 25, generation/load/capacity (A75/A65/A68) are `curveType A03` — a point only where the
+  value changes — and `_fetch_reservoir_chunk` has never been checked. `reservoir_sweden_gwh`
+  is forward-filled by `merge_asof` either way, but `reservoir_sweden_change` is a `.diff()`
+  of the weeks as parsed and would be wrong on an omitted week. Run
+  `python experiments/probe_a72_curve.py --probe` (needs the token, ~1 minute, offline
+  `--selftest` first); if it reports omitted positions the fix is the A44 one, to be measured
+  like any data change; if not, one line in FINDINGS closes it.
 - **Dependencies.** `requirements.txt` is unpinned and the workflow runs
   Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
   majors so a bit-identity check across machines means something.
