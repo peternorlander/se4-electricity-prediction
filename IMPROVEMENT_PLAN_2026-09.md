@@ -296,6 +296,14 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   run leaves the sensor silently stale. Push a `last_run_status` attribute (or
   a separate binary sensor) from a `finally:` block so the automation can fall
   back to "charge now" when predictions are older than a day.
+- **A NaN last close reaches the forecast features (found 2026-10-12).** The cached
+  EUA series from 2026-10-10 ends with a NaN close (Yahoo returned no `CO2.L` price for
+  2026-10-09). `build_forecast_features` takes the *last row* of `eua_daily` (and
+  `ttf_daily`) as `co2_price_lag1` / `ttf_price_lag1` without dropping NaN, so on such a
+  day every forecast row gets NaN `co2_price_lag1` and `gas_marginal_cost` — the latter is
+  in the trough lists — and XGBoost treats it as missing without a word. The training side
+  forward-fills, the forecast side does not. Fix: take the last non-NaN value (and log it);
+  add the case to the test suite above.
 - **Dependencies.** `requirements.txt` is unpinned and the workflow runs
   Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
   majors so a bit-identity check across machines means something.
