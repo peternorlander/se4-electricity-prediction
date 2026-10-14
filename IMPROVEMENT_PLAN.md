@@ -9,7 +9,7 @@ Everything settled lives under [docs/](docs/): the current model in
 the rejected ledger in [REJECTED.md](docs/REJECTED.md), and the methodology in
 [AB_TESTING.md](docs/AB_TESTING.md) — read that one first, especially "How to
 run an experiment", "Which verdict function to call", "Measurement grids:
-tail-truncated vs sliding" and "How changes are validated" (the adoption bar).
+training geometry and period clusters" and "How changes are validated" (the adoption bar).
 This file assumes that context and does not repeat it.
 
 **Priority: `cheap2h` first, then `min`. `avg` improvements are welcome; `max`
@@ -26,87 +26,38 @@ sliding grid on a long snapshot (`ab_test.py fetch --days 1825`) — constant
 `classify`/`classify_ablation` (see
 [docs/AB_TESTING.md](docs/AB_TESTING.md#which-verdict-function-to-call)).
 
-**How this file is maintained (2026-09-12).** An item is *deleted* from here
+**How this file is maintained (2026-09-12, updated 2026-10-14).** An item is *deleted* from here
 the moment its verdict is recorded in the ledgers — a row in
 [docs/REJECTED.md](docs/REJECTED.md) or an entry in
 [docs/DECISIONS.md](docs/DECISIONS.md), plus a section in
 [docs/FINDINGS.md](docs/FINDINGS.md) when the round found something worth
 explaining. This file is only what is left to do; the ledgers are the record.
-Item 0 (cross-border capacity and flows) was closed that way on 2026-09-12: see
-[docs/FINDINGS.md](docs/FINDINGS.md#cross-border-capacity-and-flows-round-21).
-Item 1 (solar-capacity scaling) was closed the same way on 2026-09-13: a
-descriptive screen found a real, replicating year-over-year trend the current
-fixed-divisor solar term can't see, but the correctly-wired A/B (round 22)
-was REAL on one snapshot and did not survive cross-vintage replay — see
-[docs/FINDINGS.md](docs/FINDINGS.md#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22).
-The principled fix (calibrate wind/solar from ENTSO-E actual generation
-instead of a hand-drawn index) is already planned as
-[IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md) §2.1.
+Closed from here so far: cross-border capacity and flows (2026-09-12), solar-capacity
+scaling (2026-09-13; superseded by [IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md)
+§2.1-C), time-decay on `min`/`cheap2h` (re-tested with a drift mechanism and rejected
+2026-10-11, [REJECTED.md](docs/REJECTED.md)) and `min ≤ cheap2h` coherence (shipped
+2026-10-12, [DECISIONS.md](docs/DECISIONS.md#min--cheap2h-coherence-round-25)). Everything else
+that was open here has either moved to the newer plan or is below.
 
 ## Open items
 
-### 1. Time-decay weights on `min`/`cheap2h` — re-test the measurement, not the model
+### 1. Richer supply-side data — what is left
 
-`avg` keeps time-decay sample weighting (half-life 500) — a drift-free A/B
-showed it helping in all three runs it was tested in. The same lever was
-rejected for `min`/`cheap2h` in 2026-07, but on a materially weaker
-instrument: three runs on different real days, before the shift/cluster grid
-existed, with the effect (~±0.2 EUR/MWh) smaller than the between-run swing
-(~0.4). The sliding four-cluster grid is a much sharper tool and has never
-been pointed at this question.
+The 2026-08 list is mostly done or moved:
 
-**Honest caveat — this may still be unresolvable.** A separate confirmed
-effect of similar size (−0.20 EUR/MWh) landed at only 12 of 16 point-level
-sign-consistency on this same grid, so 0.2 sits right at its resolution
-floor. Decide what counts as a pass *before* running, and be prepared for
-`INCONCLUSIVE` to be the honest answer rather than a reason to keep pushing.
+- **Capacity-weighted nuclear outages** and the **ENTSO-E week-ahead load forecast (A65)**
+  are [IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md) §2.7 — where the nuclear
+  half became a decomposition after the existing column turned out to count non-nuclear
+  and cancelled records.
+- **SE3 / system price lag.** The price route is closed for the trough targets (round
+  18, [REJECTED.md](docs/REJECTED.md)); the physical route — northern wind points — shipped
+  2026-10-12 ([DECISIONS.md](docs/DECISIONS.md#northern-wind-points-round-25)).
+- **Day-ahead load (A65) and wind/solar generation forecasts (A69)** reach D+1 only, and
+  D+1 is never predicted, so they cannot be forecast features at all (the horizon column
+  of [FINDINGS.md §1.3](docs/FINDINGS.md#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes));
+  they are calibration data at best (2.1-C), and A75 actuals already serve that.
 
-### 2. `min ≤ cheap2h` coherence
-
-`min` and `cheap2h` are independent models, so nothing stops predicted
-`cheap2h` (mean of the day's two cheapest hours) from coming in *below*
-predicted `min` (the single cheapest hour) — a mathematical impossibility in
-the real data (verified: holds on every held-out day checked). Last measured
-(2026-08-06, before the two models' feature lists diverged further): 31 of 60
-held-out days violated it, worst violation +8.9 EUR/MWh. **That number should
-be treated as stale** — `min` and `cheap2h` now run different feature lists
-(14 vs 15 columns, differing by `price_se4_max_lag1`) rather than the shared
-list they had when this was measured, which likely changes how correlated
-their errors are. Re-measure the violation rate before designing a fix.
-
-This is a **different intervention from the already-rejected clamp**: what
-was rejected was an *avg-anchored* `min ≤ cheap2h ≤ avg ≤ max` clamp, which
-only ever touched cheap2h and made it worse (when predicted cheap2h exceeds
-predicted avg, the incoherence means avg was too low, not cheap2h too high —
-clipping cheap2h toward avg moves it away from truth). `min ≤ cheap2h` alone
-is a different, narrower identity and doesn't inherit that failure mode.
-
-Test three arms: raise cheap2h to min, lower min to cheap2h, split the
-difference. Expect a small MAE effect at best — the real payoff is that Home
-Assistant stops receiving a logically incoherent pair on a meaningful minority
-of days.
-
-### 3. Richer supply-side data (only if the above plateaus)
-
-Genuinely new information rather than re-encoding what's already fetched,
-roughly in priority order:
-
-- **ENTSO-E day-ahead load forecast (A65)** and **wind/solar generation
-  forecast (A69)** for SE4/DK/DE — actual TSO forecasts should beat the
-  weather-proxy `residual_load` at short horizons.
-- **Capacity-weighted nuclear outages** — A77 documents carry unit nominal
-  power; weight by MW instead of counting each outage as 1 (a 1400 MW
-  Oskarshamn-3 outage is not equivalent to a small unit).
-- **SE3 / system price lag** — SE4 is tightly coupled northward, yet only
-  DE/DK2 neighbouring-zone lags are in the feature set today. Round 21 raised
-  the prior: the state that separates a cheap calm week (Sep 2024) from an
-  expensive one (Aug 2026) is the northern supply balance, and SE3→SE4 net
-  import halved during 2026 (quarterly mean 3182 → 1629 MW). It is still a
-  price level, which round 18 closed for the trough targets, so the physical
-  route (northern wind points, `IMPROVEMENT_PLAN_2026-09.md` §2.13) comes
-  first.
-
-### 4. `ttf_vs_30d` — regime-abnormality ratio, low expected yield
+### 2. `ttf_vs_30d` — regime-abnormality ratio, low expected yield
 
 Motivated by the 2026-07 Iran-war energy-crisis price spike: world events
 don't hit SE4 prices directly, they transmit through fuel markets
@@ -124,7 +75,10 @@ measurements — see [docs/REJECTED.md](docs/REJECTED.md)), which lowers the pri
 too, though it's a fuel-price ratio rather than an own-price ratio and so
 isn't subject to the exact same "own frozen price lag hurts the trough
 targets" mechanism. Gate on walk-forward MAE as usual; expect this to matter
-less than items 1–3 above.
+less than the items in the newer plan. Round 24's finding that the autumn-2026
+misses are a gas-price-and-coupling regime
+([IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md) §2.17) is the stronger
+route to the same problem.
 
 **Do not add news/geopolitical-event features** (event dummies, GPR-style
 sentiment indices) on top of this — TTF prices the event in faster and more

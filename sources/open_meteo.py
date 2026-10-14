@@ -29,6 +29,12 @@ WIND_LOCATIONS = {
     "dk2":         (55.7, 12.5),   # Eastern Denmark / Zealand (DK2 bidding zone, directly coupled to SE4)
     "karlskrona":  (56.16, 15.59), # Karlskrona – captures offshore wind patterns in southern Baltic
     "stockholm":   (59.33, 18.07), # Stockholm – SE3 load centre, used for SE3↔SE4 temperature gradient
+    # Northern wind belt (round 25, docs/FINDINGS.md "The northern wind belt"): the fleets behind
+    # the SE3 import price. features.NORTH_WIND_SITES averages their power curves into
+    # north_wind_power / north_wind_night; the keys must stay in step with that list.
+    "norrbotten":   (65.3, 20.9),  # SE1/SE2 north – Markbygden
+    "jamtland":     (63.2, 14.6),  # SE2 inland
+    "ostrobothnia": (63.1, 21.6),  # Finnish west-coast wind belt
 }
 
 

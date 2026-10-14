@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from features import apply_forecast_freeze
+from model import enforce_coherence
 
 
 # Production's own training-set size, in merged rows. predict.py fetches
@@ -162,9 +163,15 @@ def run_walk_forward(
             frozen_features=frozen_features, frozen_rolling=frozen_rolling,
         )
 
+        # Same coherence post-processing as evaluate.walk_forward_validate and model.predict
+        # (a no-op unless the variant predicts both min and cheap2h).
+        preds = enforce_coherence({
+            name: models[name].predict(frozen[feature_cols].values)
+            for name, (_, feature_cols) in targets.items()
+        })
         for name, (target_col, feature_cols) in targets.items():
             actual = raw_test[target_col].values
-            errors = np.abs(models[name].predict(frozen[feature_cols].values) - actual)
+            errors = np.abs(preds[name] - actual)
             mae_lists[name].append(float(errors.mean()))
 
     return {name: np.array(values) for name, values in mae_lists.items()}

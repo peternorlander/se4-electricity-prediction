@@ -18,6 +18,8 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [`min ≤ cheap2h` coherence](#min--cheap2h-coherence-round-25) | 2026-10-12 | coherence for Home Assistant (the pair crossed on 40–50 % of days); `min` −0.17 … −0.23 clmean (every cluster, 4 of 5 caches), `cheap2h` −0.08 … 0.00 (not harmful); NOW slightly weaker |
+| [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead |
 | [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
 | [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
 | [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was SDAC or the German 15-min intraday auction, re-drawn per hour and per fetch; now the SDAC curve (sequence 1), 100 % equal to SMARD 2021–2026 |
@@ -34,6 +36,159 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## `min ≤ cheap2h` coherence (round 25)
+
+Adopted 2026-10-12, as `model.enforce_coherence` — called by `model.predict`,
+`evaluate.walk_forward_validate` and `ab.harness.run_walk_forward`. Measured with local
+experiment scripts under `experiments/` (not committed); the numbers below are the record.
+
+**The problem.** `min` (the cheapest hour) and `cheap2h` (the mean of the two cheapest
+hours) are independent regressors, and the true gap between them is tiny — over the last
+year the mean of the two cheapest hours sits a median 0.4 EUR/MWh (mean 1.3) above the
+cheapest hour. Their predictions therefore cross constantly: **predicted `min` exceeded
+predicted `cheap2h` on 40–50 % of held-out days** on every cache (46 % on `2026-10-10`
+with the northern wind points in), an average excess of 2.0–2.4 EUR/MWh over all days
+(about 5 on the days it happens), and on a live forecast taken the day it shipped 7 of 9
+days were crossed. A pair that violates the
+identity is incoherent for the Home Assistant rule and, because both are noisy estimates of
+nearly the same number, loses information.
+
+**The fix.** Where predicted `min` > predicted `cheap2h`, replace **both** by their mean
+("split"); other days, `avg` and `max` are untouched, and `cheap2h_low/high` are built around
+the served `cheap2h`. Post-processing only — no input changes, so there is nothing to
+freeze: horizon honesty is untouched.
+
+**Arms, rolling 1088-row grid, five caches, models as shipped (with the northern wind
+points); change in MAE vs the raw pair, EUR/MWh, negative = better.** Per-cache cluster
+means NOW / −6M / FAR:
+
+| cache | `min`, split | `cheap2h`, split | `min`, lower |
+|---|---|---|---|
+| `2026-10-10` | +0.03 / −0.13 / −0.41 | −0.33 / −0.06 / +0.14 | +0.31 / −0.14 / −0.67 |
+| `2026-09-16` | −0.13 / −0.13 / −0.41 | −0.12 / −0.01 / +0.14 | −0.08 / −0.17 / −0.67 |
+| `2026-08-21` | −0.06 / −0.15 / −0.41 | −0.22 / −0.05 / +0.14 | +0.08 / −0.18 / −0.67 |
+| `2026-09-12` | −0.05 / −0.09 / −0.41 | −0.27 / −0.09 / +0.14 | +0.16 / −0.07 / −0.67 |
+| `2026-08-06` | −0.05 / −0.22 / −0.41 | −0.28 / −0.04 / +0.14 | +0.13 / −0.28 / −0.67 |
+
+clmean: split `min` −0.17 … −0.23 (REAL — every cluster negative — on four of five),
+split `cheap2h` −0.08 … +0.00 (NOISE, not harmful); "lower" (`min` = `min(min, cheap2h)`,
+`cheap2h` untouched) `min` −0.17 … −0.31. FAR is the same calendar window in every cache,
+so only NOW and −6M are independent between caches.
+
+**Why split, and not the arm first recommended.** "Lower" looked best on the pooled number
+and leaves the priority target alone, but its gain is carried by −6M and FAR: in **NOW, the
+period closest to production, it is worse on four of five caches (+0.08 … +0.31)**. Split
+improves `min` in all three clusters on four caches and `cheap2h` in NOW on all five
+(−0.12 … −0.33), at a cost of +0.14 in FAR. When the two models disagree about the order
+both are evidently off by about the same, and averaging halves both errors; "lower" trusts
+the one model. The pre-registered rule — ship if not harmful on both targets (pooled clmean
+≤ +0.02 and not REAL-harmful) on at least four of five caches — is met by both; the choice
+between them rests on the per-cluster table above. A third arm, raising `cheap2h` to `min`,
+gained nothing ([REJECTED.md](REJECTED.md)).
+
+**Expect little, and period-dependent.** The freshest NOW cluster is the weak spot (`min`
++0.03 on `2026-10-10`); on that cache at shift 0 the shipped pair gives `min` 15.01 → 15.10
+and `cheap2h` 15.28 → 14.83, at −6M `min` −0.04 / `cheap2h` −0.12, at FAR `min` −0.32 /
+`cheap2h` +0.16. The payoff is a coherent pair, not an accuracy step.
+
+**Verified locally before commit** (`experiments/integration_check_coherence.py`,
+`OMP_NUM_THREADS=4`): the harness with the change equals the stored "split" arm to 1e-9 at a
+NOW, a −6M and a FAR point of `2026-10-10`, with `avg` and `max` bit-identical to the same run
+with coherence switched off; the acceptance test passes — `run_walk_forward(train_window=None)`
+and `evaluate.walk_forward_validate` agree on mean and std for all four targets; and
+`model.predict` on the live forecast gives `min ≤ cheap2h` on every day, untouched days equal the
+raw predictions, crossed days equal the mean, `avg`/`max` are unchanged and the interval contains
+the served `cheap2h`.
+
+**Consequences.** Every A/B number measured through `ab.harness` from now on includes the
+change, as does the headline eval and the `mae_*` values pushed to Home Assistant (monitoring
+only; they move a little). The MAE table in [MODEL.md](MODEL.md#current-mae-baseline) predates it
+and was not re-measured. A slot target set (round 20) would need the sibling identity
+`min(slots) ≥ cheap2h` enforced the same way.
+
+## Northern wind points (round 25)
+
+Adopted 2026-10-12, in `sources/open_meteo.py` and `features.py`. Measured with local
+experiment scripts under `experiments/` (not committed); the numbers below are the
+record. The explanation and the full audit are in
+[FINDINGS.md](FINDINGS.md#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25).
+
+**What changed.** Three Open-Meteo points were added to `WIND_LOCATIONS` —
+Norrbotten (65.3, 20.9), Jämtland (63.2, 14.6) and Ostrobothnia (63.1, 21.6), the wind
+fleets behind the SE3 import price that the grid had no point under
+([FINDINGS.md §1.4](FINDINGS.md#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet)).
+`aggregate_intraday_features` turns them into two columns, `north_wind_power` (mean
+over the sites of the m/s power curve, daily mean) and `north_wind_night` (00–06 local
+mean), which are appended **last** to `TROUGH_FEATURE_COLUMNS` (→ `MIN_FEATURE_COLUMNS`
+follows) and `AVG_FEATURE_COLUMNS`. Lists are now 17 / 16 / 44 (`max` unchanged at 51: it
+was not measured, so the columns are deliberately not in `FEATURE_COLUMNS`). The order is
+part of the change: it is the order that was measured, and XGBoost's column sampling is
+index-based.
+
+**A/B result.** Rolling 1088-row grid, NOW / −6M / FAR, 12 points on each of the five
+`ab_cache/long/` caches (the two 5d-tail and three 1d-tail caches never share a grid),
+`classify_clustered`, N1 − base in EUR/MWh:
+
+| cache | cheap2h | min | avg |
+|---|---|---|---|
+| `2026-10-10` | −1.04 | −0.75 | −0.32 |
+| `2026-09-16` | −1.18 | −0.71 | −0.33 |
+| `2026-08-21` | −1.12 | −0.72 | −0.39 |
+| `2026-09-12` | −1.14 | −0.74 | −0.36 |
+| `2026-08-06` | −1.16 | −0.81 | −0.42 |
+
+REAL on all fifteen cells, every point favourable on cheap2h and min (60 of 60),
+per-window std 0.93–1.02 of base. The FAR cluster is the same calendar window in every
+cache, so only NOW (−1.24 … −1.65) and −6M (−0.96 … −1.10) are independent between
+caches; the table replicates the fetch, not five periods. Neighbours, on three caches:
+each single site gives about half (cheap2h −0.55 … −0.71); a fourth site (Sundsvall)
+adds nothing on cheap2h (+0.09 / +0.19 / +0.01) and was rejected
+([REJECTED.md](REJECTED.md)); removing `mean_wind_stockholm` from the new model costs
++0.57 … +0.79 (cheap2h) and +0.27 … +0.51 (min), so it stays.
+
+**Horizon honesty — and the weather axis.** Both columns are per-day weather quantities
+production recomputes for every forecast day from the forecast, so neither is frozen
+(the test rows carry their own day's value, as production does). The weather *source*
+is the weak point: every eval weather input is ERA5 archive, a perfect forecast.
+Re-scored with the models still trained on archive weather and the test rows fed the
+forecast issued L days earlier (Open-Meteo Previous Runs, `best_match` — what the
+production fetch resolves to — for all nine points, two caches × 12 points), the
+cheap2h gain is **−0.50 / −0.41 / −0.44** (NOW / −6M / FAR, `2026-10-10`) and
+**−1.23 / −0.59 / −0.44** (`2026-09-16`) against −1.24 / −0.96 / −0.92 and
+−1.65 / −0.98 / −0.92 on archive: 40–75 % survives, negative in every cluster. It
+decays with lead (L1–L3 ≈ −1.0, L5 −0.75, L6 −0.45, **L7 ≈ 0**), `min` keeps −0.30 …
+−0.91 (−0.29 at L7), and `avg` keeps almost nothing (`2026-10-10`: +0.05 / −0.12 /
+−0.10) — its archive gain is perfect foresight, shipped anyway because it is not
+harmful and the columns serve the priority targets. Leak smell (archive gain at test
+row 6 over row 0): 1.24 cheap2h, 1.60 min, 1.01 avg, flag at 2. **Expect the headline
+MAE to move about half as far as the archive A/B suggests**, mostly at D+2…D+5.
+
+**Verified locally before commit** (`experiments/integration_check_northwind.py`,
+`OMP_NUM_THREADS=4`): the production frame built by `features.build_training_data` from
+the grafted `long/2026-10-10` cache has the two columns identical to the experiment
+frame and every shared production column identical; the shipped lists equal the old
+lists plus the two columns appended last; the production variant's walk-forward on
+`2026-10-10` shift 0 reproduces the stored N1 arm to six decimals (min 15.0085,
+cheap2h 15.2795, avg 19.4838); `model.train` on production's 1088 rows → importance
+sizes 16 / 44 / 18 (`north_wind_power` importance 0.052 min, 0.013 avg, 0.022 cheap2h);
+and the live forecast path — Open-Meteo forecast for all eight locations →
+`build_forecast_features` → `model.predict` with the interval — gives finite features
+and predictions on every day.
+
+**The long caches were extended in place, 2026-10-12.** `aggregate_intraday_features`
+raises on a missing site column (a silent drop would shrink the frame through `dropna`),
+so every cache taken earlier would no longer build. The three sites were grafted into
+each cache's `wind_intl_hourly` — archive up to the cache's own `today − 5 d`, the recent
+analysis after, the splice `fetch_data` uses — after checking that the method
+reproduces a cached column exactly (fresh archive vs the cached Stockholm wind over
+4344 h: max difference 0.0000) and asserting every existing column unchanged. Each
+`meta.json` records it. Consequence for A/B work: `BASELINE` now includes the northern
+columns; comparing against the pre-change configuration needs an explicit `targets`
+override ([AB_TESTING.md](AB_TESTING.md#how-it-works)).
+
+**Not done.** `max` was not measured and does not read the columns. The 2026-10-16 long
+cache is the first independent NOW window for a replay.
 
 ## A03 forward-fill of ENTSO-E price curves
 
@@ -324,7 +479,7 @@ bit-identical; only what feeds the curve changes.
 A/B result, round-15b 16-point/four-cluster grid, run independently on **all
 four** `ab_cache/long/` snapshots that existed at the time (two 5d-tail, two
 1d-tail — never pooled into one grid across tails, per
-[AB_TESTING.md](AB_TESTING.md#snapshot-generations---check-the-weather-tail-before-building-a-grid)):
+[AB_TESTING.md](AB_TESTING.md#snapshot-generations--check-the-weather-tail-before-building-a-grid)):
 
 | snapshot | tail | cheap2h clmean | verdict | min clmean | verdict |
 |---|---|---|---|---|---|
@@ -665,7 +820,7 @@ the final `dropna` now drops those rows, so a 5-year snapshot starts where its
 latest-starting source does: `long/2026-08-06` is **1747 rows from 2021-10-21**,
 not 1815 from 2021-08-14. Grid scripts that assert a row count will trip on this;
 the assertion is doing its job (see
-[AB_TESTING.md](AB_TESTING.md#measurement-grids-tail-truncated-vs-sliding-read-before-designing-a-run)).
+[AB_TESTING.md](AB_TESTING.md#measurement-grids-training-geometry-and-period-clusters-read-before-designing-a-run)).
 
 ## Price-lag anchor freshening
 

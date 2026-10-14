@@ -20,6 +20,9 @@ check whether the code it describes still looks that way.
 | [Cached history is stable, except for one column](#cached-history-is-stable-except-for-one-column-2026-09-17) | 2026-09-17 | 12 snapshot pairs: SE4 prices, weather, nuclear and TTF are byte-identical across fetches, so a cache is not a vintage — but `price_de` was a coin flip between two curves on 95 % of hours, in production too |
 | [ENTSO-E omits a price point when the price repeats](#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10) | 2026-10-10 | A44 curves are A03 "variable sized block"; read point by point, repeated prices vanished from every target, every lag and the EUR/SEK rate — growing 9 → 246 points a year as 15-minute MTUs made repeats common |
 | [German prices: two auctions in one response](#german-prices-two-auctions-in-one-response-round-215) | 2026-10-11 | `price_de` was SDAC or the German intraday auction per hour; the clean series moves the DE-lag arms ~0.1 and changes no verdict's direction; `max` −0.32 |
+| [The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast](#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25) | 2026-10-11 | Two columns from three northern wind points: cheap2h −1.04 … −1.18 on all five caches, ~40–75 % of it surviving forecast-vintage weather, gone at a 7-day lead; Stockholm stays; a fourth site adds nothing |
+| [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar |
+| [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26) |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
@@ -642,6 +645,184 @@ just as invisible to a backtest. The parser fix corrects it with no change to
 What was decided, and the A/B that scored old and new pipelines against the
 corrected targets:
 [DECISIONS.md](DECISIONS.md#a03-forward-fill-of-entso-e-price-curves).
+
+## The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast (round 25)
+
+Measured 2026-10-11, plan item 2.13. **Validated by the pre-registered bar on all
+five long caches and shipped 2026-10-12** ([DECISIONS.md](DECISIONS.md#northern-wind-points-round-25)).
+
+**What was added.** Open-Meteo 100 m wind at three points the grid did not have —
+Norrbotten (65.3, 20.9), Jämtland (63.2, 14.6), Ostrobothnia (63.1, 21.6) — the
+fleets behind the SE3 import price ([§1.4](#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet)).
+Two columns, both per-day forecastable (no freeze): `north_wind_power`, the mean
+over the three sites of the m/s power curve, and `north_wind_night`, its 00–06
+local mean. Added to the `min`, `cheap2h` and `avg` lists. (Control `Nb`: the three
+raw daily means instead — same direction, smaller: cheap2h −0.68 … −0.84.)
+
+**Result, rolling 1088-row grid, NOW / −6M / FAR clusters, per cache
+(clmean, every point favourable, per-window std 0.93–1.02 of base):**
+
+| cache | cheap2h | min | avg |
+|---|---|---|---|
+| `long/2026-10-10` | −1.04 | −0.75 | −0.32 |
+| `long/2026-09-16` | −1.18 | −0.71 | −0.33 |
+| `long/2026-08-21` | −1.12 | −0.72 | −0.39 |
+| `long/2026-09-12` | −1.14 | −0.74 | −0.36 |
+| `long/2026-08-06` | −1.16 | −0.81 | −0.42 |
+
+cheap2h by cluster: NOW −1.24 … −1.65, −6M −0.96 … −1.10, FAR −0.92. FAR is the
+**same calendar window in every cache** (the 2021-10-21 data floor pins it), so only
+NOW and −6M are independent between caches; the five rows replicate the *fetch*, not
+five periods. Every one of the 60 points was favourable on cheap2h and min.
+
+**Decomposition and neighbours (3 caches, cheap2h / min):**
+
+* One site alone gives about half: Norrbotten −0.55…−0.67 / −0.58…−0.60, Jämtland
+  −0.56…−0.71 / −0.37…−0.47, Ostrobothnia −0.55…−0.68 / −0.58…−0.62. The sites are
+  noisy samples of one fleet; the average is the signal.
+* A fourth site (Sundsvall, 62.4/17.3) adds **nothing on cheap2h** (vs N1: +0.09,
+  +0.19 REAL-harmful, +0.01) and −0.12…−0.14 on min. Not adopted.
+* `mean_wind_stockholm` stays: removing it from the N1 model costs +0.57…+0.79
+  (cheap2h) and +0.27…+0.51 (min), `KEEP_LOAD_BEARING` on all three caches. The
+  northern points complement the Stockholm proxy; they do not replace it.
+* The MW-scale residual load ([plan 2.1-S](../IMPROVEMENT_PLAN_2026-09.md)) stacks on
+  N1 for `min` (−0.20 … −0.31 further, REAL ×3) and `avg` (−0.37…−0.39 further), and
+  not for cheap2h (NOISE, one REAL-harmful +0.23).
+
+**Mechanism, in the data.** Workdays of the last 365 days, cheap2h by tercile of
+`north_wind_power`: calm 63.6, mid 47.8, windy 23.9 EUR/MWh. Holding Stockholm wind
+calm, north-calm 73.5 vs north-windy 41.5. In a production-style `min` fit the new
+column takes importance 0.051, next to `mean_wind_stockholm` at 0.077.
+
+**The check that mattered: it is a perfect-forecast number.** An effect this large
+on a weather column is a wiring claim until the weather axis is priced. All eval
+weather is ERA5 archive. N1 was re-scored with the model still trained on archive
+weather but the test rows fed the *forecast issued L days earlier* (Open-Meteo
+Previous Runs, `best_match` — what production's fetch resolves to; all nine points
+swapped, the three northern ones included), 2 caches × 12 points:
+
+| cheap2h, N1 − base | NOW | −6M | FAR |
+|---|---|---|---|
+| archive weather (`2026-10-10` / `2026-09-16`) | −1.24 / −1.65 | −0.96 / −0.98 | −0.92 / −0.92 |
+| forecast weather, production lead map | −0.50 / −1.23 | −0.41 / −0.59 | −0.44 / −0.44 |
+
+Every cluster stays negative; the honest gain is **~40–75 % of the archive gain**.
+By lead (all test rows at lead L, pooled): L1 −0.95, L2 −1.07, L3 −1.01, L4 −0.80,
+L5 −0.75, L6 −0.45, **L7 ≈ 0.00** (min: −0.70 … −0.29, still −0.29 at L7). `avg`
+keeps almost nothing (`2026-10-10`: NOW +0.05, −6M −0.12, FAR −0.10): its archive gain is
+perfect-foresight. The leak smell test passes — the archive gain at test row 6 over
+row 0 is 1.24 (cheap2h), 1.60 (min), 1.01 (avg), flag at 2 — i.e. the gain is flat
+or fading with horizon, as an honest feature's should be. Pre-registered survival
+criterion (negative in every cluster on cheap2h) met.
+
+**As shipped:** the three keys in `sources.open_meteo.WIND_LOCATIONS`; the two columns in
+`features.aggregate_intraday_features`; appended last to the trough and `avg` lists and
+deliberately **not** to `FEATURE_COLUMNS`, which would have silently changed `max`. The
+2026-10-16 long cache is the next independent NOW window.
+
+---
+
+## Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4 (round 25, plan 2.3a/2.3b)
+
+Measured 2026-10-11. The README has listed "walk-forward uses archive weather as a
+stand-in for the forecast" as an unmeasured limitation since the start; Open-Meteo's
+Previous Runs API (forecasts as issued 1–7 days before each hour, from 2024-03)
+measures it.
+
+**Design.** The model is trained on archive weather exactly as production is; each
+week's 7 test rows are scored (a) on archive weather and (b) on the forecast issued
+L days earlier for **all six production weather points**, L = 1…7. The vintage frames
+are built by the unmodified `build_training_data` on hybrid hourly inputs, so every
+derived column (residual load, HDD, `wind_night` …) is the production recipe on
+forecast inputs; only per-day weather columns change, frozen lags and prices do not
+(asserted). 5 caches × 12 points × 52 windows. Production's first sent day is D+2
+(its price anchor is D+1), so eval row j maps to lead min(j+2, 7).
+
+**Penalty = MAE(forecast weather) − MAE(archive weather), EUR/MWh, mean over the five
+caches (base models):**
+
+| cheap2h | L1 | L2 | L3 | L4 | L5 | L6 | L7 |
+|---|---|---|---|---|---|---|---|
+| NOW | +0.50 | +0.40 | +0.45 | +0.69 | +2.06 | +3.05 | +4.65 |
+| −6M | +0.36 | +0.25 | +0.54 | +0.33 | +1.15 | +2.45 | +3.00 |
+| FAR | +0.12 | −0.07 | +0.30 | −0.04 | +1.03 | +2.29 | +2.99 |
+
+`min` is the same shape (L7: +4.79 / +3.22 / +2.78); `avg` is worse (L7: +5.76 /
++4.70 / +6.58). At production's lead mapping the penalty is **+1.63 cheap2h, +1.69
+min, +2.81 avg** pooled over the 15 cache × cluster cells (cheap2h by cluster
++2.35 / +1.51 / +1.02, on an archive MAE of 13–16). It is small through D+4 and
+steep from D+5. Consequences: the headline MAE in [MODEL.md](MODEL.md) is optimistic
+by about this much; the D+5…D+7 days the Home Assistant rule most wants to defer
+on are where the model is least reliable; and any *weather* candidate's archive
+gain should be re-scored on vintages before it is believed (the N1 section above is
+the worked case).
+
+**Multi-model blend (2.3b).** Hourly mean of ECMWF IFS, ICON and GFS (`mean3`,
+ICON has no lead 7) against `best_match`, same lead, same fits: cheap2h
+production-mapped change NOW −0.52, −6M −0.39, FAR −0.20 (min −0.46 / −0.41 /
+−0.39), which removes **23 % (cheap2h) and 25 % (min) of the penalty**; `avg`
+nothing (+0.48 / −0.01 / −0.59). Most of it is at L5–L7 (−0.5…−1.0). ECMWF alone is
+no better than `best_match` (−0.06 … +0.23). **The pre-registered bar — lower
+MAE at every lead ≥ 3 in every cluster on cheap2h, on ≥ 4 of 5 caches — was met on
+0 of 5**: the L3–L5 cells of −6M and FAR flip sign (+0.04 … +0.15). The all-lead
+mean is negative in all 15 cache × cluster cells (−0.17 … −0.44), so the direction
+is not in doubt and the size is a quarter of a penalty that is itself only
+measurable on 2.6 years of vintages. Not adopted; a replay on forward data (the
+production log, plan 2.2) is the honest next measurement, with a bar written for
+the production lead mapping rather than for every lead.
+
+Not measured: 2.3c (train on what you serve) — it needs per-horizon training sets;
+the L5–L7 penalty above is its headroom, +1 … +5 EUR/MWh on cheap2h.
+
+---
+
+## ENTSO-E documents: four traps found validating the round-25 fetch (2026-10-11)
+
+`experiments/fetch_round25_entsoe.py` (A75 generation per type, A65 load, A68
+installed capacity, A65 week-ahead, A77/A80 unavailability; 8 zones, 5.2 years;
+cache `ab_cache/entsoe_r25/2026-10-11/`). The trial fetch of one year found these,
+all fixed in the script; anyone reading the documents elsewhere should know them.
+
+1. **A75, A65 and A68 are `curveType A03` too.** A point is sent only when the value
+   changes, so repeats — every night-time zero of a solar series — are missing.
+   Read point by point, SE solar kept roughly 55–85 % of its rows. The fix is the A44 one
+   (expand each Period to every position, carry forward); after it every SE, FI and
+   DE zone has 0 missing hours in five years, DK1/DK2 a few short gaps (DK2 solar
+   ~1.5 % of hours).
+2. **DE_LU has two overlapping series until 2025-06-30.** `direction == "out"` is a
+   consumption series (zeros for wind and solar) with the same timestamps as the `in`
+   series; taking either at random gave zero months and a 2026 solar mean twice the
+   2025 one. **Filter `direction == "in"`.** Everything else has only `in`.
+3. **A68 is patchy.** Swedish zones carry 2026 onshore wind only (SE4 2134 MW, SE2
+   6315, SE3 3547, SE1 2278), no solar, no earlier year; Danish onshore capacity
+   drops 4112 → 2619 MW in 2025 (reclassification). Calibration must come from A75.
+4. **The `psrType` filter is ignored by A77** — see the next section; this one is a
+   production defect.
+
+### `nuclear_outage_se3` counts things that are not nuclear outages
+
+The SE3 A77 response for `psrType=B14` also contains gas CHP (B04 *Rya KVV*), hydro
+(B12 *Trängslet*) and a wind farm (B19 *Jädraås*). `fetch_nuclear_outages_se3` parses
+mRID/start/end only, so it counts them — and cancelled records (`docStatus` A09: 78
+of 404 planned steps) and every partial derate (available 250–750 MW of a
+1100–1400 MW unit) as a full event. Reproduced offline from the saved responses with
+the production parser's own logic: over 2021-08 → 2026-10 the daily count averages
+**2.38 against 1.13** for nuclear-only, non-cancelled, latest-revision records,
+differs on 1318 of 1888 days (70 %), correlates 0.70, and the gap grows (2025: 3.34
+vs 1.03). `nuclear_outage_se3` is in `FEATURE_COLUMNS`, so `avg` and `max` read it;
+the trough lists do not (pruned), so the priority targets are unaffected.
+
+**And the obvious fix makes `avg` worse (round 26, 2026-10-12).** Counting distinct,
+non-cancelled B14 units — equal to an independent computation on all 1908 days and
+applied to the same rows — costs `avg` **+0.13** (REAL-harmful on 3 of 5 caches,
+including the primary; NOISE on the other two), and `max` moves −0.18 … +0.17;
+`min` and `cheap2h` are bit-identical, so the harness is sound. A parser that makes the
+column mean what its name says removes information the old one carried — plausibly the
+outages of hydro and gas units, which are a proxy for SE3 generation outage load, and
+the cancelled/duplicate structure — so **a defect in what a feature is called is not the
+same as a defect in what it does**. Production keeps the old behaviour (the fixed parser
+is saved as `experiments/results/nuclear_parser_fix.patch`); the follow-up is to split the
+column into its components and test each ([plan 2.7](../IMPROVEMENT_PLAN_2026-09.md)).
 
 ## Appendix A — Source probes, 2026-09-08
 

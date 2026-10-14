@@ -4,7 +4,7 @@ A machine learning pipeline that predicts day-ahead electricity prices for the S
 
 ## Purpose
 
-The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg/cheap2h prices up to 8–10 days ahead, giving automation rules enough lead time to act.
+The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg/cheap2h prices for the six days after the ones already published (D+2 … D+7 from the run date: the weather forecast covers 8 days and today and tomorrow are dropped as known), giving automation rules enough lead time to act.
 
 The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, and updates a Home Assistant sensor with predictions in SEK/kWh, including a configurable distribution cost addon.
 
@@ -14,24 +14,26 @@ The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, an
 Data sources (API)
     │
     ├── ENTSO-E      → SE4/DE/DK2 day-ahead prices, SE3 nuclear outages, Sweden reservoir (A72)
-    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 5 regional locations)
+    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 8 regional locations)
     ├── Yahoo Finance → TTF natural gas futures, EU ETS carbon allowance (EUA)
     ├── NVE          → Norwegian hydro reservoir levels + 20-year seasonal median
     └── Nordpool     → Published prices (to skip days already known)
          │
          ▼
 Feature engineering (features.py)
-    → 51 engineered features, daily resolution, 3-year training window
+    → 51 engineered features (+2 northern-wind columns for min/avg/cheap2h), daily resolution, 3-year training window
          │
          ▼
 Model training (model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
     → per-target feature sets: `max` uses all 51, `avg` runs a validated
-      42-column subset (AVG_FEATURE_COLUMNS), and the two trough targets
-      (cheap2h, min) run validated pruned subsets of 15 / 14 columns
-      (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
+      44-column list (AVG_FEATURE_COLUMNS: a 42-column subset + 2 northern-wind
+      columns), and the two trough targets (cheap2h, min) run validated pruned
+      lists of 17 / 16 columns (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
+    → min and cheap2h are made coherent: where predicted min exceeds predicted
+      cheap2h, both become their mean (model.enforce_coherence)
     → price_cheap2h also gets a conformally calibrated 80% interval from two
       quantile regressors on the same features (cheap2h_low / cheap2h_high)
     → Walk-forward validation: 52 windows × 7 days (evaluate.py)
@@ -146,7 +148,7 @@ belongs in the ledgers above. Concretely, if you are working in that directory:
 - **The model sees exactly three years, and that is fixed.** `TRAINING_DAYS = 1095` is a *sliding* window, not an accumulating one, so history does not build up: every fit sees 1095 rows and any regime older than that is invisible. Both longer (4y/4.4y/4.8y) and shorter (2.0y/2.5y) windows were tested and rejected — window length is not a lever (see [REJECTED.md](docs/REJECTED.md)). The binding consequence is the **prediction ceiling**: XGBoost cannot extrapolate past its training targets, so a price the last three years never reached is unreachable — see [The 2026-08-17 regime break](docs/FINDINGS.md#the-2026-08-17-regime-break).
 - **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
 - **Forecast horizon**: All forecast days (1–8) use the same features and a single model that doesn't distinguish horizon. Horizon-aware modelling was **evaluated and shelved** (2026-07): the anchor-staleness sensitivity showed the true stale-lag cost is only ~1 EUR/MWh for min/cheap2h, so a `forecast_horizon` feature has little headroom. The scary-looking per-horizon curve is a weekday artifact of the step-7 walk-forward (see [Current MAE Baseline](docs/MODEL.md#current-mae-baseline)), not real horizon decay. The price-lag anchor is kept fresh regardless, since that was a free win.
-- **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis — real day+7 weather forecasts are worse than archive. This optimism grows at far horizons and is not captured by the anchor-staleness or per-horizon metrics.
+- **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis. Measured 2026-10-11 on forecast vintages (Open-Meteo Previous Runs, 5 caches): scoring the same models on the forecast issued L days earlier costs **+1.63 cheap2h / +1.69 min / +2.81 avg EUR/MWh at production's leads** (D+2…D+7), almost all of it from D+5 (cheap2h +1.0…+2.1 at L5, +3.0…+4.7 at L7) — see [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b). The headline MAE in [MODEL.md](docs/MODEL.md) and every weather feature's archive-weather A/B gain should be read with that in mind; the one weather candidate re-scored so far kept 40–75 % of its gain.
 - **The headline eval trains on less than production does.** `walk_forward_validate` expands: its 52 test weeks have to come out of the same 1088-row frame production fits on, so the first trains on 724 rows and the last on 1081 — ~900 on average against production's 1088. Measured on the current feature set, production-length training scores **~0.36 better** on `min` in the most recent period, so the headline is mildly pessimistic there, though the sign is period-dependent. Production cannot avoid this (three years of fetch is exactly one evaluation year short), so the A/B grid was fixed instead and the headline was not — see [Production-length training in the A/B grid](docs/DECISIONS.md#production-length-training-in-the-ab-grid).
 - **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](docs/DECISIONS.md#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual is measured at **+0.155 (cheap2h) / +0.258 (min) / +0.591 (avg)** (the `gap1` arm), and the recent-analysis product's own error against the archive is on top of that and still unmeasured.
 - **Max prediction accuracy** (the highest MAE of the four targets by a wide margin — see [MODEL.md](docs/MODEL.md#current-mae-baseline)): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.

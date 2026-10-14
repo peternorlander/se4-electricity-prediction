@@ -28,9 +28,9 @@ feature** — see [Per-Target Feature Sets](MODEL.md#per-target-feature-sets):
 | Model | Features used |
 |-------|---------------|
 | max | all 51 |
-| **avg** | **a validated 42-feature subset** (`AVG_FEATURE_COLUMNS`) — `FEATURE_COLUMNS` minus the 9-column price/market lag family |
-| **cheap2h** | **a validated 15-feature subset** (`TROUGH_FEATURE_COLUMNS`), plus `neg_price_proba` at fit/serve |
-| **min** | **the same list minus `price_se4_max_lag1`** (`MIN_FEATURE_COLUMNS`, 14) |
+| **avg** | **a validated 44-feature list** (`AVG_FEATURE_COLUMNS`) — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns |
+| **cheap2h** | **a validated 17-feature list** (`TROUGH_FEATURE_COLUMNS`: 15 of the 51 + the two northern-wind columns), plus `neg_price_proba` at fit/serve |
+| **min** | **the same list minus `price_se4_max_lag1`** (`MIN_FEATURE_COLUMNS`, 16) |
 
 (cheap2h's model also gets a `neg_price_proba` input computed at fit/serve time by
 the negative-price hurdle classifier — see [Negative-Price Hurdle](MODEL.md#negative-price-hurdle-cheap2h-only).
@@ -45,16 +45,20 @@ cheap-price or average-price forecast, the lists in
 
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
-- `mean_wind`, `max_wind` — daily wind speed (10m)
+- `mean_wind`, `max_wind` — daily mean / max of the hourly 100 m (hub-height) wind speed, in **km/h** —
+  Open-Meteo's default unit; `sources/open_meteo.py` passes no `wind_speed_unit`. Every `mean_wind_<site>`
+  column below is the same quantity. Only the power curve inside `residual_load` / `residual_load_min` /
+  `residual_load_range` / `wind_night` converts to m/s (÷ 3.6, [DECISIONS.md](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23)).
 - `mean_radiation`, `max_radiation` — global horizontal irradiance (GHI W/m²)
 
-### Regional Wind & Solar (5 locations, 100m hub-height)
+### Regional Wind & Solar (8 locations, 100m hub-height)
 Captures wind and solar generation in coupled markets that flow into SE4.
 - **Karlskrona** — Baltic offshore wind patterns
 - **DK2** — directly coupled to SE4 via Øresund (~1700 MW)
 - **Stockholm** — SE3 load centre (also used for temperature gradient)
 - **DK1** — western Denmark/Jutland
 - **DE North** — northern Germany, Baltic Cable (~600 MW)
+- **Norrbotten, Jämtland, Ostrobothnia** — the northern wind belt (SE1/SE2 and the Finnish west coast) behind the SE3 import price; added 2026-10-12. Each emits the same `mean_wind_<key>` / `mean_radiation_<key>` / `mean_temp_<key>` columns as the others, but only `north_wind_power` / `north_wind_night` below are read by a model.
 
 ### Market Coupling
 - `price_de_lag1`, `price_dk2_lag1` — previous day's prices in neighbouring zones.
@@ -109,6 +113,11 @@ The daily price minimum (and `cheap2h`) is set at a specific intraday trough —
 - `residual_load_range` — daily max − min of hourly residual load: proxy for the intraday min↔peak spread (drives the min–avg gap)
 - `wind_night` — interconnection-weighted wind power, 00–06 local mean (overnight wind-driven trough)
 - `radiation_midday` — interconnection-weighted solar supply, 10–16 local mean (midday negative-price window)
+
+### Northern Wind (not part of the 51)
+Two columns computed in `aggregate_intraday_features` from the three northern points, read by `min`, `cheap2h` and `avg` only (`NORTH_WIND_COLUMNS`). Both per-day forecastable — weather, not lagged, not frozen.
+- `north_wind_power` — mean over `NORTH_WIND_SITES` (Norrbotten, Jämtland, Ostrobothnia) of the m/s power curve, daily mean of the hourly values
+- `north_wind_night` — the same, 00–06 local mean (falls back to the all-hours mean on a partial boundary day)
 
 ### Heating Degree Days
 - `hdd_linear` — `max(0, 17 - temp)`: standard Nordic HDD, a key heating-demand signal (`residual_load` and `max_temp` usually rank higher)
