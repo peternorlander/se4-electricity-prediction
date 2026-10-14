@@ -27,7 +27,7 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 # Deliberately heterogeneous: each target uses the feature set its own ablation
 # testing validated, since a feature can be load-bearing for one target and dead
 # weight for another. `max` keeps all 51 (not a priority target, never audited).
-# `avg` drops its 9-column price/market family (42 of 51, see
+# `avg` drops its 9-column price/market family (42 of 51 + the 2 northern-wind columns, see
 # features.AVG_FEATURE_COLUMNS). The two trough targets run pruned lists that
 # differ from each other by exactly one column. cheap2h additionally gets
 # neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS.

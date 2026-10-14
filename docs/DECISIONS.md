@@ -48,8 +48,9 @@ hours) are independent regressors, and the true gap between them is tiny — ove
 year the mean of the two cheapest hours sits a median 0.4 EUR/MWh (mean 1.3) above the
 cheapest hour. Their predictions therefore cross constantly: **predicted `min` exceeded
 predicted `cheap2h` on 40–50 % of held-out days** on every cache (46 % on `2026-10-10`
-with the northern wind points in), by 2.0–2.4 EUR/MWh on average where it did, and on a
-live forecast taken the day it shipped 7 of 9 days were crossed. A pair that violates the
+with the northern wind points in), an average excess of 2.0–2.4 EUR/MWh over all days
+(about 5 on the days it happens), and on a live forecast taken the day it shipped 7 of 9
+days were crossed. A pair that violates the
 identity is incoherent for the Home Assistant rule and, because both are noisy estimates of
 nearly the same number, loses information.
 
@@ -478,7 +479,7 @@ bit-identical; only what feeds the curve changes.
 A/B result, round-15b 16-point/four-cluster grid, run independently on **all
 four** `ab_cache/long/` snapshots that existed at the time (two 5d-tail, two
 1d-tail — never pooled into one grid across tails, per
-[AB_TESTING.md](AB_TESTING.md#snapshot-generations---check-the-weather-tail-before-building-a-grid)):
+[AB_TESTING.md](AB_TESTING.md#snapshot-generations--check-the-weather-tail-before-building-a-grid)):
 
 | snapshot | tail | cheap2h clmean | verdict | min clmean | verdict |
 |---|---|---|---|---|---|
@@ -819,7 +820,7 @@ the final `dropna` now drops those rows, so a 5-year snapshot starts where its
 latest-starting source does: `long/2026-08-06` is **1747 rows from 2021-10-21**,
 not 1815 from 2021-08-14. Grid scripts that assert a row count will trip on this;
 the assertion is doing its job (see
-[AB_TESTING.md](AB_TESTING.md#measurement-grids-tail-truncated-vs-sliding-read-before-designing-a-run)).
+[AB_TESTING.md](AB_TESTING.md#measurement-grids-training-geometry-and-period-clusters-read-before-designing-a-run)).
 
 ## Price-lag anchor freshening
 

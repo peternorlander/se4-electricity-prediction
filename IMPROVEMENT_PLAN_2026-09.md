@@ -1,13 +1,16 @@
 # SE4 Prediction — Improvement Plan, September 2026 (round 21 onwards)
 
-**Status 2026-10-12 (after round 25).** Written 2026-09-08 as a plan. Since then
-2.4, 2.5 (labels), 2.8, 2.9 and 2.16 were measured and rejected and are gone from
-this file (rows in [REJECTED.md](docs/REJECTED.md)); 2.10 (`min ≤ cheap2h`) and 2.13
-(northern wind points) were measured and shipped ([DECISIONS.md](docs/DECISIONS.md));
-2.3a was measured and written up in [FINDINGS.md](docs/FINDINGS.md); 2.1-S and 2.3b
-were measured with results that need a decision. What is open, in the order it should
-be done, is section 4. It is the successor to `IMPROVEMENT_PLAN.md` (2026-08), which
-stays as the record of the round-12 → round-19 follow-ups.
+**Status 2026-10-14 (after round 25).** Written 2026-09-08 as a plan. Since then
+2.4, 2.5 (labels), 2.8, 2.9, 2.15 and 2.16 were measured and closed and are gone from
+this file (rejections in [REJECTED.md](docs/REJECTED.md), adoptions in
+[DECISIONS.md](docs/DECISIONS.md)); 2.10 (`min ≤ cheap2h`) and 2.13 (northern wind
+points) shipped 2026-10-12 and are kept only for what they still owe; 2.3a was measured
+and written up in [FINDINGS.md](docs/FINDINGS.md). What is **half done** and carried here
+with where it stands: 2.1 (S measured, C open), 2.3b/c/d, 2.5-HS, 2.7 (the nuclear
+column), 2.10 and 2.13 (replays), and 2.17 (round 24, found 2026-10-10 and never
+written down). What is open, in the order it should be done, is section 4. It is the
+successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays as the record of the
+round-12 → round-19 follow-ups.
 
 Read first, as before: [docs/AB_TESTING.md](docs/AB_TESTING.md) in full (the
 harness, "How changes are validated", "Measurement grids", "Which verdict
@@ -64,12 +67,9 @@ when it is warm.
 
 **Unit fix — SHIPPED 2026-09-17 (round 23).** Divide by 3.6 *inside*
 `_wind_power_curve`; adopted on a cheap2h REAL verdict. Record and numbers:
-[DECISIONS.md](docs/DECISIONS.md#residual-load-wind-curve-unit-fix-round-23).
-**Still open, deliberately not done in that commit:** the raw `mean_wind_*` /
-`max_wind` columns and their unit labels (docs/FEATURES.md, the old
-docstring) are still in km/h — a separate, documentation-only commit. The
-unit fix alone does not cure the scale mismatch below (FINDINGS.md §1.1);
-expect layers 2–3 to matter more, not less, now that 1 is in.
+[DECISIONS.md](docs/DECISIONS.md#residual-load-wind-curve-unit-fix-round-23). The unit
+fix alone does not cure the scale mismatch below (FINDINGS.md §1.1), which is what S and
+C are for.
 
 **What's left to build.** Layer 2 (scale) was measured with fixed constants in
 round 25; layer 3 (calibration) is open and its data now exists.
@@ -137,7 +137,9 @@ rolling grid, per-window std not inflated; a vintage re-score for the winner.
 
 **Mechanism.** Every accuracy number in docs/MODEL.md is a backtest with two known
 optimisms that no backtest can remove: archive weather in place of the forecast
-(unmeasured, grows with horizon) and the gap1 fit tail (+0.155 / +0.258 /
+(measured 2026-10-11 on vintages: +1.63 cheap2h / +1.69 min / +2.81 avg at production's
+leads, [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b);
+the log shows what it is in practice) and the gap1 fit tail (+0.155 / +0.258 /
 +0.591). The only instrument that measures what Home Assistant actually
 received is the record of what was sent, scored against what was realised.
 There is no such record today: `predictions_raw` is overwritten on every push.
@@ -161,7 +163,14 @@ There is no such record today: `predictions_raw` is overwritten on every push.
   gap1 effects, and the per-horizon slope is the weather part.
 
 **Bar.** None — this is instrumentation. It is the prerequisite for reading
-item 2.3 honestly.
+item 2.3 honestly, for the forward replays of 2.10 and 2.13, and for telling whether the
+two changes of 2026-10-12 helped in practice.
+
+**Open decision (Peter):** where the log lives — an orphan `predictions-log` branch the
+workflow commits to (recommended: plain files, no new dependency), or Home Assistant
+long-term statistics. Either way it also logs the three-model weather inputs next to the
+served forecast, so 2.3b can be replayed forward. Touches `.github/workflows/daily_predict.yml`
+(a push step), hence not done without a go.
 
 **Effort.** Half a day. Zero model risk.
 
@@ -261,8 +270,9 @@ advance* are forecast features. Three qualify and none is used:
 
   **The data is fetched** (`ab_cache/entsoe_r25/2026-10-11`: week-ahead min/max load for SE4, SE3, DK2, DE_LU from 2021-07 with ~98 % day coverage; A77/A80 with unit, `psr`, nominal and available MW, revision and a `cancelled` flag; the traps are in [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11)).
 
-Test as one "week-ahead block" first (block tests are more sensitive than
-singles, docs/AB_TESTING.md), then split if the block wins.
+Order: the nuclear decomposition above first (it needs no new fetch), then the
+week-ahead load on its own, then as one "week-ahead block" if both help (block tests
+are more sensitive than singles, docs/AB_TESTING.md).
 
 **Effort.** 1 day for the fetches, half a day per A/B.
 
@@ -300,10 +310,6 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   sort → widen → clamp order, `convert_predictions_to_sek` on a payload with
   every key production can emit. Run in the Actions workflow before
   `predict.py`.
-- **Docs.** docs/FEATURES.md "Local Weather" says 10 m wind; the fetch is
-  100 m. The
-  power-curve docstring says m/s; the data is km/h. Fix both with 2.1's unit
-  commit. README "Purpose" says 8–10 days; it is six.
 - **Harness.** The `build_fn` hook from 2.1. Also a `--targets` filter on
   `run_walk_forward` / `run_ab` (the slot plan §3.4 asks for it) so a
   cheap2h-only screen does not pay for `max`.
@@ -361,7 +367,7 @@ November 2025, so the cache holds no vintage at all before that date
 (docs/FINDINGS.md "If you touch ab_cache/crossborder/"). With the trough targets
 having rejected this data outright and the `avg` export-headroom candidate now
 closed on its serve-time encoding, **the remaining value of UMM is the
-MW-weighted nuclear feature below** — the interconnector half has no consumer
+nuclear features of 2.7, as-of-date correct** — the interconnector half has no consumer
 left, so build it only if something asks for it. Nord Pool's UMM API is the upstream of those
 records and keeps **every version of every message with its
 `publicationDate`** — `GET /messages/{id}/{version}` returns the record as it
@@ -394,76 +400,53 @@ the SE2→SE3 and FI→SE3 cuts that set the import price.
   features; these are per-day features whose *value* depends on the run date,
   so the walk-forward must rebuild them per window from messages published
   before the window start. That is a small extension of the harness (a
-  per-window feature builder), and it is the same machinery 2.3a needs for
-  forecast vintages — build it once.
+  per-window feature builder). Round 25 got its forecast-vintage frames by building one
+  frame per variant instead (`experiments/run_round25_vintage.py`), which does not
+  generalise to a per-window as-of feature — so this is its own piece of machinery.
 
-**Bar.** MW-weighted nuclear vs the current count, cheap2h then min then
-`avg`, `classify_clustered`.
+**Bar.** The 2.7 decomposition arms rebuilt as-of, against the best of them on
+ENTSO-E data; `avg` first, `classify_clustered`.
 
 **Effort.** One day for the source and cache, one day for the per-window
 builder shared with 2.3a.
 
----
+### 2.17 Weekday under-prediction in the autumn-2026 coupling regime (round 24, half done)
 
-### 2.15 German prices: identify the right curve, then re-test the DE lag
+**Source and status.** Found 2026-10-10 and never written to a ledger: the facts below come
+from that session's notes, with scripts `experiments/run_round24*.py` / `oct10_*.py` and raw
+results `experiments/results/round24*.jsonl` (untracked scratch). **Not shipped, not in
+DECISIONS or REJECTED, and not re-checked in the round-25 session — re-derive any number
+before relying on it.**
 
-**DONE 2026-10-11.** a: the second curve is sequence 2, the German 15-minute
-intraday auction (both curves labelled A01); production now loads SDAC
-(sequence 1, request pinned for DE/LU only), 100 % equal to SMARD 2021–2026, and
-ambiguity is a hard error. b: nothing favourable on the clean series — best arm
-cheap2h + `price_de_lag1` NOISE −0.047; the trough targets' price-level rejection
-and 14b are closed on a clean instrument; `max` −0.32 from the fix itself.
-All long caches in `ab_cache/long/` are corrected in place to SDAC. Record:
-[DECISIONS.md](docs/DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically),
-[REJECTED.md](docs/REJECTED.md),
-[FINDINGS.md](docs/FINDINGS.md#german-prices-two-auctions-in-one-response-round-215).
-The text below is the plan as written.
+**What was found.** From mid-September 2026 cheap2h was under-predicted on weekdays (replay
+since 22 Sep: weekday bias about −30 EUR/MWh, half the outcomes above the interval's high).
+The cause was a tight-Nordic regime: TTF 33 → 75 (gas marginal cost ~103), Norwegian
+reservoir deviation −0.15 at the window's edge, five SE3 nuclear units out. Weekday cheap2h
+became bimodal — coupled to DK2/DE at roughly 1.0–1.4 × gas marginal cost when Stockholm
+wind is below ~20 km/h, else 5–35. A coupling hurdle `couple_wt` (a linear logistic
+P(cheap2h / gmc > 0.6) on weather + `reservoir_norway_deviation` + `nuclear_outage_se3` +
+`reservoir_sweden_gwh`, out-of-fold, appended to the `min`/`cheap2h` lists) was REAL on all
+three caches tested (`long/2026-10-10`, `-09-16`, `-08-21`), both targets, every cluster
+negative: cheap2h NOW −0.24 / −0.09 / −0.44, min NOW −0.53 / −0.30 / −0.38. The weather-only
+version carried cheap2h but not `min` on `-08-21`, so the tightness terms matter for `min`. A
+y/gmc ratio target was NOISE on the trough targets and not replicated on `avg`; the combo
+with the hurdle was dropped. A post-hoc high-band design (warning when P ≥ 0.4: high =
+1.32 × gmc, else a conformal q90 from a model trained on decoupled days only) caught 8 of
+10 recent weekdays with no false alarm, but 73 % caught / 73 % precision over the whole year
+and 27 % of outcomes above the high (17 % for the shipped band): a warning light, not an 80 %
+interval. The FAR cluster is the same computation on every cache, so only NOW and −6M are
+independent evidence.
 
-**Mechanism (new, and the reason this is not just a re-test of a closed
-question).** Until 2026-10-10 `price_de` was a coin flip between two curves on
-95 % of hours — median gap 9.74, max 695 EUR/MWh — re-rolled on every fetch and
-on every production run
-([FINDINGS.md](docs/FINDINGS.md#cached-history-is-stable-except-for-one-column-2026-09-17),
-[DECISIONS.md](docs/DECISIONS.md#one-day-ahead-price-per-hour-chosen-deterministically)).
-So every measurement that ever used a German lag used a column that was partly
-noise and not reproducible: round 18's `price_de_lag1` arms on min/cheap2h,
-round 14b's price-family drop on `avg`, the price-block arms in rounds 11 and
-14a, and `max`'s own feature list. The selection is now deterministic. That is a
-changed *instrument*, not a changed hypothesis, which is exactly what the
-scoping rule says re-opens a verdict.
-
-**a. Decide what we should be loading.** Run `python
-experiments/probe_a44_curves.py --probe` (needs `ENTSO_E_TOKEN`) and answer
-three things: how many TimeSeries an A44 response for DE/LU carries, what
-distinguishes them (`contract_MarketAgreement.type`, `businessType`,
-resolution), and whether adding `contract_MarketAgreement.type=A01` to the
-request removes the second curve at the source. If the second curve is an
-intraday auction, pin the request and turn the parser-side tiebreak into a hard
-error — a day-ahead model should never silently train on intraday prices. Check
-SE4 and DK2 the same way: they showed no conflicts across 12 cache pairs, but
-they run through the same function and a conflict there would reach the priority
-targets. Half a day, no model risk. **Before b**, which can only measure
-whatever a settles on.
-
-**b. Re-test the DE lag on a deterministic series.** Pre-registered arms:
-`price_de_lag1` alone on cheap2h and min (round 18's exact arm), and the
-nine-column price family back on `avg` (round 14b's arm, inverted). Rolling
-grid, `classify_clustered`, on a long snapshot fetched after a. The honest prior
-is that nothing moves: a noisy column is a handicap, so cleaning it can only
-help arms that were rejected as *harmful*, and round 18's were harmful by
-+0.21…+0.61 — more than noise in one of fifteen columns plausibly explains.
-Both outcomes are worth the day. If an arm turns favourable, the trough targets'
-blanket rejection of a price level ([REJECTED.md](docs/REJECTED.md)) was partly
-an artefact of a broken column and has to be re-read. If nothing moves, that
-rejection is finally measured on a clean instrument and can be closed instead of
-being re-opened every time someone notices that DE leads SE4. Note that `max` is
-the only target that currently reads the column and has never been audited: if a
-changes which curve gets loaded, re-baseline `max` in
-[MODEL.md](docs/MODEL.md) too — not as a priority, but because the number there
-was measured on the coin flip.
-
-**Effort.** Half a day for a; one A/B batch for b, sharing a snapshot with the
-next batch.
+**What changed since, and what is open.** (1) The baseline moved on 2026-10-12: the northern
+wind points overlap the "Stockholm wind below ~20 km/h" half of the signal, so `couple_wt`
+must be re-measured against the *new* `BASELINE`, not the old arms' numbers. (2) Its inputs
+include `nuclear_outage_se3`, the column 2.7 shows is contaminated — whatever 2.7 decides
+changes this input. (3) The threshold and band were tuned on the data they were scored on.
+**Next step:** with `ab_cache/long/2026-10-16` (Peter fetches it) re-run `couple_wt` as a
+pre-registered A/B on cheap2h then min — the first unseen NOW window — and only if it is
+REAL there against the new baseline write the ledger entry and build it; the band design is
+a separate, later decision and needs its own forward check (2.2). If it is NOISE, close it
+with a REJECTED row and a FINDINGS note on the regime.
 
 ## 3. Carried at low priority, and what stays closed
 
@@ -486,31 +469,26 @@ index.
 
 ---
 
-## 4. Suggested order (2026-10-11)
+## 4. Suggested order (2026-10-14)
 
-1. **Done 2026-10-12: the northern wind points (2.13) and the `min ≤ cheap2h` coherence**
-   ([DECISIONS.md](docs/DECISIONS.md)). The replay of the first is 2.13 above; the headline
-   MAE table in MODEL.md predates both.
-2. **2.2 prediction log** — start the clock today; it is the instrument that prices
-   everything weather-related for real, and the forward replay for 2.3b and for 2.13
-   waits on it.
-3. **2.7: decompose `nuclear_outage_se3`, then the week-ahead block.** The column counts
-   gas, hydro, wind and cancelled records as nuclear outages (2.39 vs 1.12), but the plain fix
-   made `avg` worse, so it is a question of what the extra information is; the data is in
-   `ab_cache/entsoe_r25/2026-10-11`.
-4. **2.1 oracle ceiling, then C** — the A75/A65 data is in hand; half a day tells
-   whether a calibrated weather→generation mapping has headroom beyond the northern
-   wind points. In the same pass, the `avg` (and replayed `min`) MW-scale columns.
-5. **2.6 slot targets** — unchanged; the guard-rail targets are better built after
-   the feature set above is settled, so the scoring run measures the final features.
-6. **2.3b forward replay / 2.3c** — once the log has a few weeks.
-7. 2.12 hygiene (incl. the `build_fn` hook), 2.11 horizon, 2.14 UMM, 2.5-HS after 2.6.
-
-**Done 2026-09-12: `ab_cache/long/2026-09-12` is fetched** — 1825 days, **1787
-usable rows** from 2021-10-21, weather tail **1d**. It is the first long cache
-taken after the archive top-up, so run the whole batch on it and do **not** mix
-it with `long/2026-08-06` or `long/2026-08-21` in one grid (those are 5d-tail;
-docs/AB_TESTING.md "Snapshot generations"). Its row count differs from both
-older caches for a second, harmless reason as well — see docs/AB_TESTING.md
-"How long a snapshot to fetch" before updating any `EXPECTED_ROWS` constant.
-
+1. **One batch on `ab_cache/long/2026-10-16`** (Peter fetches it; `ab_test.py fetch` carries
+   the northern sites now). It is the first genuinely later NOW window and serves four
+   things at once: the replay of the northern wind points (2.13), the vintage re-score of
+   them on `min` (2.13), the MW-scale columns for `avg`/`min` before they are shipped (2.1),
+   and the re-measurement of the round-24 coupling hurdle against the new baseline (2.17).
+   Do not run any of them on an older cache and call it a replay.
+2. **2.2 prediction log** — waits on Peter's storage choice; start the clock as soon as
+   it is made. It prices everything weather-related for real, and the forward replays of
+   2.3b, 2.10 and 2.13 wait on it.
+3. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
+   `ab_cache/entsoe_r25/2026-10-11` has it. Do it before 2.17 ships, since `couple_wt` reads
+   the column.
+4. **2.1 oracle ceiling, then C** — half a day on the same A75/A65 data tells whether a
+   calibrated weather → generation mapping has headroom beyond the northern wind points.
+5. **2.12 hygiene** — Peter runs `experiments/probe_a72_curve.py --probe`; the NaN last close
+   into the forecast fuel/carbon lags; the `build_fn` hook; the tests.
+6. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
+   so the scoring run measures the final features. 2.5-HS follows it.
+7. **2.3b forward replay / 2.3c** — once the log has a few weeks.
+8. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
+9. 2.11 horizon, 2.14 UMM (after 2.7 shows which nuclear features are worth having).
