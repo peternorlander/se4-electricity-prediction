@@ -786,6 +786,45 @@ def _parse_reservoir_point(point: ET.Element) -> float | None:
     return float(qty_el.text) if qty_el is not None else None
 
 
+# A72 is declared curveType A03 like the price, generation and load documents, so a
+# repeated weekly value COULD be omitted -- and reservoir_sweden_change, a .diff() of the
+# weeks as parsed, would then carry the previous week's change on the omitted one.
+# Checked 2026-10-14 over three years (156 weeks, experiments/probe_a72_curve.py): every
+# Period arrives complete, 0 omitted, because a stored-energy figure in MWh practically
+# never repeats exactly. The fill below is therefore a no-op on today's data; it is here so
+# the first omitted week is carried forward (and logged) rather than silently mis-diffed.
+_RESERVOIR_STEPS = {"P7D": timedelta(weeks=1), "P1D": timedelta(days=1)}
+
+
+def _fill_reservoir_positions(by_position: dict, period: ET.Element,
+                              period_start: datetime, resolution: str) -> dict:
+    """Expand an A03 reservoir Period to every position 1..N, carrying the previous value."""
+    end_el = _find_first(period, "end")
+    step = _RESERVOIR_STEPS.get(resolution)
+    n_positions = 0
+    if end_el is not None and step is not None:
+        end_dt = datetime.fromisoformat(end_el.text.replace("Z", "+00:00"))
+        n_positions = int((end_dt - period_start) / step)
+    else:
+        logger.warning("A72 A03 Period at %s with resolution %s and no usable end: "
+                       "filling only between the points received",
+                       period_start.isoformat(), resolution)
+
+    last = max(n_positions, max(by_position))
+    filled, value = {}, None
+    for position in range(1, last + 1):
+        value = by_position.get(position, value)
+        if value is not None:
+            filled[position] = value
+
+    omitted = len(filled) - len(by_position)
+    if omitted:
+        logger.warning("A72 Period at %s omitted %d of %d positions (repeated value); "
+                       "carried the previous one forward",
+                       period_start.isoformat(), omitted, len(filled))
+    return filled
+
+
 def _fetch_reservoir_chunk(area_code: str, start_date: str, end_date: str) -> pd.DataFrame:
     """
     Fetch one chunk (max 365 days) of reservoir filling data from ENTSO-E (A72).
@@ -822,6 +861,8 @@ def _fetch_reservoir_chunk(area_code: str, start_date: str, end_date: str) -> pd
 
     records = []
     for ts in _find_all(root, "TimeSeries"):
+        curve_el = _find_first(ts, "curveType")
+        curve_type = curve_el.text if curve_el is not None else None
         for period in _find_all(ts, "Period"):
             start_el = _find_first(period, "start")
             resolution_el = _find_first(period, "resolution")
@@ -831,13 +872,18 @@ def _fetch_reservoir_chunk(area_code: str, start_date: str, end_date: str) -> pd
             period_start = datetime.fromisoformat(start_el.text.replace("Z", "+00:00"))
             resolution = resolution_el.text if resolution_el is not None else "P7D"
 
+            by_position = {}
             for point in [el for el in period if el.tag.split("}")[-1] == "Point"]:
                 pos_el = _find_first(point, "position")
                 qty = _parse_reservoir_point(point)
                 if pos_el is None or qty is None:
                     continue
+                by_position[int(pos_el.text)] = qty
 
-                position = int(pos_el.text)
+            if curve_type == _VARIABLE_BLOCK_CURVE and by_position:
+                by_position = _fill_reservoir_positions(by_position, period, period_start, resolution)
+
+            for position, qty in by_position.items():
                 if resolution == "P7D":
                     point_date = (period_start + timedelta(weeks=position - 1)).date()
                 else:

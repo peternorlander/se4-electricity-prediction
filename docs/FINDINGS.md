@@ -22,7 +22,7 @@ check whether the code it describes still looks that way.
 | [German prices: two auctions in one response](#german-prices-two-auctions-in-one-response-round-215) | 2026-10-11 | `price_de` was SDAC or the German intraday auction per hour; the clean series moves the DE-lag arms ~0.1 and changes no verdict's direction; `max` −0.32 |
 | [The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast](#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25) | 2026-10-11 | Two columns from three northern wind points: cheap2h −1.04 … −1.18 on all five caches, ~40–75 % of it surviving forecast-vintage weather, gone at a 7-day lead; Stockholm stays; a fourth site adds nothing |
 | [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar |
-| [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26) |
+| [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26). A72 (reservoir) is A03 too but arrives complete — checked 2026-10-14, 0 omitted of 158 weeks |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
 ## The 2026-08-17 regime break
@@ -798,6 +798,19 @@ all fixed in the script; anyone reading the documents elsewhere should know them
    drops 4112 → 2619 MW in 2025 (reclassification). Calibration must come from A75.
 4. **The `psrType` filter is ignored by A77** — see the next section; this one is a
    production defect.
+
+**Checked and clean: A72 (Swedish reservoir) arrives in full (2026-10-14).** The document
+is declared `curveType A03` as well, and `reservoir_sweden_change` is a `.diff()` of the weeks
+as parsed, so an omitted repeated week would have given that week the previous week's change
+instead of 0 (`reservoir_sweden_gwh` is forward-filled by `merge_asof` either way).
+`experiments/probe_a72_curve.py --probe` made production's own request (three 365-day chunks,
+2023-10 → 2026-10): all three Periods are A03 / P7D, 53 + 53 + 52 positions expected and
+53 + 53 + 52 received, **0 omitted**. A stored-energy figure in MWh practically never repeats
+exactly, so there is nothing to correct in the history and no data change to measure. The raw
+responses are kept under `ab_cache/probe_a72/2026-10-14/raw`. `_fetch_reservoir_chunk` now
+carries a no-op A03 fill anyway (identical output on those three files, checked row for row)
+that forward-fills and logs a warning on the first omitted week, so a future repeat cannot
+silently mis-diff the feature.
 
 ### `nuclear_outage_se3` counts things that are not nuclear outages
 

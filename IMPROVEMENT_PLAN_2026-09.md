@@ -325,14 +325,10 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   in the trough lists — and XGBoost treats it as missing without a word. The training side
   forward-fills, the forecast side does not. Fix: take the last non-NaN value (and log it);
   add the case to the test suite above.
-- **Does ENTSO-E A72 (Swedish reservoir) omit repeated weeks?** Prices (A44) and, found in
-  round 25, generation/load/capacity (A75/A65/A68) are `curveType A03` — a point only where the
-  value changes — and `_fetch_reservoir_chunk` has never been checked. `reservoir_sweden_gwh`
-  is forward-filled by `merge_asof` either way, but `reservoir_sweden_change` is a `.diff()`
-  of the weeks as parsed and would be wrong on an omitted week. Run
-  `python experiments/probe_a72_curve.py --probe` (needs the token, ~1 minute, offline
-  `--selftest` first); if it reports omitted positions the fix is the A44 one, to be measured
-  like any data change; if not, one line in FINDINGS closes it.
+- ~~**Does ENTSO-E A72 (Swedish reservoir) omit repeated weeks?**~~ **Closed 2026-10-14:**
+  no — 0 omitted of 158 weeks over three years. Record:
+  [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11).
+  `_fetch_reservoir_chunk` carries a no-op A03 fill + warning as a guard.
 - **Dependencies.** `requirements.txt` is unpinned and the workflow runs
   Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
   majors so a bit-identity check across machines means something.
@@ -485,8 +481,8 @@ index.
    the column.
 4. **2.1 oracle ceiling, then C** — half a day on the same A75/A65 data tells whether a
    calibrated weather → generation mapping has headroom beyond the northern wind points.
-5. **2.12 hygiene** — Peter runs `experiments/probe_a72_curve.py --probe`; the NaN last close
-   into the forecast fuel/carbon lags; the `build_fn` hook; the tests.
+5. **2.12 hygiene** — the NaN last close into the forecast fuel/carbon lags; the `build_fn`
+   hook; the tests. (The A72 probe is done: reservoir arrives complete.)
 6. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
    so the scoring run measures the final features. 2.5-HS follows it.
 7. **2.3b forward replay / 2.3c** — once the log has a few weeks.
