@@ -12,6 +12,7 @@ check whether the code it describes still looks that way.
 | Finding | When | Why it still matters |
 |---|---|---|
 | [The 2026-08-17 regime break](#the-2026-08-17-regime-break) | 2026-08 | The clearest evidence of what the model structurally cannot do: a 3-year window cannot output 128 EUR/MWh, and four independent routes to fixing that all failed |
+| [The autumn-2026 coupling regime](#the-autumn-2026-coupling-regime-round-24) | 2026-10-16 | Weekday troughs became "either ~10 or ~120": a point regressor hedges in between, trees cannot extrapolate the dry-reservoir state at the window's edge, and a linear coupling probability fixes both the point (min −0.30 … −0.46) and the warning |
 | [Cross-border capacity and flows](#cross-border-capacity-and-flows-round-21) | 2026-09-12 | Closes the interconnector route for the trough targets, including with leaked data; leaves one open `avg` candidate; documents six cross-border data traps |
 | [1.1 `residual_load` is temperature in disguise](#11-residual_load-is-temperature-in-disguise-and-its-wind-term-is-saturated) | 2026-09-08 | The "physical trough driver" is ~−0.9997 correlated with temperature and its wind term is saturated — several rejected entries were measured on a degenerate column |
 | [1.2 The regime is moving away from the model](#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it) | 2026-09-08 | Negative-price share 25 % → 7 %, the trough moved from night to midday, DK2/DE coupling rising |
@@ -144,6 +145,81 @@ instead of 107.9) and does help on the break — 48.52 against 52.84 — but cos
 three times the pre-break accuracy (7.98 against 2.53). Regime insurance with a
 real premium, consistent with round 15's closure of window length rather than a
 challenge to it.
+
+## The autumn-2026 coupling regime (round 24)
+
+The motivating case for the coupling hurdle and the warning-light band
+([DECISIONS.md](DECISIONS.md#coupling-hurdle-and-the-warning-light-band-round-24)).
+Worth keeping because the failure shape — a bimodal target the point model averages
+— will come back whenever the Nordic balance tightens.
+
+### What happened
+
+From mid-September 2026 `cheap2h` was under-predicted on workdays: replaying
+production since 22 September, weekday bias −30 EUR/MWh, and half the outcomes
+above the then-symmetric band's `high`. `avg` was low by about −31 on every day,
+weekends included. Three things had moved at once, against the same weeks of
+2023–2025:
+
+| | autumn 2026 | 2023–2025 |
+|---|---|---|
+| TTF (gas) | ~75 EUR/MWh | 32–40 |
+| `gas_marginal_cost` | ~103–116 | 58–68 |
+| `reservoir_norway_deviation` | −0.13 … −0.15, the driest in the 3-year window (q01 −0.17) | ~0 |
+| Swedish reservoir | ~25 TWh | 27–28 |
+
+On workdays the trough became **bimodal**. Either SE4 kept its surplus (cheap2h
+5–35) or it coupled to DK2/DE and the trough priced at continental level, about
+**1.0–1.4 × `gas_marginal_cost`** (90–147 EUR/MWh) — `cheap2h` tracked DK2's own
+minimum within a few EUR/MWh on those days. Weekends and windy days still
+collapsed. The wind threshold for coupling had moved up: in September it was
+roughly Stockholm wind below ~20 km/h, and on 2026-10-12 and 10-15 the trough
+coupled at 23–25 km/h.
+
+### Why the model missed, three ways
+
+1. **It hedges.** Squared-error regression answers a 50/50 "10 or 120" with ~65,
+   which never happens. No feature fixes that; it is what a point estimate of a
+   bimodal outcome is.
+2. **It under-rated how often coupling had become.** A logistic of the coupled
+   state fitted only on data before August 2026 called 47 % of Aug–Oct workdays
+   coupled (actual 36 %) with the reservoir terms in, and **16 %** on weather alone.
+   The trees held `reservoir_norway_deviation` but could not use it: at the window's
+   edge a tree treats −0.15 like the driest day it has seen, and those days were
+   not coupled. A linear model extrapolates along it.
+3. **The coupled level was learned at cheap-gas prices.** True, but not what
+   mattered: dividing the target by the gas marginal cost was NOISE on the trough
+   targets on every cache ([REJECTED.md](REJECTED.md)). The frequency was the miss,
+   not the level.
+
+### What the coupling probability is worth on its own
+
+Weekly origins over the year to 2026-10-15, d+1…d+7, horizon-honest
+(`long/2026-10-16`, the shipped no-nuclear classifier):
+
+| P(coupled) | days | coupled | mean cheap2h |
+|---|---|---|---|
+| ≤ 0.2 | 156 | 12 % | 15 |
+| 0.2–0.4 | 60 | 38 % | 35 |
+| 0.4–0.6 | 47 | 49 % | 51 |
+| 0.6–0.8 | 61 | 75 % | 67 |
+| > 0.8 | 40 | 88 % | 74 |
+
+AUC 0.94 over Aug–Oct 2026 and 0.84 over the ten months before. Calibrated, and a
+better answer to "can it get expensive" than any single number.
+
+### Lessons that apply elsewhere
+
+* **When a target is bimodal, score the warning separately from the MAE.** The
+  point estimate cannot carry it, and MAE cannot see whether the warning works.
+  That is why the band now has its own scorecard
+  ([AB_TESTING.md](AB_TESTING.md#scoring-the-band)).
+* **A state variable at the edge of the training window wants a linear reader.**
+  The trees here had the right column and could not use it. A small logistic in
+  front of the trees, out-of-fold like the hurdles, is the cheap pattern.
+* **The northern wind points took part of the same signal.** Against the
+  pre-round-25 baseline the hurdle's cheap2h gain was larger and more uniform; after
+  it, it is concentrated in the coupled autumn. Verdicts are scoped to the model.
 
 ## Cross-border capacity and flows (round 21)
 

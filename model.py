@@ -1,6 +1,9 @@
 import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold, cross_val_predict
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier, XGBRegressor
 from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS, AVG_FEATURE_COLUMNS
 
@@ -22,7 +25,44 @@ from features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMN
 HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 
 
-# Target name → (training column, feature columns).
+# Coupling hurdle (round 24, adopted 2026-10-16). SE4's trough is bimodal on
+# workdays: either decoupled (5-35 EUR/MWh) or priced at continental level, about
+# 1.0-1.4 x gas_marginal_cost. A LINEAR logistic model of "coupled" -- cheap2h /
+# gas_marginal_cost > COUPLING_RATIO_THRESHOLD -- on weather plus the Nordic
+# supply state feeds its probability to the min and cheap2h regressors, the same
+# pattern as the negative-price hurdle below. Linear on purpose: the reservoir
+# deviation sat at the edge of the training window in autumn 2026, and a tree
+# cannot extrapolate along it while a logistic can.
+#
+# Measured against the round-25 baseline on three long caches (2026-10-16,
+# 09-16, 08-21): min REAL on all three, every period negative (NOW -0.67 /
+# -0.44 / -0.33 EUR/MWh); cheap2h REAL on two (NOW -0.48 / -0.21) and flat on
+# the third (+0.02). `nuclear_outage_se3` is deliberately NOT an input: the
+# column is contaminated (docs/FINDINGS.md) and the arm without it measured as
+# well or better everywhere. docs/DECISIONS.md "Coupling hurdle" has the record.
+COUPLING_RATIO_THRESHOLD = 0.6
+COUPLING_PROBA_FEATURE_NAME = "p_couple"
+COUPLING_TARGETS = {"min", "cheap2h"}
+# Order matters only for bit-identity with the measured arm; keep it.
+COUPLING_FEATURE_COLUMNS = [
+    "mean_wind_stockholm", "max_wind", "mean_wind_de_north", "mean_temp",
+    "radiation_variability", "is_workday",
+    "reservoir_norway_deviation", "reservoir_sweden_gwh",
+]
+# Classifier inputs that are NOT regressor features. They ride along in the
+# coupling targets' TARGETS lists (so every caller that slices TARGETS[name][1]
+# hands the model what it needs) and CouplingAugmentedModel strips them again
+# before the regressor sees the row. A variant that wants one of these as a
+# regressor feature has to change this list, not just its feature list.
+COUPLING_ONLY_COLUMNS = [c for c in COUPLING_FEATURE_COLUMNS if c not in TROUGH_FEATURE_COLUMNS]
+assert COUPLING_ONLY_COLUMNS == [c for c in COUPLING_FEATURE_COLUMNS if c not in MIN_FEATURE_COLUMNS]
+
+
+def _with_coupling_inputs(feature_cols: list) -> list:
+    return list(feature_cols) + [c for c in COUPLING_FEATURE_COLUMNS if c not in feature_cols]
+
+
+# Target name → (training column, input columns).
 #
 # Deliberately heterogeneous: each target uses the feature set its own ablation
 # testing validated, since a feature can be load-bearing for one target and dead
@@ -30,7 +70,10 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 # `avg` drops its 9-column price/market family (42 of 51 + the 2 northern-wind columns, see
 # features.AVG_FEATURE_COLUMNS). The two trough targets run pruned lists that
 # differ from each other by exactly one column. cheap2h additionally gets
-# neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS.
+# neg_price_proba, appended at fit/serve time by the hurdle — see HURDLE_TARGETS —
+# and both trough targets get p_couple from the coupling hurdle above; their
+# lists carry the classifier-only inputs (COUPLING_ONLY_COLUMNS) at the end, and
+# regressor_columns() gives the list the regressor itself is fitted on.
 # docs/MODEL.md "Per-Target Feature Sets" has the evidence.
 #
 # min (16) and cheap2h (17) differ by `price_se4_max_lag1`, and that difference
@@ -44,11 +87,20 @@ HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
 # the PRUNED lists. Comparing against the old 51/52-column variants needs an
 # explicit `targets` override rather than BASELINE.
 TARGETS = {
-    "min":     ("price_min",     MIN_FEATURE_COLUMNS),
+    "min":     ("price_min",     _with_coupling_inputs(MIN_FEATURE_COLUMNS)),
     "avg":     ("price_avg",     AVG_FEATURE_COLUMNS),
     "max":     ("price_max",     FEATURE_COLUMNS),
-    "cheap2h": ("price_cheap2h", TROUGH_FEATURE_COLUMNS),
+    "cheap2h": ("price_cheap2h", _with_coupling_inputs(TROUGH_FEATURE_COLUMNS)),
 }
+
+
+def regressor_columns(name: str, feature_cols: list = None) -> list:
+    """The columns `name`'s regressor is fitted on: its TARGETS list (or the
+    given one) without the coupling classifier's extra inputs."""
+    cols = TARGETS[name][1] if feature_cols is None else feature_cols
+    if name not in COUPLING_TARGETS:
+        return list(cols)
+    return [c for c in cols if c not in COUPLING_ONLY_COLUMNS]
 
 
 def _make_regressor() -> XGBRegressor:
@@ -157,6 +209,92 @@ def _fit_hurdle_model(data: pd.DataFrame, feature_cols: list, target_col: str,
     return HurdleAugmentedModel(classifier, regressor)
 
 
+def _make_coupling_classifier():
+    return make_pipeline(StandardScaler(), LogisticRegression(C=10, max_iter=2000))
+
+
+def coupling_label(data: pd.DataFrame) -> np.ndarray:
+    """1 where the day's trough priced at continental level (cheap2h above
+    COUPLING_RATIO_THRESHOLD x the lagged gas marginal cost), else 0."""
+    return (data["price_cheap2h"] / data["gas_marginal_cost"]
+            > COUPLING_RATIO_THRESHOLD).astype(int).values
+
+
+def fit_coupling_classifier(data: pd.DataFrame):
+    """The coupling classifier fitted on all of `data` -- what serves, and what the
+    cheap2h band reads its warning from."""
+    return _make_coupling_classifier().fit(data[COUPLING_FEATURE_COLUMNS].values,
+                                           coupling_label(data))
+
+
+class CouplingAugmentedModel:
+    """
+    Wraps the coupling classifier around a target's own model (a plain regressor,
+    or the HurdleAugmentedModel for cheap2h). predict(X) takes the target's
+    TARGETS columns, computes P(coupled) from the classifier's columns, and hands
+    the inner model its regressor columns with that probability appended -- so
+    it is a drop-in model for every caller that slices TARGETS[name][1].
+    """
+    def __init__(self, classifier, inner, regressor_idx: list, coupling_idx: list,
+                 feature_names: list):
+        self.classifier = classifier
+        self.inner = inner
+        self.regressor_idx = regressor_idx
+        self.coupling_idx = coupling_idx
+        self.feature_names = feature_names
+
+    def coupling_proba(self, X: np.ndarray) -> np.ndarray:
+        return self.classifier.predict_proba(X[:, self.coupling_idx])[:, 1]
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        p = self.coupling_proba(X)
+        return self.inner.predict(np.column_stack([X[:, self.regressor_idx], p]))
+
+    @property
+    def feature_importances_(self):
+        return self.inner.feature_importances_
+
+
+def _fit_coupled_model(data: pd.DataFrame, name: str, target_col: str, feature_cols: list,
+                       half_life_days=None) -> CouplingAugmentedModel:
+    """
+    Fit `name` with an out-of-fold P(coupled) appended to its regressor columns.
+    Same leak-safety argument as _fit_hurdle_model: the regressor trains on
+    out-of-fold probabilities, the served classifier is fitted on all of `data`.
+    For cheap2h the inner model is the negative-price hurdle, whose classifier
+    then also sees p_couple -- which is how it was measured.
+    """
+    reg_cols = regressor_columns(name, feature_cols)
+    missing = [c for c in COUPLING_FEATURE_COLUMNS if c not in feature_cols]
+    if missing:
+        raise ValueError(f"{name}: coupling inputs {missing} are not in its feature list")
+
+    oof = cross_val_predict(
+        _make_coupling_classifier(), data[COUPLING_FEATURE_COLUMNS].values, coupling_label(data),
+        cv=KFold(n_splits=5, shuffle=True, random_state=42), method="predict_proba",
+    )[:, 1]
+    classifier = fit_coupling_classifier(data)
+
+    augmented = data.copy()
+    augmented[COUPLING_PROBA_FEATURE_NAME] = oof
+    inner_cols = reg_cols + [COUPLING_PROBA_FEATURE_NAME]
+    if name in HURDLE_TARGETS:
+        inner = _fit_hurdle_model(augmented, inner_cols, target_col, half_life_days=half_life_days)
+        names = inner_cols + [HURDLE_PROBA_FEATURE_NAME]
+    else:
+        inner = _make_regressor()
+        inner.fit(augmented[inner_cols].values, augmented[target_col].values,
+                  sample_weight=_sample_weights(augmented, half_life_days))
+        names = inner_cols
+
+    return CouplingAugmentedModel(
+        classifier, inner,
+        regressor_idx=[feature_cols.index(c) for c in reg_cols],
+        coupling_idx=[feature_cols.index(c) for c in COUPLING_FEATURE_COLUMNS],
+        feature_names=names,
+    )
+
+
 def _sample_weights(data: pd.DataFrame, half_life_days) -> np.ndarray | None:
     """
     Exponential time-decay weights for the training rows.
@@ -200,6 +338,10 @@ def _fit_models(data: pd.DataFrame, half_life_days=HALF_LIFE_DAYS, targets=None)
 
     models = {}
     for name, (target_col, feature_cols) in targets.items():
+        if name in COUPLING_TARGETS:
+            models[name] = _fit_coupled_model(data, name, target_col, list(feature_cols),
+                                              half_life_days=_hl_for(name))
+            continue
         if name in HURDLE_TARGETS:
             models[name] = _fit_hurdle_model(data, feature_cols, target_col,
                                               half_life_days=_hl_for(name))
@@ -347,8 +489,8 @@ def train_interval(training_data: pd.DataFrame,
         IntervalModel, with .diagnostics carrying the holdout coverage before
         and after calibration -- the numbers to watch for drift.
     """
-    target_col, feature_cols = TARGETS[target]
-    X = training_data[feature_cols].values
+    target_col = TARGETS[target][0]
+    X = training_data[regressor_columns(target)].values
     y = training_data[target_col].values
 
     n_holdout = min(CONFORMAL_HOLDOUT_DAYS, max(0, len(training_data) // 4))
@@ -379,6 +521,110 @@ def train_interval(training_data: pd.DataFrame,
     low_model = _make_quantile_regressor(INTERVAL_QUANTILES[0]).fit(X, y)
     high_model = _make_quantile_regressor(INTERVAL_QUANTILES[1]).fit(X, y)
     return IntervalModel(low_model, high_model, correction, diagnostics)
+
+
+# ---------------------------------------------------------------------------
+# Coupling-aware high for cheap2h (round 24, adopted 2026-10-16)
+# ---------------------------------------------------------------------------
+# The symmetric band above cannot express "either 10 or 120". On a workday that
+# may couple to the continent its q90 sits in between, so it is too high on calm
+# days (81 against an outcome of 13) and too low on coupled ones (half the
+# autumn-2026 weekday outcomes landed above it). `cheap2h_high` is therefore a
+# WARNING LIGHT with two states, and `cheap2h_low` stays the conformal q10:
+#
+#   * P(coupled) >= COUPLING_WARNING_PROBA: high = the coupled level,
+#     COUPLED_LEVEL_QUANTILE of cheap2h / gas_marginal_cost over the coupled
+#     training days, times the (frozen) gas marginal cost;
+#   * otherwise: a q90 fitted on the DECOUPLED training days only, widened by a
+#     one-sided split-conformal correction.
+#
+# Checked on unseen days 2026-10-10..15: every expensive day was warned on every
+# horizon (9 of 9), outcomes above high fell 43 % -> 10 %. Over the last year it
+# warns on ~46 % of days with ~69 % precision and catches ~80 % of expensive
+# days; an UNWARNED expensive day lands far above a low calm high, so more
+# outcomes end above high over a year than under the old band (21 % vs 15 %) --
+# accepted 2026-10-16 as the price of a high that means something. It is a
+# warning, not an 80 % interval. The threshold was pre-registered at 0.4 and
+# lowered to 0.3 after scoring both (12 more expensive days caught a year for 8
+# more false alarms); docs/MODEL.md "The cheap2h band" has the contract,
+# docs/AB_TESTING.md "Scoring the band" how it is measured.
+COUPLING_WARNING_PROBA = 0.3
+COUPLED_LEVEL_QUANTILE = 0.75
+CALM_HIGH_QUANTILE = 0.90
+CALM_HIGH_ALPHA = 0.10           # its one-sided conformal miss rate (1 - CALM_HIGH_QUANTILE)
+RISK_KEY = f"{INTERVAL_TARGET}_risk"
+# Keys predict() emits that are not prices: currency and addon conversion pass
+# them through untouched.
+UNITLESS_KEYS = frozenset({RISK_KEY})
+
+
+class CheapBand:
+    """`cheap2h_low` / `cheap2h_high` / `cheap2h_risk` for a forecast frame.
+
+    predict(frame, point) returns (low, high, risk). low is the IntervalModel's
+    calibrated q10; high is the two-state warning described above; both are
+    clamped open around the point estimate so the number Home Assistant ranks
+    on is always inside the range shown next to it.
+    """
+
+    warning_threshold = COUPLING_WARNING_PROBA
+
+    def __init__(self, interval: IntervalModel, coupling_classifier, calm_high_model,
+                 calm_correction: float, coupled_ratio: float, diagnostics: dict):
+        self.interval = interval
+        self.coupling_classifier = coupling_classifier
+        self.calm_high_model = calm_high_model
+        self.calm_correction = calm_correction
+        self.coupled_ratio = coupled_ratio
+        self.diagnostics = diagnostics
+
+    def risk(self, frame: pd.DataFrame) -> np.ndarray:
+        return self.coupling_classifier.predict_proba(frame[COUPLING_FEATURE_COLUMNS].values)[:, 1]
+
+    def predict(self, frame: pd.DataFrame, point: np.ndarray):
+        X = frame[regressor_columns(INTERVAL_TARGET)].values
+        low, _ = self.interval.predict(X, point)
+        risk = self.risk(frame)
+        calm_high = self.calm_high_model.predict(X) + self.calm_correction
+        coupled_high = self.coupled_ratio * frame["gas_marginal_cost"].values
+        high = np.where(risk >= self.warning_threshold,
+                        np.maximum(coupled_high, calm_high), calm_high)
+        return low, np.maximum(high, point), risk
+
+
+def train_band(training_data: pd.DataFrame) -> CheapBand:
+    """
+    Fit the cheap2h band: the conformal interval (for low), the coupling
+    classifier (for the warning), the calm-day q90 with its own split-conformal
+    correction, and the coupled level.
+    """
+    interval = train_interval(training_data, INTERVAL_TARGET)
+    target_col = TARGETS[INTERVAL_TARGET][0]
+    reg_cols = regressor_columns(INTERVAL_TARGET)
+    label = coupling_label(training_data)
+
+    calm = training_data[label == 0]
+    X, y = calm[reg_cols].values, calm[target_col].values
+    n_holdout = min(CONFORMAL_HOLDOUT_DAYS, len(calm) // 4)
+    split = len(calm) - n_holdout
+    cal = _make_quantile_regressor(CALM_HIGH_QUANTILE).fit(X[:split], y[:split])
+    held = cal.predict(X[split:])
+    calm_correction = _conformal_correction(y[split:] - held, alpha=CALM_HIGH_ALPHA)
+    calm_high_model = _make_quantile_regressor(CALM_HIGH_QUANTILE).fit(X, y)
+
+    ratio = (training_data[target_col] / training_data["gas_marginal_cost"]).values
+    coupled_ratio = float(np.quantile(ratio[label == 1], COUPLED_LEVEL_QUANTILE))
+
+    diagnostics = {
+        **interval.diagnostics,
+        "calm_high_correction_eur_mwh": round(calm_correction, 4),
+        "calm_high_holdout_coverage": float(np.mean(y[split:] <= held + calm_correction)),
+        "coupled_level_ratio": round(coupled_ratio, 4),
+        "coupled_share_training": round(float(label.mean()), 4),
+        "warning_threshold": COUPLING_WARNING_PROBA,
+    }
+    return CheapBand(interval, fit_coupling_classifier(training_data), calm_high_model,
+                     calm_correction, coupled_ratio, diagnostics)
 
 
 def train(training_data: pd.DataFrame) -> dict:
@@ -422,34 +668,35 @@ def enforce_coherence(preds: dict) -> dict:
 
 
 def predict(models: dict, forecast_features: pd.DataFrame,
-            interval: IntervalModel = None) -> dict:
+            band: CheapBand = None) -> dict:
     """
     Run inference on forecast features.
 
     Args:
         models: Dict of fitted models keyed by target name.
         forecast_features: Daily DataFrame with feature columns.
-        interval: Optional IntervalModel from train_interval(). When given, each
-                  day also gets `<target>_low` / `<target>_high` -- a calibrated
-                  band around that day's own prediction. Left as None the output
-                  is byte-for-byte what it was before intervals existed, which
-                  is what evaluate.py and the A/B harness rely on.
+        band: Optional CheapBand from train_band(). When given, each day also
+              gets `cheap2h_low` / `cheap2h_high` (EUR/MWh) and `cheap2h_risk`,
+              the probability of a coupled -- expensive -- trough. Left as None
+              the output is just the four point targets, which is what
+              evaluate.py and the A/B harness rely on.
 
     Returns:
         Dict keyed by date string (YYYY-MM-DD) with min/avg/max/cheap2h in
-        EUR/MWh, plus cheap2h_low / cheap2h_high when `interval` is given.
+        EUR/MWh, plus the band keys when `band` is given. `cheap2h_risk` is a
+        probability, listed in UNITLESS_KEYS so the SEK and addon conversions
+        leave it alone.
     """
     preds = enforce_coherence({
         name: models[name].predict(forecast_features[TARGETS[name][1]].values)
         for name in TARGETS
     })
 
-    band = {}
-    if interval is not None:
+    extra = {}
+    if band is not None:
         target = INTERVAL_TARGET
-        low, high = interval.predict(
-            forecast_features[TARGETS[target][1]].values, preds[target])
-        band = {f"{target}_low": low, f"{target}_high": high}
+        low, high, risk = band.predict(forecast_features, preds[target])
+        extra = {f"{target}_low": (low, 4), f"{target}_high": (high, 4), RISK_KEY: (risk, 3)}
 
     dates = pd.to_datetime(forecast_features["date"]).dt.strftime("%Y-%m-%d").values
     predictions = {}
@@ -458,7 +705,7 @@ def predict(models: dict, forecast_features: pd.DataFrame,
         predictions[dates[i]] = {
             name: round(float(preds[name][i]), 4) for name in TARGETS
         }
-        for name, values in band.items():
-            predictions[dates[i]][name] = round(float(values[i]), 4)
+        for name, (values, digits) in extra.items():
+            predictions[dates[i]][name] = round(float(values[i]), digits)
 
     return predictions

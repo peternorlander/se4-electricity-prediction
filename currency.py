@@ -1,6 +1,8 @@
 import pandas as pd
 from datetime import date, timedelta
 
+from model import UNITLESS_KEYS
+
 from sources.nordpool import fetch_mean_sek_for_date
 
 
@@ -73,7 +75,8 @@ def convert_predictions_to_sek(predictions: dict, eur_to_sek_rate: float) -> dic
 
     Args:
         predictions: Dict keyed by date string with price targets in EUR/MWh
-                     (min/avg/max/cheap2h).
+                     (min/avg/max/cheap2h). Keys in model.UNITLESS_KEYS (the
+                     cheap2h_risk probability) are passed through unchanged.
         eur_to_sek_rate: Exchange rate (SEK per EUR).
 
     Returns:
@@ -83,7 +86,7 @@ def convert_predictions_to_sek(predictions: dict, eur_to_sek_rate: float) -> dic
 
     for day, values in predictions.items():
         converted[day] = {
-            target: round(price * eur_to_sek_rate / 1000, 4)
+            target: price if target in UNITLESS_KEYS else round(price * eur_to_sek_rate / 1000, 4)
             for target, price in values.items()
         }
 

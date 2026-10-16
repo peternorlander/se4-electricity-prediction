@@ -154,7 +154,10 @@ def get_feature_importance(models: dict) -> dict:
         dict sorted by importance descending.
     """
     def _importance(model, feature_cols, extra_names=()) -> dict:
-        names = list(feature_cols) + list(extra_names)
+        # A CouplingAugmentedModel names its own regressor inputs (it strips the
+        # classifier-only columns and appends p_couple, plus neg_price_proba for
+        # cheap2h); everything else is its TARGETS list plus the hurdle column.
+        names = getattr(model, "feature_names", None) or list(feature_cols) + list(extra_names)
         importance = {
             feature: round(float(imp), 4)
             for feature, imp in zip(names, model.feature_importances_)

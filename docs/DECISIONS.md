@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Coupling hurdle and the warning-light band](#coupling-hurdle-and-the-warning-light-band-round-24) | 2026-10-16 | `min` −0.30 … −0.46 clmean (REAL on 3/3 caches, every cluster); `cheap2h` −0.29 / −0.14 / −0.04 (REAL on 2/3, flat on one); band: expensive days warned 80 % over the last year and 94 % in the last 8 weeks, outcomes above `high` 21 % vs 15 % over the year, 7 % vs 16 % in the last 8 weeks |
 | [`min ≤ cheap2h` coherence](#min--cheap2h-coherence-round-25) | 2026-10-12 | coherence for Home Assistant (the pair crossed on 40–50 % of days); `min` −0.17 … −0.23 clmean (every cluster, 4 of 5 caches), `cheap2h` −0.08 … 0.00 (not harmful); NOW slightly weaker |
 | [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead |
 | [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
@@ -36,6 +37,98 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Coupling hurdle and the warning-light band (round 24)
+
+Adopted 2026-10-16, as `model.COUPLING_TARGETS` / `_fit_coupled_model` /
+`CouplingAugmentedModel` (the point models) and `model.train_band` / `CheapBand` (the
+band). Measured with local scripts under `experiments/` (`run_round24*`, `oct16_*`, not
+committed); the numbers below are the record. Why the regime needed it is
+[FINDINGS.md](FINDINGS.md#the-autumn-2026-coupling-regime-round-24); what it is today is
+[MODEL.md](MODEL.md#coupling-hurdle-min-and-cheap2h).
+
+**The change.** A linear logistic P(`cheap2h / gas_marginal_cost > 0.6`) on
+`mean_wind_stockholm`, `max_wind`, `mean_wind_de_north`, `mean_temp`,
+`radiation_variability`, `is_workday`, `reservoir_norway_deviation`,
+`reservoir_sweden_gwh` is fitted out-of-fold and appended as `p_couple` to the `min` and
+`cheap2h` regressors (for `cheap2h` ahead of the negative-price hurdle, whose classifier
+also sees it). The same classifier, fitted on the whole window, drives `cheap2h_high` and
+is served as `cheap2h_risk`. **Horizon-honest:** every input is per-day weather/calendar or
+a reservoir level already in `FORECAST_FROZEN_FEATURES`.
+
+**Point models — rolling 1088-row grid, NOW / −6M / FAR × 4 points, against the round-25
+baseline (northern wind points + coherence), coherence applied in every arm.** Cluster
+means, EUR/MWh, negative = better:
+
+| cache | `min` NOW / −6M / FAR | `cheap2h` NOW / −6M / FAR |
+|---|---|---|
+| `2026-10-16` | −0.67 / −0.42 / −0.29 (12/12) | −0.48 / −0.17 / −0.23 (11/12) |
+| `2026-09-16` | −0.44 / −0.42 / −0.20 (11/12) | +0.02 / −0.08 / −0.05 (NOISE) |
+| `2026-08-21` | −0.33 / −0.38 / −0.20 (11/12) | −0.21 / −0.16 / −0.05 (10/12) |
+
+`min` is REAL on all three and every cluster; it is the robust half. `cheap2h` is REAL on
+two caches and flat on the third, and on two of the three its clmean (−0.04, −0.14) sits
+inside the ~0.15 a reseed alone moves `cheap2h`
+([AB_TESTING.md](AB_TESTING.md#the-rolling-grid-in-practice-round-25-now--6m--far-and-what-five-caches-replicate)).
+It is adopted for `cheap2h` on Peter's decision: the gain is concentrated in exactly the
+regime that motivated the round (on `2026-10-16`, since 2026-09-14: `cheap2h` 23.7 → 20.6,
+`min` 25.7 → 22.8), it is nowhere harmful, and the warning needs the same classifier
+anyway. FAR is the same calendar window on every cache, so the three caches give two
+independent periods, and their NOW windows overlap 83–92 %: `2026-10-16` is the first that
+contains the coupled autumn.
+
+The variant measured with `nuclear_outage_se3` as a classifier input was the one
+pre-registered; the shipped variant drops the column because it is contaminated, and it
+measured as well or better on every cache ([REJECTED.md](REJECTED.md)). Production
+reproduces the measured arm **bit-identically** (`min`, `cheap2h` and `avg` predictions
+equal to the last digit on all 364 days at `2026-10-16` shift 0).
+
+**The band — `ab/band.py` on `2026-10-16`, one point per cluster plus the last 56 days,
+old production (no hurdle, symmetric conformal band) against the shipped version
+(threshold 0.3).** Rates are fractions of days:
+
+| | above `high` | calm-day `high` (EUR/MWh) | expensive days warned | warnings that came true | point MAE |
+|---|---|---|---|---|---|
+| NOW | 0.148 → 0.206 | 49.5 → 48.2 | — → 0.80 | — → 0.69 | 14.76 → 13.94 |
+| −6M | 0.176 → 0.255 | 34.4 → 30.2 | — → 0.72 | — → 0.73 | 11.97 → 11.77 |
+| FAR | 0.115 → 0.162 | 37.5 → 28.9 | — → 0.56 | — → 0.53 | 12.27 → 12.12 |
+| last 56 days | 0.161 → **0.071** | 58.7 → 54.3 | — → **0.94** | — → 0.67 | 19.39 → 17.10 |
+
+`below_low` is unchanged (the low half is the same model). On unseen days 2026-10-10 … 15
+every expensive day was warned on every horizon (9 of 9 date × horizon pairs), the four
+false alarms were all 2026-10-13 (cheap2h 44, avg 150 — an in-between day), and outcomes
+above `high` fell 43 % → 10 %.
+
+**The breach, and the decision on it.** `above_high` is worse than the old band in every
+year-long cluster. That is the shape of a warning light: an expensive day the classifier
+misses now ends far above a low calm `high` instead of a little above a high one.
+Calibrating the calm `high` on every unwarned day removed the breach but raised the
+calm-day `high` above the *old* band's (NOW 62 against 49), which makes the light
+meaningless ([REJECTED.md](REJECTED.md)). **Accepted 2026-10-16 (Peter): `high` is a
+warning, not an 80 % interval.**
+
+**The threshold.** Pre-registered at 0.4; lowered to 0.3 after scoring both, a post-hoc
+choice. Over the last year 0.3 catches 116 of 146 expensive days against 104 for 52 false
+alarms against 44 (about one a week); in the last 8 weeks 16 of 17 against 14, 8 false
+alarms against 6. In a calmer year (FAR) it nearly doubles the false alarms (18 → 33) for
+8 more catches — expect it to be noisier when coupling is rare. The level (75th percentile
+of the coupled ratio, 1.32 in Oct 2026) was chosen on the 2026-10-10 data and held on the
+unseen days.
+
+**Verified locally before commit** (`OMP_NUM_THREADS=4`): bit-identity with the measured
+arm as above; `ab.harness.run_walk_forward(train_window=None)` and
+`evaluate.walk_forward_validate` agree; `train` → `train_band` → `predict(band=...)` on the
+last 1088 rows of `2026-10-16` gives finite values, `low ≤ cheap2h ≤ high`,
+`min ≤ cheap2h`, `0 ≤ risk ≤ 1`, the risk unchanged through the SEK and addon conversions,
+and `get_feature_importance` names `p_couple` (the #1 feature of both models) and
+`neg_price_proba` without `mean_temp`.
+
+**Consequences.** Every A/B through `ab.harness` now includes the hurdle, and a `targets`
+override for `min`/`cheap2h` must keep the classifier's inputs
+([AB_TESTING.md](AB_TESTING.md#how-to-run-an-experiment-agent-playbook)). Any change to
+`min` or `cheap2h` now also reports `python ab_test.py band`. The MAE table in
+[MODEL.md](MODEL.md#current-mae-baseline) predates it and was not re-measured. The
+honest test of the warning is forward: plan 2.2's log should carry `low` / `high` / `risk`.
 
 ## `min ≤ cheap2h` coherence (round 25)
 
@@ -528,7 +621,7 @@ mismatch that remains) is [FINDINGS.md §1.1](FINDINGS.md#11-residual_load-is-te
 
 ## Prediction interval for cheap2h (round 19c)
 
-Adopted 2026-09-05. Measured with local experiment scripts under
+Adopted 2026-09-05. **Since 2026-10-16 only its low half is served**; `cheap2h_high` is the warning light of [round 24](#coupling-hurdle-and-the-warning-light-band-round-24). Measured with local experiment scripts under
 `experiments/`, which is **not committed** — the numbers below are the record.
 
 `cheap2h_low` / `cheap2h_high` are a **conformally calibrated 80% band around

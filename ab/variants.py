@@ -62,6 +62,13 @@ class Variant:
     # as leaky in the ledger entry. See docs/AB_TESTING.md "Horizon honesty".
     frozen_features: list = None
     frozen_rolling: frozenset = None
+    # band_fn(train_slice) -> an object whose predict(frame, point) returns
+    # (low, high) or (low, high, risk) for cheap2h. Only `python ab_test.py band`
+    # reads it (docs/AB_TESTING.md "Scoring the band"); MAE runs ignore it. Any
+    # change to the cheap2h or min point model moves the band too, because the
+    # band is clamped around the point estimate -- so score it even when this
+    # field is left at the production default.
+    band_fn: Callable[[pd.DataFrame], object] = model_module.train_band
 
 
 BASELINE = Variant(name="base")

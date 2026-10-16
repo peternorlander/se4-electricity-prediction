@@ -30,12 +30,16 @@ Model training (model.py)
       44-column list (AVG_FEATURE_COLUMNS: a 42-column subset + 2 northern-wind
       columns), and the two trough targets (cheap2h, min) run validated pruned
       lists of 17 / 16 columns (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
+    → min and cheap2h get a coupling hurdle: a linear logistic P(the trough
+      prices at continental level), from weather + Nordic reservoirs, feeds both
+      regressors as p_couple
     → price_cheap2h additionally gets a negative-price hurdle: an XGBoost
       classifier's P(price_min < 0) feeds the regressor as an extra feature
     → min and cheap2h are made coherent: where predicted min exceeds predicted
       cheap2h, both become their mean (model.enforce_coherence)
-    → price_cheap2h also gets a conformally calibrated 80% interval from two
-      quantile regressors on the same features (cheap2h_low / cheap2h_high)
+    → price_cheap2h also gets a band: cheap2h_low (conformal q10), cheap2h_high
+      (a two-state warning light driven by the coupling probability) and
+      cheap2h_risk (that probability)
     → Walk-forward validation: 52 windows × 7 days (evaluate.py)
          │
          ▼
@@ -93,7 +97,7 @@ a commit message, a chat transcript, or a script under `experiments/`.
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
 | Not done yet | The improvement plan only — never a ledger. |
 
-Four rules that make this work:
+Five rules that make this work:
 
 1. **A rejected row is four slots and about 60 words**, not a report:
    **what** was tested (precisely enough to recognise a re-proposal) · **the
@@ -115,6 +119,11 @@ Four rules that make this work:
 4. **Tag the round.** `experiments/` scripts are named `run_round21_*.py`, so a
    round number in the ledger row is what connects a verdict to the run that
    produced it for as long as that scratch directory survives.
+5. **A change to `min` or `cheap2h` reports the band too.** `cheap2h_low` /
+   `cheap2h_high` / `cheap2h_risk` are what the automation warns on, and MAE
+   cannot see them. Run `python ab_test.py band` and put its scorecard — and any
+   `BREACH` with the decision taken on it — in the ledger entry or row
+   ([docs/AB_TESTING.md](docs/AB_TESTING.md#scoring-the-band)).
 
 **Do not record**: how you got there, what you tried first, run times, per-point
 or per-window tables, script names beyond the round tag, or a restatement of the
@@ -178,15 +187,15 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `wo
 ## Home Assistant Integration
 
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
-- `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`)
+- `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`, and `cheap2h_risk` — a probability 0–1, not converted)
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
 - `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from horizon-honest walk-forward validation. **Monitoring only — never quote these in documentation**: each run measures whatever window that day ends on, so the value moves with the evaluation period more than with the model ([docs/AB_TESTING.md](docs/AB_TESTING.md#how-changes-are-validated))
 - `mae_by_horizon` — per-target MAE broken down by forecast horizon (day+1 … day+7); shows how accuracy decays with forecast distance
-- `cheap2h_interval` — the band's own calibration for this run: `coverage_raw`, `coverage_calibrated`, `nominal_coverage`, `correction_eur_mwh`, `n_holdout`. **Watch `coverage_calibrated` against `nominal_coverage`** — if it drifts away from 0.80 the band has stopped meaning what it says
+- `cheap2h_interval` — the band's own calibration for this run: `coverage_calibrated` vs `nominal_coverage` (the low half), `calm_high_holdout_coverage` (should sit near 0.90), `coupled_level_ratio`, `coupled_share_training` and `warning_threshold`. A drift in the last three is where a new price regime shows first — see [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band)
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
 
 For charging decisions ("charge today or wait for cheaper days"), compare `cheap2h` across days — it is the expected price of a ~2h session picking the day's cheapest hours, which is what the schedule can actually achieve.
 
-`cheap2h_low` / `cheap2h_high` are an **80% band around that day's own prediction**, in the same SEK/kWh units and carried through the addon like everything else. `cheap2h` is always inside them. Use them as a guard rail on the *defer* decision, not as a replacement for the ranking: the cost of waiting when the price is about to rise is much larger than the cost of charging now when it was about to fall, so a rule like "do not defer if `cheap2h_high` for the later day is above today's known cheap price" is the asymmetry the point estimate cannot express. Ranking the days by `cheap2h_high` instead of `cheap2h` was tested and is **not** replicated — see [Prediction interval for cheap2h](docs/DECISIONS.md#prediction-interval-for-cheap2h-round-19c).
+`cheap2h_low` / `cheap2h_high` / `cheap2h_risk` are the **warning** next to the ranking, in the same SEK/kWh units as everything else except the risk (a probability). `cheap2h` is always inside `[low, high]`. **`cheap2h_high` has two states**: when `cheap2h_risk` is 0.3 or more, it jumps to the price the day would clear at if SE4 couples to the continent (about 1.3 × the gas plant's marginal cost — roughly 140 EUR/MWh in October 2026); otherwise it is a high for a calm day, typically a third to a half of that. So a rule like "do not defer charging to a day whose `cheap2h_high` is above today's known cheap price" now fires on the days that can turn expensive and stays quiet on the ones that cannot; `cheap2h_risk` says how sure. Over the last year it warned on ~46 % of days, ~69 % of them correctly, and caught ~80 % of the expensive days; an expensive day it misses ends well above a low `high`. Rank days by `cheap2h`, not by `high` — that was tested and is **not** replicated. See [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band).
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.

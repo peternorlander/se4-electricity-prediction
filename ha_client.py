@@ -2,6 +2,8 @@ import os
 import requests
 from datetime import datetime, timezone
 
+from model import UNITLESS_KEYS
+
 
 SENSOR_ENTITY_ID = "sensor.electricity_price_predictions"
 
@@ -43,7 +45,8 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
 
     Args:
         predictions_raw: Dict keyed by date string with price targets in SEK/kWh
-                         (min/avg/max/cheap2h).
+                         (min/avg/max/cheap2h). Keys in model.UNITLESS_KEYS (the
+                         cheap2h_risk probability) are passed through unchanged.
         addon_value: Fixed addon in SEK/kWh from input_number.electricity_price_addon.
 
     Returns:
@@ -53,7 +56,7 @@ def apply_addon(predictions_raw: dict, addon_value: float) -> dict:
 
     for day, values in predictions_raw.items():
         adjusted[day] = {
-            target: round(price * 1.05 + addon_value, 4)
+            target: price if target in UNITLESS_KEYS else round(price * 1.05 + addon_value, 4)
             for target, price in values.items()
         }
 

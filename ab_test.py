@@ -7,6 +7,7 @@ the full design and the agent playbook.
     python ab_test.py list                          # list long snapshots
     python ab_test.py list --root ab_cache          # list production-shaped snapshots
     python ab_test.py run [--snapshot YYYY-MM-DD] [--shifts 0-5] [--expanding]
+    python ab_test.py band [--snapshot YYYY-MM-DD] [--workers 4]   # cheap2h band scorecard
 
 Needs ENTSO_E_TOKEN (and the other source-API env vars) only for `fetch`;
 `run` and `list` are offline once a snapshot exists.
@@ -181,6 +182,24 @@ def cmd_run(args):
     run_ab(inputs, shifts, train_window=train_window)
 
 
+def cmd_band(args):
+    from ab.band import run_band_ab
+    from ab.variants import BASELINE, CANDIDATE
+    from features import build_training_data
+    cache_root = Path(args.root) if args.root else LONG_CACHE_ROOT
+    inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
+    print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
+    data = build_training_data(**inputs)
+    # One point per cluster by default (FAR = the oldest the rolling geometry can still
+    # fit); the band is scored per cluster, never pooled -- docs/AB_TESTING.md.
+    far = len(data) - PRODUCTION_TRAIN_ROWS - EVAL_DAYS
+    clusters = ({"NOW": [0], "-6M": [180], "FAR": [far]} if args.shifts is None else
+                {"grid": parse_shift_range(args.shifts)})
+    print(f"  {len(data)} rows; clusters {clusters}; BASELINE={BASELINE.name} CANDIDATE={CANDIDATE.name}")
+    run_band_ab(data, clusters, BASELINE, CANDIDATE, recent_days=args.recent_days,
+                workers=args.workers)
+
+
 def main():
     parser = argparse.ArgumentParser(description="A/B backtest flow for SE4 price prediction models.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -222,9 +241,20 @@ def main():
                                   "before 2026-10 used). Only way to run on a "
                                   "production-shaped snapshot.")
 
+    band_parser = subparsers.add_parser(
+        "band", help="Score the cheap2h band (low/high/risk) for BASELINE vs CANDIDATE.")
+    band_parser.add_argument("--snapshot", default=None, help="Snapshot date (YYYY-MM-DD). Default: newest.")
+    band_parser.add_argument("--shifts", default=None,
+                             help="Shifts as one cluster, e.g. '0,4'. Default: NOW / -6M / FAR, one point each.")
+    band_parser.add_argument("--root", default=None, help="Cache root (default: ab_cache/long/).")
+    band_parser.add_argument("--recent-days", type=int, default=56,
+                             help="Also score the last N days of the newest point (default 56).")
+    band_parser.add_argument("--workers", type=int, default=1,
+                             help="Parallel processes (variants must use module-level functions).")
+
     args = parser.parse_args()
 
-    {"fetch": cmd_fetch, "list": cmd_list, "run": cmd_run}[args.command](args)
+    {"fetch": cmd_fetch, "list": cmd_list, "run": cmd_run, "band": cmd_band}[args.command](args)
 
 
 if __name__ == "__main__":

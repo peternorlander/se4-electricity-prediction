@@ -576,6 +576,14 @@ Follow this whenever testing a feature or model change from the improvement plan
    - `targets` — a `{name: (target_col, feature_cols)}` dict; override to add a new
      feature column to the models' feature lists (a `transform` that only *creates* a
      column has no effect until the column is added to `feature_cols` here).
+     **For `min`/`cheap2h` the list must keep the coupling classifier's inputs**
+     (`model.COUPLING_FEATURE_COLUMNS`; `mean_temp` rides at the end of both lists
+     for it), or the fit raises. Build an override as `model._with_coupling_inputs(
+     your_list)`. A column in `model.COUPLING_ONLY_COLUMNS` is stripped before the
+     regressor sees it, so adding `mean_temp` as a *regressor* feature means changing
+     that list, not just yours.
+   - `band_fn` — what builds `cheap2h_low/high/risk` (default `model.train_band`).
+     Override only to change the band itself; see step 4a.
    - `frozen_features` / `frozen_rolling` — override only if the change adds a
      lag-type feature that must be frozen in the horizon-honest eval (default `None` =
      production lists). **Decide this before running anything** — the default
@@ -615,11 +623,21 @@ Follow this whenever testing a feature or model change from the improvement plan
      and assert no overlap (or, for a same-window replay, assert the dates match
      exactly). Getting `N` wrong doesn't error, it just quietly reuses data and
      inflates apparent replication.
+4a. **Score the band whenever `min` or `cheap2h` changes** — the point model, its
+   features, the coupling classifier, or the band itself. The band is clamped around
+   the point estimate and its warning reads the same classifier, so a change that wins
+   on MAE can still break the warning, and MAE cannot see it. Run
+   `python ab_test.py band` (BASELINE vs CANDIDATE, NOW / −6M / FAR plus the last 8
+   weeks) and read [Scoring the band](#scoring-the-band). A `BREACH` line is not an
+   automatic rejection, but it must be decided on and written into the ledger entry
+   with its numbers. A change that touches only `avg`/`max` skips this step.
 5. **Run the integration check, then ship.** Since 2026-08-05 the A/B verdict is
    the gate and an adopted change does **not** wait on a confirming Actions run
    (see "How changes are validated" above — this step used to say it did). What
-   replaces it: run `train` → `predict` → `get_feature_importance` against a
-   cached snapshot locally, asserting feature counts and finite predictions, then
+   replaces it: run `train` → `train_band` → `predict(band=...)` →
+   `get_feature_importance` against a cached snapshot locally, asserting feature
+   counts, finite predictions, `low ≤ cheap2h ≤ high`, `0 ≤ cheap2h_risk ≤ 1`, and
+   that the risk passes through the SEK and addon conversions unchanged, then
    commit. Watch the next Actions run for live-fetch or push regressions, but do
    not block the change on its headline MAE.
 
@@ -638,6 +656,58 @@ CANDIDATE = Variant(name="solar_scaled", transform=_scale_radiation)
 
 Because it scales an existing feature in place, no `targets` override is needed. Run
 `python ab_test.py run` and read the cheap2h row.
+
+## Scoring the band
+
+`cheap2h_low` / `cheap2h_high` / `cheap2h_risk` are what the Home Assistant
+automation uses as a warning ([MODEL.md](MODEL.md#the-cheap2h-band)), and MAE says
+nothing about them: the round-19c conformal calibration moved coverage 0.59 → 0.81
+and MAE by exactly zero, and in round 24 a symmetric band with a perfectly normal
+80 % coverage over the year let half of the autumn's expensive weekdays through. So
+the band has its own instrument, `ab/band.py`, and its own scorecard.
+
+**How it runs.** `python ab_test.py band [--snapshot …] [--workers 4]` builds the
+frame once and, for BASELINE and CANDIDATE, runs `ab.band.band_walk_forward` at one
+point per cluster (NOW = shift 0, −6M = 180, FAR = the oldest the rolling geometry
+fits): the same rolling 1088 rows and horizon-honest freeze as `run`, the variant's
+own `min`/`cheap2h` pair after coherence as the point estimate, and the variant's
+`band_fn` for the band. It prints `score_band` per cluster and for the last 56 days of
+the newest point. Six band walk-forwards (two arms × three clusters) took about five
+minutes on four workers (`OMP_NUM_THREADS=4`, 2026-10-16), so there is no reason to
+skip it. Process workers pickle the variants, so a CANDIDATE scored with `--workers`
+must use module-level functions, not lambdas.
+
+**The scorecard** (`ab.band.score_band`; rates are fractions of days):
+
+| metric | question it answers | better is |
+|---|---|---|
+| `above_high` | how often did the day end above the warning light? | lower |
+| `below_low` | how often below the floor? | lower |
+| `coverage` | inside `[low, high]` | — read with the two above |
+| `calm_high` | mean `high` on days that did not couple — is the light informative when nothing happens? | lower |
+| `recall` | of the coupled (expensive) days, the share the band warned on (its own `warning_threshold`, 0.3 in production) | higher |
+| `precision` | of the warned days, the share that coupled | higher |
+| `warn_rate` | share of days warned | — context |
+| `missed_cost` | mean EUR/MWh above `high` on expensive days it missed | lower |
+| `point_mae` | the cheap2h point estimate the band is built around | lower |
+
+"Coupled" is `model.coupling_label`: `cheap2h > 0.6 × gas_marginal_cost`.
+
+**The bar.** `ab.band.band_regressions` flags every metric where the candidate is
+worse than the baseline by more than `BAND_TOLERANCE` — 2 percentage points on
+`above_high` / `below_low`, 5 on `recall` / `precision`, 5 EUR/MWh on `calm_high` — in
+any cluster or in the recent weeks. Same discipline as the MAE grid: one vote per
+cluster, never a pooled number, and the recent weeks are where a regime shows first.
+A breach is a product decision, not a statistical one: state it, decide it, and put
+it in the ledger entry. The tolerances were set from the size of the round-24 effects
+and are as provisional as `MIN_CLUSTER_EFFECT`.
+
+**What a historical walk-forward cannot tell you.** Weather in the grid is archive
+weather, so `risk` is scored on a perfect forecast — the same optimism
+[the weather-axis finding](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)
+measured for MAE. The honest check of a warning is forward: the prediction log
+(plan 2.2) should record `low` / `high` / `risk` per issued day and horizon, and the
+same `score_band` then runs on what was actually served.
 
 ## Measurement grids: training geometry and period clusters (read before designing a run)
 

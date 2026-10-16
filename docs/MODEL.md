@@ -63,8 +63,13 @@ is therefore deliberately heterogeneous.
 |-------|--------------|-------|
 | `max` | `FEATURE_COLUMNS` | 51 |
 | `avg` | `AVG_FEATURE_COLUMNS` — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns | **44** |
-| `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `neg_price_proba`, appended by the hurdle at fit/serve time | **17** (+1) |
-| `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1` | **16** |
+| `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `p_couple` from the coupling hurdle and `neg_price_proba` from the negative-price hurdle, both appended at fit/serve time | **17** (+2) |
+| `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1`, plus `p_couple` | **16** (+1) |
+
+For `min` and `cheap2h`, `model.TARGETS` also carries `mean_temp` at the end of the list:
+it is an input to the coupling classifier, not to the regressor, and
+`model.regressor_columns()` gives the list the regressor is actually fitted on (see
+[Coupling hurdle](#coupling-hurdle-min-and-cheap2h)).
 
 The 17 kept features (cheap2h's list):
 
@@ -131,6 +136,35 @@ avg-anchored clamp that was tested and rejected earlier did something different 
 ever clipped `cheap2h` toward `avg`). Evidence and the arms that lost:
 [DECISIONS.md](DECISIONS.md#min--cheap2h-coherence-round-25).
 
+### Coupling Hurdle (min and cheap2h)
+
+Since 2026-10-16 both trough targets get `p_couple`: the probability that the day's
+trough prices at continental level rather than at the Nordic surplus. On workdays the
+trough is bimodal — 5–35 EUR/MWh when SE4 is decoupled, about 1.0–1.4 × the gas
+marginal cost when it couples to DK2/DE — and a regressor fitted with squared error
+answers "either 10 or 120" with something in between that never happens.
+
+- **Label.** `coupling_label`: `price_cheap2h / gas_marginal_cost > 0.6`
+  (`COUPLING_RATIO_THRESHOLD`). 29 % of training days in the October 2026 window.
+- **Classifier.** A standardised **linear** logistic regression (`C=10`) on
+  `COUPLING_FEATURE_COLUMNS`: `mean_wind_stockholm`, `max_wind`, `mean_wind_de_north`,
+  `mean_temp`, `radiation_variability`, `is_workday`, `reservoir_norway_deviation`,
+  `reservoir_sweden_gwh`. Linear on purpose: in autumn 2026 the Norwegian reservoir
+  deviation sat at the edge of the training window, and a tree cannot extrapolate
+  along it. `nuclear_outage_se3` is deliberately *not* an input — the column is
+  contaminated ([FINDINGS.md](FINDINGS.md#nuclear_outage_se3-counts-things-that-are-not-nuclear-outages))
+  and the arm without it measured as well or better on every cache.
+- **Leak-safety** is the hurdle's: the regressor trains on 5-fold out-of-fold
+  probabilities, the served classifier is fitted on the whole window
+  (`model._fit_coupled_model`). For `cheap2h` the negative-price classifier also sees
+  `p_couple`, which is how it was measured.
+- **Horizon honesty.** Every classifier input is either per-day weather/calendar or a
+  reservoir level already in `FORECAST_FROZEN_FEATURES`; nothing new to freeze.
+
+`p_couple` is the #1 feature of both models. The same classifier drives the warning in
+`cheap2h_high` ([below](#the-cheap2h-band)). Evidence:
+[DECISIONS.md](DECISIONS.md#coupling-hurdle-and-the-warning-light-band-round-24).
+
 ### Negative-Price Hurdle (cheap2h only)
 
 `model.HURDLE_TARGETS = {"cheap2h"}` routes the cheap2h target through
@@ -159,20 +193,39 @@ simulated shifts, see "Current MAE Baseline"). `min` showed the same direction b
 didn't clear the strict A/B bar, and a 2026-08 re-test on the confound-free
 four-period grid came back NOISE again, so it stays on a plain regressor.
 
-### Prediction Interval (cheap2h only)
+### The cheap2h band
 
-`model.train_interval` fits two `reg:quantileerror` regressors (α = 0.10 / 0.90)
-on cheap2h's own feature list and hyperparameters, then applies split conformal
-calibration on a 180-day holdout, so `predict()` can return `cheap2h_low` /
-`cheap2h_high` — an 80 % band around that day's own point estimate. It is an
-addition: `model.predict()` without an `interval` argument returns exactly what
-it always did, so `evaluate.py` and the A/B harness are untouched.
+`model.train_band` fits, and `predict(..., band=...)` serves, three numbers per day
+next to `cheap2h`. They are a product contract, not a by-product, and they are scored
+as one ([AB_TESTING.md "Scoring the band"](AB_TESTING.md#scoring-the-band)).
 
-The band is **information and a guard rail, never a gate** — MAE cannot measure
-it, and ranking days by `q90` instead of the point estimate was tested and
-rejected. Full record, including the serve-time ordering rules and what the band
-said during the 2026-08-17 break:
-[DECISIONS.md](DECISIONS.md#prediction-interval-for-cheap2h-round-19c).
+| Key | What it means | How it is made |
+|---|---|---|
+| `cheap2h_low` | "It is unlikely to be cheaper than this." Conformal q10. | Two `reg:quantileerror` regressors (α 0.10 / 0.90) on cheap2h's regressor columns, split-conformal on a 180-day holdout, refit on all data (`train_interval`, round 19c). Only the low half is served. |
+| `cheap2h_high` | **A warning light with two states**, not the top of an 80 % interval. Warned: "if this day couples, expect about this". Not warned: "a calm day rarely ends above this". | If `cheap2h_risk ≥ 0.3` (`COUPLING_WARNING_PROBA`): the coupled level = the 75th percentile of `cheap2h / gas_marginal_cost` over the coupled training days (`COUPLED_LEVEL_QUANTILE`, 1.32 in Oct 2026) × the frozen gas marginal cost. Otherwise: a q90 fitted on the *decoupled* training days only, plus its own one-sided split-conformal correction. |
+| `cheap2h_risk` | P(the trough couples to the continent) — the probability of an expensive day. | The coupling classifier above. Unitless: the SEK and addon conversions pass it through (`model.UNITLESS_KEYS`). |
+
+`low ≤ cheap2h ≤ high` always: both bounds are clamped open around the served point
+estimate.
+
+**What to expect from it.** On unseen days 2026-10-10 … 15 every expensive day was warned
+on every horizon and the share of outcomes above `high` fell from 43 % to 10 %. Over the
+last year it warns on ~46 % of days, ~69 % of warnings come true, and ~80 % of expensive
+days are warned (about one false alarm a week). An *unwarned* expensive day lands far above
+a low calm `high`, so over a year more outcomes end above `high` than under the old
+symmetric band (21 % against 15 %) — the accepted price of a `high` that means something.
+In calmer years the threshold mostly adds false alarms. Read `high` as "warned or not", and
+`risk` for how sure. Numbers per period:
+[DECISIONS.md](DECISIONS.md#coupling-hurdle-and-the-warning-light-band-round-24).
+
+**Drift to watch** (pushed every run as `cheap2h_interval`): `coverage_calibrated` near
+0.80 is still the low half's check; `calm_high_holdout_coverage` near 0.90 is the calm
+state's; `coupled_level_ratio` and `coupled_share_training` move with the regime and are
+the first place a new regime shows.
+
+The band was a symmetric conformal 80 % interval from 2026-09-05 to 2026-10-16
+([DECISIONS.md](DECISIONS.md#prediction-interval-for-cheap2h-round-19c)). Ranking days by
+`high` instead of the point estimate was tested then and rejected; that still stands.
 
 ## Current MAE Baseline
 

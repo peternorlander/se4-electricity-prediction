@@ -1,14 +1,15 @@
 # SE4 Prediction — Improvement Plan, September 2026 (round 21 onwards)
 
-**Status 2026-10-14 (after round 25).** Written 2026-09-08 as a plan. Since then
+**Status 2026-10-16 (after rounds 25 and 24).** Written 2026-09-08 as a plan. Since then
 2.4, 2.5 (labels), 2.8, 2.9, 2.15 and 2.16 were measured and closed and are gone from
 this file (rejections in [REJECTED.md](docs/REJECTED.md), adoptions in
 [DECISIONS.md](docs/DECISIONS.md)); 2.10 (`min ≤ cheap2h`) and 2.13 (northern wind
 points) shipped 2026-10-12 and are kept only for what they still owe; 2.3a was measured
 and written up in [FINDINGS.md](docs/FINDINGS.md). What is **half done** and carried here
 with where it stands: 2.1 (S measured, C open), 2.3b/c/d, 2.5-HS, 2.7 (the nuclear
-column), 2.10 and 2.13 (replays), and 2.17 (round 24, found 2026-10-10 and never
-written down). What is open, in the order it should be done, is section 4. It is the
+column), 2.10 and 2.13 (replays). 2.17 (round 24, the coupling hurdle and the
+warning-light band) shipped 2026-10-16 and is gone from this file; what it still owes is
+in 2.2 and 2.7. What is open, in the order it should be done, is section 4. It is the
 successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays as the record of the
 round-12 → round-19 follow-ups.
 
@@ -148,7 +149,11 @@ There is no such record today: `predictions_raw` is overwritten on every push.
 
 - In `predict.main`, after conversion, append one row per (run date, target
   date, horizon) to a CSV with `cheap2h`, `min`, `avg`, `max`, `cheap2h_low`,
-  `cheap2h_high` in EUR/MWh, plus the run's `coverage_calibrated`. Persist it
+  `cheap2h_high` in EUR/MWh, `cheap2h_risk`, plus the run's `cheap2h_interval`
+  diagnostics. The warning-light band (round 24) was accepted on a historical
+  walk-forward with archive weather; its threshold (0.3) and coupled level were chosen
+  post hoc, and the log is the only honest check — score it with `ab.band.score_band`
+  on what was served. Persist it
   where the Actions run can write and later runs can read: simplest is a
   `predictions-log` orphan branch the workflow commits to (`actions/checkout`
   with `ref`, `git commit`, `git push`), or an HA long-term statistic if the
@@ -255,7 +260,10 @@ advance* are forecast features. Three qualify and none is used:
   units, the parser counts them, and it counts cancelled records (docStatus A09) and every
   partial derate as a full event. Over five years the daily `nuclear_outage_se3` averages
   2.39 against 1.12 for distinct non-cancelled nuclear units and differs on 70 % of days.
-  The column is in `FEATURE_COLUMNS`, so `avg` and `max` read it; the trough lists do not.
+  The column is in `FEATURE_COLUMNS`, so `avg` and `max` read it; the trough lists do not,
+  and the round-24 coupling classifier deliberately leaves it out. Once decomposed, the
+  clean nuclear MW is a natural coupling-classifier input — re-test it there (its
+  contaminated version was REAL on `min` but weaker than leaving it out).
   **The straightforward fix is REAL-harmful on `avg` (+0.13 on 3 of 5 caches)** — see
   [REJECTED.md](docs/REJECTED.md) — so production keeps the old, misnamed column and the item
   becomes a decomposition: from the saved A77 records build (a) distinct non-cancelled nuclear
@@ -406,44 +414,6 @@ ENTSO-E data; `avg` first, `classify_clustered`.
 **Effort.** One day for the source and cache, one day for the per-window
 builder shared with 2.3a.
 
-### 2.17 Weekday under-prediction in the autumn-2026 coupling regime (round 24, half done)
-
-**Source and status.** Found 2026-10-10 and never written to a ledger: the facts below come
-from that session's notes, with scripts `experiments/run_round24*.py` / `oct10_*.py` and raw
-results `experiments/results/round24*.jsonl` (untracked scratch). **Not shipped, not in
-DECISIONS or REJECTED, and not re-checked in the round-25 session — re-derive any number
-before relying on it.**
-
-**What was found.** From mid-September 2026 cheap2h was under-predicted on weekdays (replay
-since 22 Sep: weekday bias about −30 EUR/MWh, half the outcomes above the interval's high).
-The cause was a tight-Nordic regime: TTF 33 → 75 (gas marginal cost ~103), Norwegian
-reservoir deviation −0.15 at the window's edge, five SE3 nuclear units out. Weekday cheap2h
-became bimodal — coupled to DK2/DE at roughly 1.0–1.4 × gas marginal cost when Stockholm
-wind is below ~20 km/h, else 5–35. A coupling hurdle `couple_wt` (a linear logistic
-P(cheap2h / gmc > 0.6) on weather + `reservoir_norway_deviation` + `nuclear_outage_se3` +
-`reservoir_sweden_gwh`, out-of-fold, appended to the `min`/`cheap2h` lists) was REAL on all
-three caches tested (`long/2026-10-10`, `-09-16`, `-08-21`), both targets, every cluster
-negative: cheap2h NOW −0.24 / −0.09 / −0.44, min NOW −0.53 / −0.30 / −0.38. The weather-only
-version carried cheap2h but not `min` on `-08-21`, so the tightness terms matter for `min`. A
-y/gmc ratio target was NOISE on the trough targets and not replicated on `avg`; the combo
-with the hurdle was dropped. A post-hoc high-band design (warning when P ≥ 0.4: high =
-1.32 × gmc, else a conformal q90 from a model trained on decoupled days only) caught 8 of
-10 recent weekdays with no false alarm, but 73 % caught / 73 % precision over the whole year
-and 27 % of outcomes above the high (17 % for the shipped band): a warning light, not an 80 %
-interval. The FAR cluster is the same computation on every cache, so only NOW and −6M are
-independent evidence.
-
-**What changed since, and what is open.** (1) The baseline moved on 2026-10-12: the northern
-wind points overlap the "Stockholm wind below ~20 km/h" half of the signal, so `couple_wt`
-must be re-measured against the *new* `BASELINE`, not the old arms' numbers. (2) Its inputs
-include `nuclear_outage_se3`, the column 2.7 shows is contaminated — whatever 2.7 decides
-changes this input. (3) The threshold and band were tuned on the data they were scored on.
-**Next step:** with `ab_cache/long/2026-10-16` (Peter fetches it) re-run `couple_wt` as a
-pre-registered A/B on cheap2h then min — the first unseen NOW window — and only if it is
-REAL there against the new baseline write the ledger entry and build it; the band design is
-a separate, later decision and needs its own forward check (2.2). If it is NOISE, close it
-with a REJECTED row and a FINDINGS note on the regime.
-
 ## 3. Carried at low priority, and what stays closed
 
 **Low priority, carried:** `ttf_vs_30d` (old item 5, unchanged reasoning);
@@ -465,20 +435,22 @@ index.
 
 ---
 
-## 4. Suggested order (2026-10-14)
+## 4. Suggested order (2026-10-16)
 
 1. **One batch on `ab_cache/long/2026-10-16`** (Peter fetches it; `ab_test.py fetch` carries
    the northern sites now). It is the first genuinely later NOW window and serves four
    things at once: the replay of the northern wind points (2.13), the vintage re-score of
-   them on `min` (2.13), the MW-scale columns for `avg`/`min` before they are shipped (2.1),
-   and the re-measurement of the round-24 coupling hurdle against the new baseline (2.17).
-   Do not run any of them on an older cache and call it a replay.
+   them on `min` (2.13) and the MW-scale columns for `avg`/`min` before they are shipped
+   (2.1). The round-24 re-measurement it was also for is done and shipped (2026-10-16) —
+   **so the baseline moved again**: measure 2.13 and 2.1 against the current `BASELINE`
+   (coupling hurdle in), and score `python ab_test.py band` for anything touching
+   `min`/`cheap2h`. Do not run any of them on an older cache and call it a replay.
 2. **2.2 prediction log** — waits on Peter's storage choice; start the clock as soon as
    it is made. It prices everything weather-related for real, and the forward replays of
    2.3b, 2.10 and 2.13 wait on it.
 3. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
-   `ab_cache/entsoe_r25/2026-10-11` has it. Do it before 2.17 ships, since `couple_wt` reads
-   the column.
+   `ab_cache/entsoe_r25/2026-10-11` has it. Then re-test the clean nuclear MW as a
+   coupling-classifier input (see 2.7).
 4. **2.1 oracle ceiling, then C** — half a day on the same A75/A65 data tells whether a
    calibrated weather → generation mapping has headroom beyond the northern wind points.
 5. **2.12 hygiene** — the NaN last close into the forecast fuel/carbon lags; the `build_fn`
