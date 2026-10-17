@@ -1240,9 +1240,13 @@ def build_forecast_features(
 
     # TTF gas price — use the most recent known price for all forecast days.
     # The current gas price level is the relevant regime signal for near-term electricity prices.
-    if ttf_daily is not None and not ttf_daily.empty:
-        last_ttf = ttf_daily.sort_values("date").iloc[-1]["ttf_close"]
-        rolling_ttf = ttf_daily.sort_values("date").tail(7)["ttf_close"].mean()
+    # Yahoo can end a series on a NaN close (2026-10-15 EUA did, which made gas_marginal_cost
+    # NaN and the coupled `cheap2h_high` with it); the training side forward-fills such rows,
+    # so the last VALID close is the same number.
+    ttf_valid = ttf_daily.dropna(subset=["ttf_close"]) if ttf_daily is not None else None
+    if ttf_valid is not None and not ttf_valid.empty:
+        last_ttf = ttf_valid.sort_values("date").iloc[-1]["ttf_close"]
+        rolling_ttf = ttf_valid.sort_values("date").tail(7)["ttf_close"].mean()
         forecast_daily["ttf_price_lag1"] = last_ttf
         forecast_daily["ttf_rolling_7d"] = rolling_ttf
     elif training_daily is not None and "ttf_price_lag1" in training_daily.columns:
@@ -1255,9 +1259,10 @@ def build_forecast_features(
     # EU ETS carbon (EUA) price — use the most recent known price for all forecast days.
     # CO₂ prices move slowly (typically <2% per day), so the current level is a stable
     # regime indicator for the 8-day forecast horizon.
-    if eua_daily is not None and not eua_daily.empty:
-        last_eua = eua_daily.sort_values("date").iloc[-1]["eua_close"]
-        rolling_eua = eua_daily.sort_values("date").tail(7)["eua_close"].mean()
+    eua_valid = eua_daily.dropna(subset=["eua_close"]) if eua_daily is not None else None
+    if eua_valid is not None and not eua_valid.empty:
+        last_eua = eua_valid.sort_values("date").iloc[-1]["eua_close"]
+        rolling_eua = eua_valid.sort_values("date").tail(7)["eua_close"].mean()
         forecast_daily["co2_price_lag1"] = last_eua
         forecast_daily["co2_rolling_7d"] = rolling_eua
     elif training_daily is not None and "co2_price_lag1" in training_daily.columns:
