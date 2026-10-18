@@ -193,9 +193,13 @@ The pipeline creates/updates `sensor.electricity_price_predictions` with attribu
 - `mae_by_horizon` — per-target MAE broken down by forecast horizon (day+1 … day+7); shows how accuracy decays with forecast distance
 - `cheap2h_interval` — the band's own calibration for this run: `coverage_calibrated` vs `nominal_coverage` (the low half), `calm_high_holdout_coverage` (should sit near 0.90), `coupled_level_ratio`, `coupled_share_training` and `warning_threshold`. A drift in the last three is where a new price regime shows first — see [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band)
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
+- `eur_to_sek_rate` — SEK per EUR this run converted with, so a logged SEK/kWh value can be turned back into the model's EUR/MWh
+- `git_sha` — the commit the run executed (`GITHUB_SHA`); absent on a local run
 
 For charging decisions ("charge today or wait for cheaper days"), compare `cheap2h` across days — it is the expected price of a ~2h session picking the day's cheapest hours, which is what the schedule can actually achieve.
 
 `cheap2h_low` / `cheap2h_high` / `cheap2h_risk` are the **warning** next to the ranking, in the same SEK/kWh units as everything else except the risk (a probability). `cheap2h` is always inside `[low, high]`. **`cheap2h_high` has two states**: when `cheap2h_risk` is 0.3 or more, it jumps to the price the day would clear at if SE4 couples to the continent (about 1.3 × the gas plant's marginal cost — roughly 140 EUR/MWh in October 2026); otherwise it is a high for a calm day, typically a third to a half of that. So a rule like "do not defer charging to a day whose `cheap2h_high` is above today's known cheap price" now fires on the days that can turn expensive and stays quiet on the ones that cannot; `cheap2h_risk` says how sure. Over the last year it warned on ~46 % of days, ~69 % of them correctly, and caught ~80 % of the expensive days; an expensive day it misses ends well above a low `high`. Rank days by `cheap2h`, not by `high` — that was tested and is **not** replicated. See [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band).
+
+A Node-RED flow in Home Assistant copies `predictions_raw` (plus the rate and commit above) into the MariaDB table `electricity_price_predictions_log` after every run, one row per target day, so what was served can later be scored against realised prices ([plan 2.2](IMPROVEMENT_PLAN_2026-09.md#22-production-prediction-log-and-realised-scorecard)). The flow lives in Home Assistant, not in this repo.
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.

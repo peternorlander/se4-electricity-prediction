@@ -143,41 +143,51 @@ leads, [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eu
 the log shows what it is in practice) and the gap1 fit tail (+0.155 / +0.258 /
 +0.591). The only instrument that measures what Home Assistant actually
 received is the record of what was sent, scored against what was realised.
-There is no such record today: `predictions_raw` is overwritten on every push.
+Until 2026-10-18 there was no such record: `predictions_raw` is overwritten on every push.
 
-**What to build.**
+**Status 2026-10-18: the log exists; the scorer is open.** The log is not in the repo and
+not an Actions artefact. It lives in Peter's Home Assistant MariaDB (table
+`electricity_price_predictions_log`), written by a Node-RED function node from the
+sensor's `predictions_raw` right after each run — raw SEK/kWh, without the 5 % markup
+and addon, which are a transform that only makes a logged value harder to score. One row
+per (`prediction_date`, `target_date`, `variant`): `horizon_days` (computed from the two
+dates, so it stays right if the first predicted day shifts), `min` / `avg` / `max` /
+`cheap2h` (`*_sek_kwh`), `cheap2h_low` / `cheap2h_high` / `cheap2h_risk`, and two
+run-level columns: `eur_to_sek_rate` (turns a logged SEK value back into the model's
+EUR/MWh exactly) and `git_sha` (the commit the run executed, so a before/after read
+groups rows by code instead of guessing from dates). The last two reach the sensor from
+`ha_client._run_provenance`; rows written before that change carry NULL. A rerun on the
+same day replaces that day's rows — what Home Assistant last saw. `variant` defaults to
+`'served'`; the slot is for shadow rows (below). The Node-RED flow is not in the repo.
 
-- In `predict.main`, after conversion, append one row per (run date, target
-  date, horizon) to a CSV with `cheap2h`, `min`, `avg`, `max`, `cheap2h_low`,
-  `cheap2h_high` in EUR/MWh, `cheap2h_risk`, plus the run's `cheap2h_interval`
-  diagnostics. The warning-light band (round 24) was accepted on a historical
-  walk-forward with archive weather; its threshold (0.3) and coupled level were chosen
-  post hoc, and the log is the only honest check — score it with `ab.band.score_band`
-  on what was served. Persist it
-  where the Actions run can write and later runs can read: simplest is a
-  `predictions-log` orphan branch the workflow commits to (`actions/checkout`
-  with `ref`, `git commit`, `git push`), or an HA long-term statistic if the
-  branch is unwanted. Start today — the value is in the months of history.
-- `score_production.py`: joins the log to realised daily prices (ENTSO-E,
-  already fetched), reports MAE per target and per horizon, interval coverage
-  per month, and the *decision* regret of the charging rule the automation
-  actually uses (README HA section) — the metric that the slot plan and the
-  q90 rule were both scored on in backtests but never in production.
+The older wide table `electricity_price_predictions` (d1…d6 min/avg/max, **with** addon,
+from at least 2026-09-22) is kept as the baseline from before the round-24/25 changes;
+raw = (value − addon) / 1.05 when the addon was constant.
+
+**What remains.**
+
+- `score_production.py`: joins the log (a phpMyAdmin export, or a read-only
+  connection) to realised daily prices (ENTSO-E, already fetched) and reports MAE per
+  target and per horizon; the warning-light band scored with `ab.band.score_band` on what
+  was served (its threshold 0.3 and coupled level were chosen post hoc on a historical
+  walk-forward with archive weather, so the log is the only honest check); and the
+  *decision* regret of the charging rule the automation actually uses (README HA
+  section) — the metric that the slot plan and the q90 rule were both scored on in
+  backtests but never in production.
 - Re-derive the two optimism figures empirically once ~13 weeks are logged:
   production MAE at D+2 minus backtest MAE at D+2 is the sum of the weather and
   gap1 effects, and the per-horizon slope is the weather part.
+- A shadow arm for 2.3b: the pipeline would push the blend's prediction as a second
+  attribute and the flow would write it with `variant = 'blend'`. Not built.
+- Not logged: the run's `cheap2h_interval` diagnostics (`coupled_level_ratio`,
+  `calm_high_holdout_coverage`, …), which is where a new regime shows first. Add a JSON
+  column if drift tracking needs them.
 
 **Bar.** None — this is instrumentation. It is the prerequisite for reading
 item 2.3 honestly, for the forward replays of 2.10 and 2.13, and for telling whether the
 two changes of 2026-10-12 helped in practice.
 
-**Open decision (Peter):** where the log lives — an orphan `predictions-log` branch the
-workflow commits to (recommended: plain files, no new dependency), or Home Assistant
-long-term statistics. Either way it also logs the three-model weather inputs next to the
-served forecast, so 2.3b can be replayed forward. Touches `.github/workflows/daily_predict.yml`
-(a push step), hence not done without a go.
-
-**Effort.** Half a day. Zero model risk.
+**Effort.** Log: done. Scorer: a few hours. Zero model risk.
 
 ### 2.3 The weather axis: price it, then improve it
 
@@ -192,8 +202,9 @@ re-measured on vintages.
 hourly mean of ECMWF, ICON and GFS recovers ~25 % of the penalty (cheap2h −0.37,
 min −0.42, avg 0) and is negative in all 15 cache × cluster cells, but the
 pre-registered per-lead bar was met on 0 of 5 ([REJECTED.md](docs/REJECTED.md)).
-Next step is a *forward* replay, not another backtest: log the blend's inputs next
-to the served forecast from the first day item 2.2 exists, and score both on the
+Next step is a *forward* replay, not another backtest: log the blend's prediction next
+to the served forecast (a `variant = 'blend'` row in the 2.2 log, which needs the shadow
+push from the pipeline), and score both on the
 days the log covers, with a bar written for production's lead mapping (row j at
 lead j + 2): production-mapped cheap2h and min negative in every cluster-equivalent
 period and the pooled change ≤ −0.2. Cost at serve time: three model requests for
@@ -445,9 +456,10 @@ index.
    **so the baseline moved again**: measure 2.13 and 2.1 against the current `BASELINE`
    (coupling hurdle in), and score `python ab_test.py band` for anything touching
    `min`/`cheap2h`. Do not run any of them on an older cache and call it a replay.
-2. **2.2 prediction log** — waits on Peter's storage choice; start the clock as soon as
-   it is made. It prices everything weather-related for real, and the forward replays of
-   2.3b, 2.10 and 2.13 wait on it.
+2. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB), so the clock is
+   running; what is open is `score_production.py` (a first useful read after ~4 weeks) and
+   the 2.3b shadow arm. It prices everything weather-related for real, and the forward
+   replays of 2.3b, 2.10 and 2.13 wait on it.
 3. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
    `ab_cache/entsoe_r25/2026-10-11` has it. Then re-test the clean nuclear MW as a
    coupling-classifier input (see 2.7).

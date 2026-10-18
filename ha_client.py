@@ -1,3 +1,4 @@
+import math
 import os
 import requests
 from datetime import datetime, timezone
@@ -70,11 +71,36 @@ def _to_list(predictions: dict) -> list:
     ]
 
 
+def _run_provenance(eur_to_sek_rate: float = None) -> dict:
+    """
+    Run-level facts that go next to the predictions in the HA sensor, so the
+    prediction log (Node-RED -> electricity_price_predictions_log) can say which
+    code and which exchange rate produced a row.
+
+    eur_to_sek_rate lets a logged SEK/kWh value be turned back into the model's
+    EUR/MWh exactly; git_sha (GITHUB_SHA, set on Actions runners) lets a later
+    before/after comparison group rows by code instead of guessing from dates.
+    A fact that is not available is left out, not sent as null: a local run
+    has no GITHUB_SHA.
+    """
+    provenance = {}
+
+    if eur_to_sek_rate is not None and math.isfinite(eur_to_sek_rate):
+        provenance["eur_to_sek_rate"] = round(float(eur_to_sek_rate), 5)
+
+    git_sha = os.environ.get("GITHUB_SHA")
+    if git_sha:
+        provenance["git_sha"] = git_sha
+
+    return provenance
+
+
 def push_predictions(
     predictions_raw: dict,
     predictions_with_addon: dict,
     model_metrics: dict = None,
     feature_importance: dict = None,
+    eur_to_sek_rate: float = None,
 ) -> None:
     """
     Push price predictions to a HA sensor via the REST API.
@@ -88,6 +114,8 @@ def push_predictions(
         model_metrics:          Walk-forward MAE stats from walk_forward_validate()
                                 (mae_min/mae_avg/mae_max/mae_cheap2h/mae_overall).
         feature_importance:     Dict keyed by target name from get_feature_importance().
+        eur_to_sek_rate:        SEK per EUR the run converted with; sent as the
+                                `eur_to_sek_rate` attribute next to `git_sha`.
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
@@ -95,6 +123,7 @@ def push_predictions(
         "predictions_raw": _to_list(predictions_raw),
         "predictions_with_addon": _to_list(predictions_with_addon),
         "friendly_name": "Electricity Price Predictions",
+        **_run_provenance(eur_to_sek_rate),
     }
 
     if model_metrics is not None:

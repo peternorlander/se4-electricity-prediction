@@ -124,7 +124,8 @@ def main():
     model_metrics = {**model_metrics, "cheap2h_interval": band.diagnostics}
 
     print("\nPushing predictions to Home Assistant...")
-    push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance)
+    push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance,
+                     eur_to_sek_rate=eur_to_sek_rate)
 
 
 if __name__ == "__main__":
