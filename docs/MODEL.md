@@ -202,26 +202,30 @@ as one ([AB_TESTING.md "Scoring the band"](AB_TESTING.md#scoring-the-band)).
 | Key | What it means | How it is made |
 |---|---|---|
 | `cheap2h_low` | "It is unlikely to be cheaper than this." Conformal q10. | Two `reg:quantileerror` regressors (α 0.10 / 0.90) on cheap2h's regressor columns, split-conformal on a 180-day holdout, refit on all data (`train_interval`, round 19c). Only the low half is served. |
-| `cheap2h_high` | **A warning light with two states**, not the top of an 80 % interval. Warned: "if this day couples, expect about this". Not warned: "a calm day rarely ends above this". | If `cheap2h_risk ≥ 0.3` (`COUPLING_WARNING_PROBA`): the coupled level = the 75th percentile of `cheap2h / gas_marginal_cost` over the coupled training days (`COUPLED_LEVEL_QUANTILE`, 1.32 in Oct 2026) × the frozen gas marginal cost. Otherwise: a q90 fitted on the *decoupled* training days only, plus its own one-sided split-conformal correction. |
+| `cheap2h_high` | **A warning light**, not the top of an 80 % interval. Warned: "if this day couples, it can cost this". Not warned: "about 9 in 10 days like this end below this" — so it is low on calm days and has headroom on uncertain ones. | If `cheap2h_risk ≥ 0.3` (`COUPLING_WARNING_PROBA`): the coupled level = the 75th percentile of `cheap2h / gas_marginal_cost` over the coupled training days (`COUPLED_LEVEL_QUANTILE`, 1.32 in Oct 2026) × the frozen gas marginal cost — the same number on every warned day of a forecast. Otherwise: a q90 fitted on the *decoupled* training days, plus a split-conformal correction **per risk bin** (`RISK_BIN_EDGES`: below 0.1, and 0.1 up to the threshold) scored over every unwarned holdout day, coupled misses included (round 24b). In Oct 2026 that adds ~11 EUR/MWh below risk 0.1 and ~54 between 0.1 and 0.3. |
 | `cheap2h_risk` | P(the trough couples to the continent) — the probability of an expensive day. | The coupling classifier above. Unitless: the SEK and addon conversions pass it through (`model.UNITLESS_KEYS`). |
 
 `low ≤ cheap2h ≤ high` always: both bounds are clamped open around the served point
 estimate.
 
-**What to expect from it.** On unseen days 2026-10-10 … 15 every expensive day was warned
-on every horizon and the share of outcomes above `high` fell from 43 % to 10 %. Over the
-last year it warns on ~46 % of days, ~69 % of warnings come true, and ~80 % of expensive
-days are warned (about one false alarm a week). An *unwarned* expensive day lands far above
-a low calm `high`, so over a year more outcomes end above `high` than under the old
-symmetric band (21 % against 15 %) — the accepted price of a `high` that means something.
-In calmer years the threshold mostly adds false alarms. Read `high` as "warned or not", and
+**What to expect from it.** In practice `high` has three levels: low on calm days
+(risk < 0.1, ~20–35 EUR/MWh), with headroom on uncertain ones (0.1–0.3, ~60–75), and the
+coupled level when warned (~150). On unseen days 2026-10-10 … 15 every expensive day was
+warned on every horizon. Over the last year it warns on ~46 % of days, ~69 % of warnings
+come true, ~80 % of expensive days are warned (about one false alarm a week), and about
+9 in 10 unwarned days end below `high`. Fewer outcomes end above `high` than under the
+old symmetric band in every period measured (13.5 % against 14.8 % over the last year,
+3.6 % against 16.1 % over the last 8 weeks), and the really calm days keep a low `high`.
+In calmer years the threshold mostly adds false alarms. Read `high` as the warning and
 `risk` for how sure. Numbers per period:
-[DECISIONS.md](DECISIONS.md#coupling-hurdle-and-the-warning-light-band-round-24).
+[DECISIONS.md](DECISIONS.md#risk-binned-unwarned-high-round-24b).
 
 **Drift to watch** (pushed every run as `cheap2h_interval`): `coverage_calibrated` near
-0.80 is still the low half's check; `calm_high_holdout_coverage` near 0.90 is the calm
-state's; `coupled_level_ratio` and `coupled_share_training` move with the regime and are
-the first place a new regime shows.
+0.80 is still the low half's check; `calm_high_holdout_coverage` near 0.90 is the
+unwarned state's, with `calm_high_correction_eur_mwh` / `calm_high_holdout_days` per risk
+bin (a bin with under 30 holdout days falls back to the pooled correction);
+`coupled_level_ratio` and `coupled_share_training` move with the regime and are the
+first place a new regime shows.
 
 The band was a symmetric conformal 80 % interval from 2026-09-05 to 2026-10-16
 ([DECISIONS.md](DECISIONS.md#prediction-interval-for-cheap2h-round-19c)). Ranking days by

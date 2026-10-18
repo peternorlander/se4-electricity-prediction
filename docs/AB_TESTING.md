@@ -684,7 +684,9 @@ must use module-level functions, not lambdas.
 | `above_high` | how often did the day end above the warning light? | lower |
 | `below_low` | how often below the floor? | lower |
 | `coverage` | inside `[low, high]` | — read with the two above |
-| `calm_high` | mean `high` on days that did not couple — is the light informative when nothing happens? | lower |
+| `calm_high` | mean `high` on days that did not couple — includes warned and mid-risk days, so it rises when uncertain days get headroom; context only | — |
+| `lowrisk_high` | mean `high` on days with risk < 0.1 — is the light informative when nothing is expected to happen? | lower |
+| `above_high_unwarned` | of the days not warned, the share that ended above `high` — the promise "not warned" makes (~0.10 by construction) | lower |
 | `recall` | of the coupled (expensive) days, the share the band warned on (its own `warning_threshold`, 0.3 in production) | higher |
 | `precision` | of the warned days, the share that coupled | higher |
 | `warn_rate` | share of days warned | — context |
@@ -695,8 +697,10 @@ must use module-level functions, not lambdas.
 
 **The bar.** `ab.band.band_regressions` flags every metric where the candidate is
 worse than the baseline by more than `BAND_TOLERANCE` — 2 percentage points on
-`above_high` / `below_low`, 5 on `recall` / `precision`, 5 EUR/MWh on `calm_high` — in
-any cluster or in the recent weeks. Same discipline as the MAE grid: one vote per
+`above_high` / `below_low` / `above_high_unwarned`, 5 on `recall` / `precision`, 5 EUR/MWh
+on `lowrisk_high` — in any cluster or in the recent weeks. (`calm_high` was the
+tolerance until round 24b showed it conflates calm days with uncertain ones; see
+[DECISIONS.md](DECISIONS.md#risk-binned-unwarned-high-round-24b).) Same discipline as the MAE grid: one vote per
 cluster, never a pooled number, and the recent weeks are where a regime shows first.
 A breach is a product decision, not a statistical one: state it, decide it, and put
 it in the ledger entry. The tolerances were set from the size of the round-24 effects

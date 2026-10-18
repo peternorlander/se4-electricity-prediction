@@ -536,15 +536,15 @@ def train_interval(training_data: pd.DataFrame,
 #     COUPLED_LEVEL_QUANTILE of cheap2h / gas_marginal_cost over the coupled
 #     training days, times the (frozen) gas marginal cost;
 #   * otherwise: a q90 fitted on the DECOUPLED training days only, widened by a
-#     one-sided split-conformal correction.
+#     split-conformal correction computed PER RISK BIN (round 24b, below).
 #
 # Checked on unseen days 2026-10-10..15: every expensive day was warned on every
 # horizon (9 of 9), outcomes above high fell 43 % -> 10 %. Over the last year it
 # warns on ~46 % of days with ~69 % precision and catches ~80 % of expensive
-# days; an UNWARNED expensive day lands far above a low calm high, so more
-# outcomes end above high over a year than under the old band (21 % vs 15 %) --
-# accepted 2026-10-16 as the price of a high that means something. It is a
-# warning, not an 80 % interval. The threshold was pre-registered at 0.4 and
+# days. With the risk-binned calibration below (round 24b) fewer outcomes end
+# above high than under the old symmetric band in every period measured, while
+# calm days keep a low high. It is a warning, not an 80 % interval: one level
+# when warned, a risk-dependent q90 otherwise. The threshold was pre-registered at 0.4 and
 # lowered to 0.3 after scoring both (12 more expensive days caught a year for 8
 # more false alarms); docs/MODEL.md "The cheap2h band" has the contract,
 # docs/AB_TESTING.md "Scoring the band" how it is measured.
@@ -552,6 +552,18 @@ COUPLING_WARNING_PROBA = 0.3
 COUPLED_LEVEL_QUANTILE = 0.75
 CALM_HIGH_QUANTILE = 0.90
 CALM_HIGH_ALPHA = 0.10           # its one-sided conformal miss rate (1 - CALM_HIGH_QUANTILE)
+
+# Risk bins for the unwarned high (round 24b, adopted 2026-10-19). Calibrated on
+# decoupled days alone, the calm q90 sat BELOW the point estimate on days with a
+# real but sub-threshold coupling risk -- the point model prices that risk in --
+# so the clamp made high == cheap2h on 27-39 % of days at risk 0.1-0.3, and 36-41 %
+# of those days ended above it. The calm q90 now gets one split-conformal
+# correction per bin of risk, scored over EVERY holdout day the band would not
+# warn on (coupled ones the classifier missed included), so ~90 % of unwarned days
+# at a given risk end below high. Lower edges; the last bin runs to the warning
+# threshold. A bin with fewer than CONFORMAL_MIN_HOLDOUT holdout days falls back
+# to the pooled correction over all unwarned holdout days.
+RISK_BIN_EDGES = (0.0, 0.1)
 RISK_KEY = f"{INTERVAL_TARGET}_risk"
 # Keys predict() emits that are not prices: currency and addon conversion pass
 # them through untouched.
@@ -562,19 +574,20 @@ class CheapBand:
     """`cheap2h_low` / `cheap2h_high` / `cheap2h_risk` for a forecast frame.
 
     predict(frame, point) returns (low, high, risk). low is the IntervalModel's
-    calibrated q10; high is the two-state warning described above; both are
-    clamped open around the point estimate so the number Home Assistant ranks
-    on is always inside the range shown next to it.
+    calibrated q10; high is the warning described above (the coupled level when
+    warned, else the calm q90 plus its risk bin's correction); both are clamped
+    open around the point estimate so the number Home Assistant ranks on is
+    always inside the range shown next to it.
     """
 
     warning_threshold = COUPLING_WARNING_PROBA
 
     def __init__(self, interval: IntervalModel, coupling_classifier, calm_high_model,
-                 calm_correction: float, coupled_ratio: float, diagnostics: dict):
+                 bin_corrections, coupled_ratio: float, diagnostics: dict):
         self.interval = interval
         self.coupling_classifier = coupling_classifier
         self.calm_high_model = calm_high_model
-        self.calm_correction = calm_correction
+        self.bin_corrections = np.asarray(bin_corrections, dtype=float)
         self.coupled_ratio = coupled_ratio
         self.diagnostics = diagnostics
 
@@ -585,18 +598,29 @@ class CheapBand:
         X = frame[regressor_columns(INTERVAL_TARGET)].values
         low, _ = self.interval.predict(X, point)
         risk = self.risk(frame)
-        calm_high = self.calm_high_model.predict(X) + self.calm_correction
+        calm_high = self.calm_high_model.predict(X) + self.bin_corrections[_risk_bin(risk)]
         coupled_high = self.coupled_ratio * frame["gas_marginal_cost"].values
         high = np.where(risk >= self.warning_threshold,
                         np.maximum(coupled_high, calm_high), calm_high)
         return low, np.maximum(high, point), risk
 
 
+def _risk_bin(risk: np.ndarray) -> np.ndarray:
+    return np.clip(np.searchsorted(RISK_BIN_EDGES, risk, side="right") - 1,
+                   0, len(RISK_BIN_EDGES) - 1)
+
+
 def train_band(training_data: pd.DataFrame) -> CheapBand:
     """
     Fit the cheap2h band: the conformal interval (for low), the coupling
-    classifier (for the warning), the calm-day q90 with its own split-conformal
-    correction, and the coupled level.
+    classifier (for the warning and the risk), the calm-day q90 with one
+    split-conformal correction per risk bin, and the coupled level.
+
+    The risk-bin corrections are split conformal over the last
+    CONFORMAL_HOLDOUT_DAYS of the window: the calm q90 and the classifier are
+    fitted on the rows before it, every holdout day the band would not warn on is
+    scored (y - q90), and each bin takes the (1 - CALM_HIGH_ALPHA) quantile of its
+    own days. The served q90 and classifier are then refitted on all rows.
     """
     interval = train_interval(training_data, INTERVAL_TARGET)
     target_col = TARGETS[INTERVAL_TARGET][0]
@@ -604,27 +628,45 @@ def train_band(training_data: pd.DataFrame) -> CheapBand:
     label = coupling_label(training_data)
 
     calm = training_data[label == 0]
-    X, y = calm[reg_cols].values, calm[target_col].values
-    n_holdout = min(CONFORMAL_HOLDOUT_DAYS, len(calm) // 4)
-    split = len(calm) - n_holdout
-    cal = _make_quantile_regressor(CALM_HIGH_QUANTILE).fit(X[:split], y[:split])
-    held = cal.predict(X[split:])
-    calm_correction = _conformal_correction(y[split:] - held, alpha=CALM_HIGH_ALPHA)
-    calm_high_model = _make_quantile_regressor(CALM_HIGH_QUANTILE).fit(X, y)
+    calm_high_model = _make_quantile_regressor(CALM_HIGH_QUANTILE).fit(
+        calm[reg_cols].values, calm[target_col].values)
+
+    split = len(training_data) - min(CONFORMAL_HOLDOUT_DAYS, len(training_data) // 4)
+    head, hold = training_data.iloc[:split], training_data.iloc[split:]
+    head_calm = head[coupling_label(head) == 0]
+    head_q = _make_quantile_regressor(CALM_HIGH_QUANTILE).fit(
+        head_calm[reg_cols].values, head_calm[target_col].values)
+    hold_risk = fit_coupling_classifier(head).predict_proba(
+        hold[COUPLING_FEATURE_COLUMNS].values)[:, 1]
+    scores = hold[target_col].values - head_q.predict(hold[reg_cols].values)
+    unwarned = hold_risk < COUPLING_WARNING_PROBA
+    pooled = _conformal_correction(scores[unwarned], alpha=CALM_HIGH_ALPHA)
+    edges = list(RISK_BIN_EDGES) + [COUPLING_WARNING_PROBA]
+    bin_corrections, bin_days = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        in_bin = (hold_risk >= lo) & (hold_risk < hi)
+        bin_days.append(int(in_bin.sum()))
+        bin_corrections.append(
+            _conformal_correction(scores[in_bin], alpha=CALM_HIGH_ALPHA)
+            if in_bin.sum() >= CONFORMAL_MIN_HOLDOUT else pooled)
+    served = np.asarray(bin_corrections)[_risk_bin(hold_risk)]
+    holdout_coverage = float(np.mean(scores[unwarned] <= served[unwarned])) if unwarned.any() else float("nan")
 
     ratio = (training_data[target_col] / training_data["gas_marginal_cost"]).values
     coupled_ratio = float(np.quantile(ratio[label == 1], COUPLED_LEVEL_QUANTILE))
 
+    bin_names = [f"{lo:g}-{hi:g}" for lo, hi in zip(edges[:-1], edges[1:])]
     diagnostics = {
         **interval.diagnostics,
-        "calm_high_correction_eur_mwh": round(calm_correction, 4),
-        "calm_high_holdout_coverage": float(np.mean(y[split:] <= held + calm_correction)),
+        "calm_high_correction_eur_mwh": {n: round(float(c), 4) for n, c in zip(bin_names, bin_corrections)},
+        "calm_high_holdout_days": dict(zip(bin_names, bin_days)),
+        "calm_high_holdout_coverage": holdout_coverage,
         "coupled_level_ratio": round(coupled_ratio, 4),
         "coupled_share_training": round(float(label.mean()), 4),
         "warning_threshold": COUPLING_WARNING_PROBA,
     }
     return CheapBand(interval, fit_coupling_classifier(training_data), calm_high_model,
-                     calm_correction, coupled_ratio, diagnostics)
+                     bin_corrections, coupled_ratio, diagnostics)
 
 
 def train(training_data: pd.DataFrame) -> dict:

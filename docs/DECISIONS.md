@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Risk-binned unwarned high](#risk-binned-unwarned-high-round-24b) | 2026-10-19 | band only (point models untouched): outcomes above `high` 20.6 → 13.5 % / 25.5 → 15.4 % / 16.2 → 10.2 % / last 8 weeks 7.1 → 3.6 %, now below the old symmetric band in every period; `high` = `cheap2h` on uncertain days 27–39 % → 0–2 % |
 | [Coupling hurdle and the warning-light band](#coupling-hurdle-and-the-warning-light-band-round-24) | 2026-10-16 | `min` −0.30 … −0.46 clmean (REAL on 3/3 caches, every cluster); `cheap2h` −0.29 / −0.14 / −0.04 (REAL on 2/3, flat on one); band: expensive days warned 80 % over the last year and 94 % in the last 8 weeks, outcomes above `high` 21 % vs 15 % over the year, 7 % vs 16 % in the last 8 weeks |
 | [`min ≤ cheap2h` coherence](#min--cheap2h-coherence-round-25) | 2026-10-12 | coherence for Home Assistant (the pair crossed on 40–50 % of days); `min` −0.17 … −0.23 clmean (every cluster, 4 of 5 caches), `cheap2h` −0.08 … 0.00 (not harmful); NOW slightly weaker |
 | [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead |
@@ -37,6 +38,65 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Risk-binned unwarned high (round 24b)
+
+Adopted 2026-10-19 as `model.RISK_BIN_EDGES` and the per-bin correction in
+`model.train_band`. Band only — the point models are untouched. Scripts
+`experiments/round24b_*` (not committed); the numbers below are the record.
+
+**The problem.** Peter saw it in the first live forecast: on a day with risk 0.21,
+`cheap2h_high` equalled `cheap2h` exactly. The unwarned `high` was a q90 fitted and
+calibrated on *decoupled* days only, while the point model prices in the residual
+coupling risk. Below the threshold but above ~0.1 the point estimate therefore sat above
+the calm q90, and the clamp that keeps `cheap2h` inside the band made `high = cheap2h`:
+on **27 % of unwarned days at risk 0.1–0.2 and 39 % at 0.2–0.3**, and 36–41 % of those
+days ended above `high` (20–33 % of them coupled). It was most of the round-24 breach.
+
+**The change.** The same calm q90 model, with one split-conformal correction per risk bin
+(below 0.1; 0.1 to the warning threshold) scored over **every** holdout day the band
+would not warn on — coupled days the classifier missed included — with the q90 and the
+classifier fitted on the rows before the holdout. A bin with fewer than 30 holdout days
+falls back to the pooled correction. Pre-registered before the run, with the bar: lower
+`above_high` in every cluster, and the calm-day `high` not above the old band's.
+
+**`ab/band.py`, `long/2026-10-16`, one point per cluster plus the last 56 days, against
+the round-24 band (and the old symmetric band for reference).** Unwarned days by risk:
+
+| risk | days | above `high` | `high` = `cheap2h` | mean `high` |
+|---|---|---|---|---|
+| < 0.1 | 446 | 0.10 → 0.10 | 0.09 → 0.08 | 21.1 → 21.9 |
+| 0.1–0.2 | 171 | 0.36 → **0.09** | 0.27 → **0.00** | 30.2 → 59.5 |
+| 0.2–0.3 | 106 | 0.41 → **0.15** | 0.39 → **0.02** | 36.9 → 61.3 |
+
+Per cluster (old band / round 24 / round 24b):
+
+| | above `high` | mean `high` on non-coupled days | mean `high` at risk < 0.1 | unwarned days above `high` |
+|---|---|---|---|---|
+| NOW | 0.148 / 0.206 / **0.135** | 49.5 / 48.2 / 63.8 | — / 29.5 / 36.7 | — / — / 0.087 |
+| −6M | 0.176 / 0.255 / **0.154** | 34.4 / 30.2 / 38.4 | — / 18.0 / 18.1 | — / — / 0.120 |
+| FAR | 0.115 / 0.162 / **0.102** | 37.5 / 28.9 / 32.3 | — / 19.4 / 17.9 | — / — / 0.105 |
+| last 56 days | 0.161 / 0.071 / **0.036** | 58.7 / 54.3 / 72.3 | — / — / 24.7 | — / — / 0.031 |
+
+Recall, precision and warn rate are unchanged (same warning); `missed_cost` falls in
+every cluster (NOW 12.6 → 9.2, last 8 weeks 40.1 → 24.1).
+
+**The bar failed on one metric, and the decision.** `above_high` is lower than the
+round-24 band — and than the old symmetric band — in every period. The second half of
+the bar failed: mean `high` on non-coupled days rose above the old band's in NOW, −6M and
+the last 8 weeks. That metric also counts warned and mid-risk days, so it rises by
+construction when uncertain days get headroom; on the really calm days (risk < 0.1) `high`
+is unchanged in −6M and FAR and rose 29.5 → 36.7 in NOW. **Adopted 2026-10-19 on Peter's
+decision**, knowing it shows more days with a raised `high`; to be judged forward on the
+prediction log. The scorecard now carries `lowrisk_high` and `above_high_unwarned`, and
+`calm_high` is no longer a tolerance ([AB_TESTING.md](AB_TESTING.md#scoring-the-band)).
+
+**Verified locally before commit:** `train_band` reproduces the measured variant exactly
+(every scorecard number above, to the digit); the diagnostics are JSON-serialisable for the
+HA push; `train` → `train_band` → `predict(band=...)` gives `low ≤ cheap2h ≤ high`,
+`0 ≤ risk ≤ 1` and the risk unchanged through the SEK and addon conversions. On the last
+week of `2026-10-16` the per-bin corrections were +10.6 (62 holdout days) and +53.5 (65),
+unwarned holdout coverage 0.92.
 
 ## Coupling hurdle and the warning-light band (round 24)
 
@@ -105,7 +165,9 @@ misses now ends far above a low calm `high` instead of a little above a high one
 Calibrating the calm `high` on every unwarned day removed the breach but raised the
 calm-day `high` above the *old* band's (NOW 62 against 49), which makes the light
 meaningless ([REJECTED.md](REJECTED.md)). **Accepted 2026-10-16 (Peter): `high` is a
-warning, not an 80 % interval.**
+warning, not an 80 % interval.** Three days later most of the breach turned out to be the
+clamp on uncertain days, and calibrating per risk bin removed it —
+[round 24b](#risk-binned-unwarned-high-round-24b).
 
 **The threshold.** Pre-registered at 0.4; lowered to 0.3 after scoring both, a post-hoc
 choice. Over the last year 0.3 catches 116 of 146 expensive days against 104 for 52 false

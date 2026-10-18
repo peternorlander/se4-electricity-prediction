@@ -32,8 +32,12 @@ BAND_TOLERANCE = {
     "below_low": 0.02,         # more outcomes under the floor
     "recall": 0.05,            # fewer expensive days warned
     "precision": 0.05,         # more false alarms per warning
-    "calm_high": 5.0,          # a higher (less informative) high on calm days
+    "lowrisk_high": 5.0,       # a higher (less informative) high on the really calm days
+    "above_high_unwarned": 0.02,  # "not warned" kept its promise less often
 }
+# `calm_high` is printed but not a tolerance: it also counts warned and mid-risk days,
+# so it rises whenever uncertain days get headroom -- which is the point of the
+# risk bins (round 24b). Judge calm days on `lowrisk_high`.
 # Metrics where a LOWER value is worse (the rest: higher is worse).
 _HIGHER_IS_BETTER = {"recall", "precision", "coverage"}
 
@@ -86,8 +90,13 @@ def score_band(df: pd.DataFrame) -> dict:
       above_high   actual > high  -- the warning light failed to warn high enough
       below_low    actual < low
       width        mean high - low
-      calm_high    mean high on days that did NOT couple -- how informative the
-                   light is when nothing happens (lower is better)
+      calm_high    mean high on days that did NOT couple -- includes warned days and
+                   the mid-risk bin, so it rises when uncertain days get headroom
+      lowrisk_high mean high on days in the lowest risk bin (risk < 0.1) -- the
+                   days that really are calm; how informative the light is when
+                   nothing is expected to happen (lower is better)
+      above_high_unwarned  actual > high among days the band did not warn on --
+                   the promise "not warned" makes (~0.10 by construction)
       recall       of the coupled (expensive) days, the share the band warned on
                    (its own `warned` state: risk >= the band's warning_threshold)
       precision    of the warned days, the share that coupled
@@ -107,6 +116,8 @@ def score_band(df: pd.DataFrame) -> dict:
         "below_low": float((a < lo).mean()),
         "width": float((hi - lo).mean()),
         "calm_high": float(hi[~coupled].mean()) if (~coupled).any() else np.nan,
+        "lowrisk_high": (float(hi[df["risk"] < model_module.RISK_BIN_EDGES[1]].mean())
+                         if (df["risk"] < model_module.RISK_BIN_EDGES[1]).any() else np.nan),
         "expensive_share": float(coupled.mean()),
         "point_mae": float((df["point"] - a).abs().mean()),
     }
@@ -115,10 +126,11 @@ def score_band(df: pd.DataFrame) -> dict:
     if df["warned"].notna().all():
         warned = df["warned"] == 1
         out["warn_rate"] = float(warned.mean())
+        out["above_high_unwarned"] = float((a > hi)[~warned].mean()) if (~warned).any() else np.nan
         out["recall"] = float((warned & coupled).sum() / max(1, coupled.sum()))
         out["precision"] = float((warned & coupled).sum() / max(1, warned.sum()))
     else:
-        out.update(warn_rate=np.nan, recall=np.nan, precision=np.nan)
+        out.update(warn_rate=np.nan, recall=np.nan, precision=np.nan, above_high_unwarned=np.nan)
     return out
 
 

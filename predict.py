@@ -83,8 +83,8 @@ def main():
     d = band.diagnostics
     print(f"  → low: holdout {d['n_holdout']} days, symmetric-band coverage "
           f"{d.get('coverage_calibrated', float('nan')):.3f} (nominal {d['nominal_coverage']:.2f}); "
-          f"high: calm-day q90 +{d['calm_high_correction_eur_mwh']:.2f} EUR/MWh "
-          f"(holdout coverage {d['calm_high_holdout_coverage']:.3f}), coupled level "
+          f"high: calm-day q90 + per-risk-bin correction {d['calm_high_correction_eur_mwh']} EUR/MWh "
+          f"(unwarned holdout coverage {d['calm_high_holdout_coverage']:.3f}), coupled level "
           f"{d['coupled_level_ratio']:.2f} × gas cost when risk ≥ {d['warning_threshold']:.2f} "
           f"({d['coupled_share_training']:.0%} of training days coupled)")
 
