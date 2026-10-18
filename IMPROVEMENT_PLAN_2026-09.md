@@ -9,7 +9,8 @@ and written up in [FINDINGS.md](docs/FINDINGS.md). What is **half done** and car
 with where it stands: 2.1 (S measured, C open), 2.3b/c/d, 2.5-HS, 2.7 (the nuclear
 column), 2.10 and 2.13 (replays). 2.17 (round 24, the coupling hurdle and the
 warning-light band) shipped 2026-10-16 and is gone from this file; what it still owes is
-in 2.2 and 2.7. What is open, in the order it should be done, is section 4. It is the
+in 2.2 and 2.7. The prediction log (2.2) started 2026-10-18; **nothing that reads it is
+started before 2026-11-15** (Peter's call). What is open, in the order it should be done, is section 4. It is the
 successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays as the record of the
 round-12 → round-19 follow-ups.
 
@@ -161,19 +162,54 @@ same day replaces that day's rows — what Home Assistant last saw. `variant` de
 `'served'`; the slot is for shadow rows (below). The Node-RED flow is not in the repo.
 
 The older wide table `electricity_price_predictions` (d1…d6 min/avg/max, **with** addon,
-from at least 2026-09-22) is kept as the baseline from before the round-24/25 changes;
-raw = (value − addon) / 1.05 when the addon was constant.
+from at least 2026-09-22) is kept as the baseline from before the round-24/25 changes and
+is **to be brought into the scoring** (bullet below): its values have the addon baked in
+(`ha_client.apply_addon`: raw × 1.05 + addon), so they cannot be scored until the addon
+is known. It has no `cheap2h`, and the new
+table starts after the 2026-10-12 and 2026-10-16 changes, so the log has **no before-period
+for `cheap2h`**: production is judged against what the backtest predicted for it, not
+against an earlier production.
+
+**Not before 2026-11-15.** That is four weeks after the log started, the earliest point
+at which it is worth reading, so `score_production.py` and every step that reads the log
+(the 2.3b forward replay, 2.3c, 2.3d, the 2.10 and 2.13 production checks) wait until
+then; it is not written earlier either. What it buys: at ~4 weeks a first, descriptive
+look at MAE per horizon, at the band (it warns on ~46 % of days, so ~13 warned days — thin)
+and at the decision regret; at ~13 weeks the optimism re-derivation below. The clock is
+four weeks of daily rows from the day the Node-RED node is writing every run; if that is
+later than 2026-10-18, the date moves with it.
+
+**Reading the data (decided 2026-10-18).** The database is the record. The scorer reads
+a CSV export of the whole table (phpMyAdmin, dated file name) from
+`ab_cache/prediction_log/`: gitignored with the rest of `ab_cache/`, ignored by
+`list_snapshots` (no `meta.json`), and disposable because it is re-exported on demand.
+The old wide table is exported at the same time and not before (decided 2026-10-18), together
+with the addon value for its period.
 
 **What remains.**
 
-- `score_production.py`: joins the log (a phpMyAdmin export, or a read-only
-  connection) to realised daily prices (ENTSO-E, already fetched) and reports MAE per
-  target and per horizon; the warning-light band scored with `ab.band.score_band` on what
+- `score_production.py`: joins the log to realised daily prices (ENTSO-E, already
+  fetched) and reports MAE per target and per horizon; the warning-light band scored with `ab.band.score_band` on what
   was served (its threshold 0.3 and coupled level were chosen post hoc on a historical
   walk-forward with archive weather, so the log is the only honest check); and the
   *decision* regret of the charging rule the automation actually uses (README HA
   section) — the metric that the slot plan and the q90 rule were both scored on in
   backtests but never in production.
+- **Bring the old log in.** Export `electricity_price_predictions` together with the new
+  table and treat it as extra min/avg/max history from at least 2026-09-22 — about four more
+  weeks than the new table has. Three things have to be recovered first:
+  - *The addon.* raw = (value − addon) / 1.05, with the addon each run read live from
+    `input_number.electricity_price_addon`. Peter has to state the value and the dates it
+    changed, if it ever did: the HA recorder keeps states for its purge window only
+    (typically 10 days) and an `input_number` has no long-term statistics, so the history
+    may not be recoverable from HA.
+  - *The target days.* Only `d1_date` is stored; d2…d6 are the following days, which holds
+    because the forecast set is consecutive days. Horizon = `d1_date` − `prediction_date`
+    + (k − 1).
+  - *The rate.* No `eur_to_sek_rate` was stored; re-derive it as the pipeline does
+    (`currency.calculate_eur_to_sek_rate`) to get EUR/MWh.
+  There is no `git_sha`, so score it in blocks split at the known change dates (2026-10-12,
+  2026-10-16) and never pool it blindly with the new table.
 - Re-derive the two optimism figures empirically once ~13 weeks are logged:
   production MAE at D+2 minus backtest MAE at D+2 is the sum of the weather and
   gap1 effects, and the per-horizon slope is the weather part.
@@ -182,10 +218,17 @@ raw = (value − addon) / 1.05 when the addon was constant.
 - Not logged: the run's `cheap2h_interval` diagnostics (`coupled_level_ratio`,
   `calm_high_holdout_coverage`, …), which is where a new regime shows first. Add a JSON
   column if drift tracking needs them.
+- Check when the scorer is started: the first test row (run of 2026-10-17) holds seven
+  target days, D+2..D+8, where this plan and the README say six. The cause was not
+  checked; a late-evening run, when the local date is already the next day while
+  `prediction_date` is the UTC date, would do it. `horizon_days` is computed from the two
+  dates, so the log is right either way.
 
 **Bar.** None — this is instrumentation. It is the prerequisite for reading
-item 2.3 honestly, for the forward replays of 2.10 and 2.13, and for telling whether the
-two changes of 2026-10-12 helped in practice.
+item 2.3 honestly and for the forward replays of 2.10 and 2.13. It cannot say whether the
+two changes of 2026-10-12 helped by a before/after on `cheap2h` (no before exists, see
+above); the question it can answer is whether served `cheap2h` lands near the backtest's
+expectation.
 
 **Effort.** Log: done. Scorer: a few hours. Zero model risk.
 
@@ -205,7 +248,8 @@ pre-registered per-lead bar was met on 0 of 5 ([REJECTED.md](docs/REJECTED.md)).
 Next step is a *forward* replay, not another backtest: log the blend's prediction next
 to the served forecast (a `variant = 'blend'` row in the 2.2 log, which needs the shadow
 push from the pipeline), and score both on the
-days the log covers, with a bar written for production's lead mapping (row j at
+days the log covers — not before 2.2's 2026-11-15, and the shadow push has to run for
+those weeks too, so it is built first, with a bar written for production's lead mapping (row j at
 lead j + 2): production-mapped cheap2h and min negative in every cluster-equivalent
 period and the pooled change ≤ −0.2. Cost at serve time: three model requests for
 nine points.
@@ -364,8 +408,9 @@ precipitation and a fourth site (Sundsvall) were measured and rejected
    weather, −1.0 … −1.2 on archive.
 2. **The same vintage re-score on `min`** at the production lead map, per cluster,
    to put a number next to the cheap2h one (the audit has it for two caches).
-3. **The production log (2.2) is where the real gain shows.** Compare the served
-   `cheap2h` against the realised price before and after 2026-10-12.
+3. **The production log (2.2) is where the real gain shows** — not before 2026-11-15.
+   There is no before/after for `cheap2h`: the log starts 2026-10-18, after the change
+   (see 2.2), so score the served `cheap2h` against the expectation in item 1 instead.
 
 Not tested, low prior: other fleets (NO3/NO4, northern Finland beyond Ostrobothnia) —
 each single site gave ~half the three-site gain, so the regional average is the
@@ -456,10 +501,11 @@ index.
    **so the baseline moved again**: measure 2.13 and 2.1 against the current `BASELINE`
    (coupling hurdle in), and score `python ab_test.py band` for anything touching
    `min`/`cheap2h`. Do not run any of them on an older cache and call it a replay.
-2. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB), so the clock is
-   running; what is open is `score_production.py` (a first useful read after ~4 weeks) and
-   the 2.3b shadow arm. It prices everything weather-related for real, and the forward
-   replays of 2.3b, 2.10 and 2.13 wait on it.
+2. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB) and the clock is
+   running. **Nothing to do until 2026-11-15**; then `score_production.py` (reads a CSV
+   export in `ab_cache/prediction_log/`). The 2.3b shadow push is the one piece that can
+   be built earlier, because it has to run for those weeks. It prices everything
+   weather-related for real, and the forward replays of 2.3b, 2.10 and 2.13 wait on it.
 3. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
    `ab_cache/entsoe_r25/2026-10-11` has it. Then re-test the clean nuclear MW as a
    coupling-classifier input (see 2.7).
@@ -469,6 +515,7 @@ index.
    hook; the tests. (The A72 probe is done: reservoir arrives complete.)
 6. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
    so the scoring run measures the final features. 2.5-HS follows it.
-7. **2.3b forward replay / 2.3c** — once the log has a few weeks.
+7. **2.3b forward replay / 2.3c** — not before 2026-11-15, and only if the 2.3b shadow push
+   has been running since before then.
 8. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
 9. 2.11 horizon, 2.14 UMM (after 2.7 shows which nuclear features are worth having).
