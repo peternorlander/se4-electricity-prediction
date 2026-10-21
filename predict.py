@@ -17,6 +17,7 @@ from fetch_data import fetch_training_inputs, TRAINING_DAYS
 from features import (
     build_training_data,
     build_forecast_features,
+    complete_swedish_dates,
     aggregate_market_prices_daily,
     aggregate_prices_daily,
 )
@@ -103,8 +104,18 @@ def main():
         training_inputs["norway_reservoir_median"], training_inputs["sweden_reservoir_weekly"],
         non_workdays, training_inputs["eua_daily"], se4_prices_daily=se4_prices_daily,
     )
+    # Whole Swedish days only. The forecast is 8 UTC days, so its last Swedish date holds
+    # just the 1-2 hours between Swedish and UTC midnight (and today misses its first
+    # 1-2); aggregated, such a stub is not a forecast for that day. See docs/DECISIONS.md
+    # "Whole Swedish days only". Days whose prices are already published go too.
+    complete_dates = (complete_swedish_dates(forecast_hourly)
+                      & complete_swedish_dates(wind_intl_forecast))
+    forecast_dates = forecast_features["date"].dt.date
+    incomplete = sorted(set(forecast_dates) - complete_dates)
+    if incomplete:
+        print(f"  → Dropping incomplete Swedish days: {', '.join(map(str, incomplete))}")
     forecast_features = forecast_features[
-        ~forecast_features["date"].dt.date.isin(known_price_dates)
+        forecast_dates.isin(complete_dates) & ~forecast_dates.isin(known_price_dates)
     ].reset_index(drop=True)
 
     print(f"Running inference on {len(forecast_features)} days...")

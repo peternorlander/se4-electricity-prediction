@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Whole Swedish days only](#whole-swedish-days-only) | 2026-10-21 | correctness fix, no A/B — D+2…D+7 bit-identical; stops sending a 1–2 hour weather stub as D+8 (on history that day scored cheap2h +4.3 / +6.3 worse than the same day with its whole weather) |
 | [Risk-binned unwarned high](#risk-binned-unwarned-high-round-24b) | 2026-10-19 | band only (point models untouched): outcomes above `high` 20.6 → 13.5 % / 25.5 → 15.4 % / 16.2 → 10.2 % / last 8 weeks 7.1 → 3.6 %, now below the old symmetric band in every period; `high` = `cheap2h` on uncertain days 27–39 % → 0–2 % |
 | [Coupling hurdle and the warning-light band](#coupling-hurdle-and-the-warning-light-band-round-24) | 2026-10-16 | `min` −0.30 … −0.46 clmean (REAL on 3/3 caches, every cluster); `cheap2h` −0.29 / −0.14 / −0.04 (REAL on 2/3, flat on one); band: expensive days warned 80 % over the last year and 94 % in the last 8 weeks, outcomes above `high` 21 % vs 15 % over the year, 7 % vs 16 % in the last 8 weeks |
 | [`min ≤ cheap2h` coherence](#min--cheap2h-coherence-round-25) | 2026-10-12 | coherence for Home Assistant (the pair crossed on 40–50 % of days); `min` −0.17 … −0.23 clmean (every cluster, 4 of 5 caches), `cheap2h` −0.08 … 0.00 (not harmful); NOW slightly weaker |
@@ -38,6 +39,68 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Whole Swedish days only
+
+Adopted 2026-10-21 as `features.complete_swedish_dates`, the filter in `predict.py` and
+`fetch_data._drop_partial_last_day`. A correctness fix with no model, feature or training
+change, so no A/B: the record is a bit-identity check and a measurement of what the dropped
+day was worth. Scripts `experiments/d8_*` (not committed); the numbers below are the record.
+
+**The defect.** Since 2026-03-22 (cede978) every Open-Meteo request is in UTC. The 8-day
+forecast is therefore 192 UTC hours, and grouped by Swedish date, as every daily aggregation
+is, its last date holds only the hours between Swedish and UTC midnight: 1 under CET, 2 under
+CEST. `predict.py` removed only days with published prices, so that stub went to Home
+Assistant as a seventh day, D+8, on every run. Its features describe a night: every radiation
+column and `residual_load_range` are 0 (below every training day in its season), `mean_temp`
+is the midnight temperature, the winds are single hours. On 2026-10-18 it read `avg` 86
+against 74 EUR/MWh for the same date aggregated whole, and `cheap2h_high` 68 against 31. The
+README and the plan said six days throughout; the old wide log table never showed the seventh
+because its Node-RED node kept six, and the new MariaDB log did.
+
+**What the stub was worth.** Horizon-honest walk-forward on `ab_cache/long/2026-10-16`
+(rolling 1088-row fits, frozen lags), two non-overlapping years of 52 weeks each. The last
+test row of each week was scored twice: on its whole archive day, and on the same day rebuilt
+from its 1–2 boundary hours, with the frozen columns identical:
+
+| target | whole day | 1–2 hours | worse by |
+|---|---|---|---|
+| `cheap2h` | 17.3 / 15.2 | 21.6 / 21.6 | +4.3 / +6.3 |
+| `min` | 16.8 / 13.8 | 20.6 / 17.0 | +3.8 / +3.2 |
+| `avg` | 21.8 / 22.3 | 25.6 / 25.0 | +3.8 / +2.6 |
+| `max` | 40.5 / 59.4 | 55.1 / 68.8 | +14.5 / +9.5 |
+
+Worse in all eight cells, worse under CET (one hour) than CEST, and biased upwards (the
+`cheap2h` prediction moved +8 … +10). The calendar and the frozen lags still made it better
+than a naive frozen anchor on the same rows (`cheap2h` 33.0 / 26.7), but it was not a forecast
+of that day.
+
+**The change.** `predict.py` sends only Swedish dates whose hour count, in both the SE4 and
+the regional forecast, equals the length of the local day (23, 24 or 25 from the calendar, not
+a fixed 24). Today's 22–23-hour date is dropped by the same test, which also covers a failed
+Nordpool known-price check. On the training side the same stub was the newest row of every
+production frame from 2026-03-22 until the weather top-up (2026-08-23), and
+`build_forecast_features` seeded the frozen `residual_load_lag1` and weather variabilities from
+it. `_splice_recent` cut only what it spliced in, so a failed top-up would have brought the
+stub back; `_drop_partial_last_day` now cuts it in that path too.
+
+**Verification.** The real `predict.main()`, run from the old and the new tree on the same
+cached forecast (2026-10-21) and snapshot: D+2…D+7 features, unrounded predictions and both
+pushed dicts identical, and only 2026-10-29 (one hour) gone. The normal splice is unchanged.
+On the archive-only snapshot 2026-08-06 the fallback now ends on 2026-08-01 (24 hours) instead
+of a two-hour 2026-08-02, and the rest of the training frame is identical.
+
+**What it did not touch.** No headline MAE and no A/B verdict: the eval and the harness score
+training-frame rows, which are whole days. The exception is that the two long snapshots
+fetched before the top-up (2026-08-06, 2026-08-21) end on such a row: one test row of 364 at
+shift 0, in both arms.
+
+**Why not request 9 days to make D+8 whole.** Open-Meteo changes the last two UTC hours of a
+series with `forecast_days` at some points (de_north on 2026-10-18, the same on repeated
+requests). Under CET one of those hours falls in D+7, so that change is not bit-identical on
+the last sent day, and D+8 would lie outside everything measured (lag staleness 8, weather
+lead 8). A longer horizon is plan 2.11's decision; it should keep this filter and request one
+day more than it sends.
 
 ## Risk-binned unwarned high (round 24b)
 

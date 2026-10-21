@@ -4,7 +4,7 @@ A machine learning pipeline that predicts day-ahead electricity prices for the S
 
 ## Purpose
 
-The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg/cheap2h prices for the six days after the ones already published (D+2 … D+7 from the run date: the weather forecast covers 8 days and today and tomorrow are dropped as known), giving automation rules enough lead time to act.
+The predictions are used in Home Assistant to make smart decisions about **schedulable energy consumption** — most importantly EV charging. If prices are expected to be lower in the coming days, charging can be deferred. If prices are expected to rise, the car charges now. The sensor exposes daily min/avg/cheap2h prices for the six days after the ones already published (D+2 … D+7 from the run date: the weather forecast covers 8 UTC days, today and tomorrow are dropped as known, and so is the Swedish date at the end of the forecast that only gets its first one or two hours), giving automation rules enough lead time to act.
 
 The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, and updates a Home Assistant sensor with predictions in SEK/kWh, including a configurable distribution cost addon.
 

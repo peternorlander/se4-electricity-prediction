@@ -12,6 +12,7 @@ from sources.open_meteo import (
 )
 from sources.yahoo_finance import fetch_ttf_prices
 from sources.eua_carbon import fetch_eua_prices
+from features import complete_swedish_dates
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,8 @@ def _splice_recent(archive: pd.DataFrame, recent: pd.DataFrame, today: date) -> 
     2. The result is cut at Swedish midnight of `today`, which is the end of
        yesterday's Swedish day. `recent` runs to the current hour, and an
        incomplete final day would otherwise be aggregated as if it were whole.
+       When there is nothing to splice, the archive's own trailing stub is cut
+       instead (_drop_partial_last_day).
 
     Args:
         archive: Frame from fetch_historical / fetch_international_wind_historical.
@@ -67,7 +70,7 @@ def _splice_recent(archive: pd.DataFrame, recent: pd.DataFrame, today: date) -> 
         Concatenation of both, timestamp-sorted, with no duplicate timestamps.
     """
     if recent is None or recent.empty:
-        return archive
+        return _drop_partial_last_day(archive)
     if archive is None or archive.empty:
         return recent
 
@@ -82,11 +85,34 @@ def _splice_recent(archive: pd.DataFrame, recent: pd.DataFrame, today: date) -> 
     tail = tail.reindex(columns=archive.columns)
 
     if tail.empty:
-        return archive
+        return _drop_partial_last_day(archive)
 
     return (pd.concat([archive, tail], ignore_index=True)
               .sort_values("timestamp")
               .reset_index(drop=True))
+
+
+def _drop_partial_last_day(frame: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop the newest Swedish date when the frame does not hold all of its hours.
+
+    The archive is fetched in UTC, so it ends 1-2 hours into the Swedish date after
+    its last UTC day. The recent top-up normally completes that date and is itself cut
+    at Swedish midnight, so this only acts when the archive is used without it (the
+    top-up failed). Without the cut the stub enters training as the newest row -- zero
+    radiation, a midnight temperature as the daily mean, next to a whole day's prices --
+    and build_forecast_features seeds the frozen residual_load_lag1 and weather
+    variabilities from that row. That was every production fit from the UTC switch
+    (2026-03-22) until the top-up (2026-08-23). See docs/DECISIONS.md "Whole Swedish
+    days only".
+    """
+    if frame is None or frame.empty:
+        return frame
+    days = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_convert(SWEDISH_TZ).dt.date
+    newest = days.max()
+    if newest in complete_swedish_dates(frame):
+        return frame
+    return frame[(days != newest).values].reset_index(drop=True)
 
 
 def _fetch_recent_or_none(fetch_fn, label: str):

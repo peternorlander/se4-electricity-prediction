@@ -272,6 +272,34 @@ def _to_swedish_date(timestamps: pd.Series) -> pd.Series:
     return timestamps.dt.tz_convert("Europe/Stockholm").dt.date
 
 
+def complete_swedish_dates(hourly: pd.DataFrame) -> set:
+    """
+    Swedish dates for which an hourly frame holds every hour of the local day.
+
+    Open-Meteo is fetched in UTC, so a series of whole UTC days starts 1-2 hours into
+    its first Swedish date and spills 1-2 hours into the Swedish date after its last
+    (the gap between Swedish and UTC midnight: 1 under CET, 2 under CEST). Grouped by
+    Swedish date, such an edge date aggregates a few night hours as if they were a
+    whole day -- zero radiation, a midnight temperature as the daily mean. A date is
+    complete when its hour count equals the length of the local day, which is 23 or 25
+    on the DST change days, so the comparison is against the calendar, not 24.
+
+    Args:
+        hourly: DataFrame with an hourly `timestamp` column (UTC-aware or naive UTC).
+
+    Returns:
+        Set of date objects.
+    """
+    counts = _to_swedish_date(pd.to_datetime(hourly["timestamp"])).value_counts()
+    complete = set()
+    for day, n_hours in counts.items():
+        start = pd.Timestamp(day).tz_localize("Europe/Stockholm")
+        end = (pd.Timestamp(day) + timedelta(days=1)).tz_localize("Europe/Stockholm")
+        if n_hours == (end - start) // pd.Timedelta(hours=1):
+            complete.add(day)
+    return complete
+
+
 def aggregate_weather_daily(df: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate hourly weather data to daily features.

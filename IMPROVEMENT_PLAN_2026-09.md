@@ -218,11 +218,14 @@ with the addon value for its period.
 - Not logged: the run's `cheap2h_interval` diagnostics (`coupled_level_ratio`,
   `calm_high_holdout_coverage`, …), which is where a new regime shows first. Add a JSON
   column if drift tracking needs them.
-- Check when the scorer is started: the first test row (run of 2026-10-17) holds seven
-  target days, D+2..D+8, where this plan and the README say six. The cause was not
-  checked; a late-evening run, when the local date is already the next day while
-  `prediction_date` is the UTC date, would do it. `horizon_days` is computed from the two
-  dates, so the log is right either way.
+- **`horizon_days = 8` rows are not forecasts.** Until 2026-10-21 every run sent a
+  seventh day, D+8: since the UTC switch of 2026-03-22 the 8-day forecast's last Swedish
+  date holds only the 1–2 hours between Swedish and UTC midnight, and nothing dropped it
+  ([DECISIONS.md](docs/DECISIONS.md#whole-swedish-days-only)). The 2026-10-17 test row and
+  every run before the fix logged one. They carry no information and can be deleted from
+  the table; the scorer should reject `horizon_days > 7` regardless, until a longer
+  horizon is shipped on purpose (2.11). The old wide table never had the stub — its flow
+  kept six days.
 
 **Bar.** None — this is instrumentation. It is the prerequisite for reading
 item 2.3 honestly and for the forward replays of 2.10 and 2.13. It cannot say whether the
@@ -356,10 +359,15 @@ same question.
 
 ### 2.11 Longer horizon for the automation (product decision, cheap)
 
-Open-Meteo serves `forecast_days=16`; the pipeline requests 8 and, after
-removing today and tomorrow, sends **six** predicted days (D+2..D+7), not the
-"8–10" the README says. Extending to D+2..D+14 is a parameter change plus the
-nuclear-outage and calendar windows (`forecast_end = today + 10`). Accuracy
+Open-Meteo serves `forecast_days=16`; the pipeline requests 8 and sends **six**
+predicted days (D+2..D+7): today and tomorrow have published prices, and the last
+Swedish date of a UTC request is a 1–2 hour stub that `predict.py` drops (until
+2026-10-21 it went out as D+8, [DECISIONS.md](docs/DECISIONS.md#whole-swedish-days-only)).
+Extending to D+2..D+14 is a parameter change plus the nuclear-outage and calendar
+windows (`forecast_end = today + 10`). Keep the whole-day filter, and request one day
+more than the last day sent: Open-Meteo changes the last hours of a series with
+`forecast_days` (de_north, 2026-10-18), so a longer request is not bit-identical on the
+previous last day. Accuracy
 beyond D+7 is unmeasured — the eval uses 7-day windows — so ship it only with
 the interval, and report it separately in 2.2. Whether the automation wants a
 14-day view is Peter's call; the model cost is nil.
