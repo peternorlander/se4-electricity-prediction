@@ -3,6 +3,8 @@ import logging
 import sys
 from datetime import datetime, timedelta, UTC
 
+import pandas as pd
+
 logging.basicConfig(
     level=logging.WARNING,
     format="%(levelname)s %(name)s — %(message)s",
@@ -13,7 +15,7 @@ from sources.open_meteo import fetch_forecast, fetch_international_wind_forecast
 from sources.entso_e import fetch_nuclear_outages_se3
 from sources.swedish_calendar import get_non_workdays
 from sources.nordpool import get_dates_with_known_prices
-from fetch_data import fetch_training_inputs, TRAINING_DAYS
+from fetch_data import fetch_training_inputs, fetch_tomorrow_prices, TRAINING_DAYS
 from features import (
     build_training_data,
     build_forecast_features,
@@ -25,6 +27,16 @@ from model import train, train_band, predict
 from evaluate import walk_forward_validate, get_feature_importance
 from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
 from ha_client import fetch_addon_value, apply_addon, push_predictions
+
+
+def _extend_prices(history: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
+    """History with the fresh fetch appended; both carry today, so overlaps keep history."""
+    if fresh.empty:
+        return history
+    combined = pd.concat([history, fresh], ignore_index=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+    return (combined.drop_duplicates("timestamp", keep="first")
+                    .sort_values("timestamp").reset_index(drop=True))
 
 
 def main():
@@ -41,7 +53,14 @@ def main():
     wind_intl_forecast = fetch_international_wind_forecast()
     print(f"  → {len(wind_intl_forecast)} records")
 
-    market_daily = aggregate_market_prices_daily(training_inputs["market_prices_hourly"])
+    # The training inputs end on today's Swedish day; the forecast's frozen price lags
+    # are anchored on tomorrow instead once the auction has published it (see
+    # fetch_data.fetch_tomorrow_prices). Training is unaffected.
+    prices_tomorrow, market_tomorrow = fetch_tomorrow_prices(today)
+    anchor_prices_hourly = _extend_prices(training_inputs["prices_hourly"], prices_tomorrow)
+    anchor_market_hourly = _extend_prices(training_inputs["market_prices_hourly"], market_tomorrow)
+
+    market_daily = aggregate_market_prices_daily(anchor_market_hourly)
 
     forecast_end = today + timedelta(days=10)
     print(f"Fetching planned SE3 nuclear outages {today} → {forecast_end}...")
@@ -95,8 +114,9 @@ def main():
             print(f"  {feature:<30} {importance:.4f}")
 
     # Freshest known SE4 daily prices (extend past the weather-limited training
-    # frame) — used to anchor the SE4 price lags at the most recent price.
-    se4_prices_daily = aggregate_prices_daily(training_inputs["prices_hourly"])
+    # frame, through tomorrow once published) — used to anchor the SE4 price lags
+    # at the most recent price.
+    se4_prices_daily = aggregate_prices_daily(anchor_prices_hourly)
 
     forecast_features = build_forecast_features(
         forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast,

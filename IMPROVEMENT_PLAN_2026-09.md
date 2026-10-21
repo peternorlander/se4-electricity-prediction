@@ -478,6 +478,43 @@ ENTSO-E data; `avg` first, `classify_clustered`.
 **Effort.** One day for the source and cache, one day for the per-window
 builder shared with 2.3a.
 
+### 2.18 A near-horizon model that reads the price (added 2026-10-22)
+
+**Idea (Peter's).** A frozen price lag is information about tomorrow's price and noise
+about next week's. Today one model serves every day, so it either reads the price on
+every day or on none. The price/market family was pruned from `min`, `cheap2h` and `avg`
+because, frozen across all seven rows, it hurt: cheap2h +1.00, min +0.74, avg +1.08,
+harmful in every period ([REJECTED.md](docs/REJECTED.md)). The question was never asked
+for the near days alone. A separate *near model*, with the price family, for the first
+N sent days, next to today's model for the rest, is a new mechanism. It is not the
+round-18 price-level features or the shelved per-horizon models re-opened.
+
+**Why now.** Since 2026-10-22 the anchor is D+1
+([DECISIONS.md](docs/DECISIONS.md#price-anchor-on-d1)), so D+2's lag1 is exactly
+yesterday's price, as in every training row: no train/serve mismatch on the first sent
+day. Measured on that change: a fresher anchor helps cheap2h on D+2/D+3 (up to −0.44)
+and nothing from D+4. That is the shape this item would exploit, on a model that barely
+reads the price today.
+
+**Design.**
+- For each horizon h in the near set (D+2 = staleness 1, D+3 = staleness 2, …), train
+  on the price family at the age that day will see. Use lag-h columns (`price_se4_*`
+  shifted h days), not lag1 frozen and labelled as fresh. The near model for D+3 is
+  trained on prices two days old.
+- Score per eval row (1-based row k = D+(k+1), staleness k) against today's model on
+  the same rows. Choose N as the last horizon where the near model wins in every
+  cluster, and stop at the first horizon where it does not.
+- Targets: `cheap2h` and `min` first (`ab_test.py band` as well, since both feed the
+  band), `avg` after. `max` already reads the family.
+
+**Bar** (write it down before the run). Per horizon, `classify_clustered` REAL and
+favourable on ≥ 2 long caches with genuinely different NOW windows. The total over
+D+2…D+7 must not get worse.
+
+**Cost.** One extra model per near horizon, plus routing in `predict.py` and
+`model.predict` by horizon. The harness needs a per-row target, the same shape as
+`run_round25_vintage.py`'s per-row scoring.
+
 ## 3. Carried at low priority, and what stays closed
 
 **Low priority, carried:** `ttf_vs_30d` (old item 5, unchanged reasoning);
@@ -527,3 +564,5 @@ index.
    has been running since before then.
 8. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
 9. 2.11 horizon, 2.14 UMM (after 2.7 shows which nuclear features are worth having).
+10. **2.18 near-horizon price model**: to be taken up separately (Peter, 2026-10-22).
+    It needs no new fetch, and any long cache serves.

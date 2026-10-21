@@ -441,8 +441,8 @@ upper bound is evidence; an upper bound mistaken for a result is not.
 
 Every weather input in this repo's eval is ERA5 archive — a forecast with no error.
 Production pays the error, and it is not small: scoring the same models on the
-forecast issued L days earlier costs +1.63 cheap2h / +1.69 min / +2.81 avg EUR/MWh
-at production's leads, +3…+5 at a 7-day lead and ~0 under D+3
+forecast issued L days earlier costs +1.30 cheap2h / +1.49 min / +2.38 avg EUR/MWh
+on the six days production sends, +3…+5 at a 7-day lead and ~0 under D+3
 ([FINDINGS.md](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)).
 That error is shared by both arms of a paired A/B, so it cancels from a *feature set*
 comparison — and it does not cancel from a *weather feature*, whose whole value is
@@ -456,9 +456,13 @@ So, for any addition whose columns derive from weather inputs:
 1. Re-score the winner (not every arm) with the model still trained on archive
    weather and the test rows fed `*_previous_dayL` vintages for **every** weather
    point it reads, the new ones included (`experiments/run_round25_n1.py` is the
-   worked implementation; fetch with `fetch_round25_vintage*.py`). Row j of the
-   eval maps to lead min(j + 2, 7): the walk-forward's first row is production's
-   first *sent* day, D+2.
+   worked implementation; fetch with `fetch_round25_vintage*.py`). Row j (0-based)
+   of the eval maps to lead j + 2. Its frozen lags are one day old on the first row,
+   which is production's first *sent* day, D+2, because production anchors them on
+   D+1 ([DECISIONS.md](DECISIONS.md#price-anchor-on-d1), 2026-10-22). Before that the
+   anchor was D+0 and the first row stood for D+1, a day that is never sent.
+   Production sends rows 0–5 (D+2…D+7). Row 6 is D+8, which it no longer sends:
+   score it at lead 7 if at all, and leave it out of a production-mapped total.
 2. Record both numbers in the ledger entry. The survival criterion written before
    the run for N1 was "negative in every cluster on cheap2h"; a gain that keeps its
    sign at a fraction of its size is a smaller true effect, not a failure.

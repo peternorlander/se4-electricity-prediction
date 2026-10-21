@@ -811,8 +811,17 @@ L days earlier for **all six production weather points**, L = 1…7. The vintage
 are built by the unmodified `build_training_data` on hybrid hourly inputs, so every
 derived column (residual load, HDD, `wind_night` …) is the production recipe on
 forecast inputs; only per-day weather columns change, frozen lags and prices do not
-(asserted). 5 caches × 12 points × 52 windows. Production's first sent day is D+2
-(its price anchor is D+1), so eval row j maps to lead min(j+2, 7).
+(asserted). 5 caches × 12 points × 52 windows. Production's first sent day is D+2,
+and this section assumed its price anchor was D+1, so eval row j maps to lead
+min(j+2, 7). **That was not true when it was written.** Production fetched prices
+only through D+0, so the first eval row had the price staleness of D+1, a day never
+sent, and every row carried a forecast one day older than production pairs with
+that staleness (found 2026-10-18). The anchor moved to D+1 on 2026-10-22
+([DECISIONS.md](DECISIONS.md#price-anchor-on-d1)), and since then the mapping below
+is the right one. Production also stopped sending D+8 on 2026-10-21, so the
+production-mapped total now covers rows 0–5 only: **+1.30 cheap2h, +1.49 min,
++2.38 avg** (cheap2h by cluster +1.98 / +1.23 / +0.67). The +1.63 / +1.69 / +2.81
+below includes row 6.
 
 **Penalty = MAE(forecast weather) − MAE(archive weather), EUR/MWh, mean over the five
 caches (base models):**
@@ -824,8 +833,8 @@ caches (base models):**
 | FAR | +0.12 | −0.07 | +0.30 | −0.04 | +1.03 | +2.29 | +2.99 |
 
 `min` is the same shape (L7: +4.79 / +3.22 / +2.78); `avg` is worse (L7: +5.76 /
-+4.70 / +6.58). At production's lead mapping the penalty is **+1.63 cheap2h, +1.69
-min, +2.81 avg** pooled over the 15 cache × cluster cells (cheap2h by cluster
++4.70 / +6.58). At the lead mapping, rows 0–6, the penalty is **+1.63 cheap2h, +1.69
+min, +2.81 avg** (+1.30 / +1.49 / +2.38 on the six sent days, see above) pooled over the 15 cache × cluster cells (cheap2h by cluster
 +2.35 / +1.51 / +1.02, on an archive MAE of 13–16). It is small through D+4 and
 steep from D+5. Consequences: the headline MAE in [MODEL.md](MODEL.md) is optimistic
 by about this much; the D+5…D+7 days the Home Assistant rule most wants to defer

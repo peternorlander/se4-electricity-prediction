@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Price anchor on D+1](#price-anchor-on-d1) | 2026-10-22 | correctness fix: `avg` exactly 0 by construction, `min` +0.005 / +0.026 (NOISE); `cheap2h` −0.14 REAL / −0.05 NOISE clmean (the gain is at D+2/D+3); `max` −1.31 / −0.49 |
 | [Whole Swedish days only](#whole-swedish-days-only) | 2026-10-21 | correctness fix, no A/B — D+2…D+7 bit-identical; stops sending a 1–2 hour weather stub as D+8 (on history that day scored cheap2h +4.3 / +6.3 worse than the same day with its whole weather) |
 | [Risk-binned unwarned high](#risk-binned-unwarned-high-round-24b) | 2026-10-19 | band only (point models untouched): outcomes above `high` 20.6 → 13.5 % / 25.5 → 15.4 % / 16.2 → 10.2 % / last 8 weeks 7.1 → 3.6 %, now below the old symmetric band in every period; `high` = `cheap2h` on uncertain days 27–39 % → 0–2 % |
 | [Coupling hurdle and the warning-light band](#coupling-hurdle-and-the-warning-light-band-round-24) | 2026-10-16 | `min` −0.30 … −0.46 clmean (REAL on 3/3 caches, every cluster); `cheap2h` −0.29 / −0.14 / −0.04 (REAL on 2/3, flat on one); band: expensive days warned 80 % over the last year and 94 % in the last 8 weeks, outcomes above `high` 21 % vs 15 % over the year, 7 % vs 16 % in the last 8 weeks |
@@ -39,6 +40,65 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Price anchor on D+1
+
+Adopted 2026-10-22 as `fetch_data.fetch_tomorrow_prices` and its use in `predict.py`.
+Scripts `experiments/anchor_*` (not committed); the numbers below are the record.
+
+**The defect.** `fetch_training_inputs` ends every ENTSO-E window at `today` 00:00 UTC.
+That returns today's Swedish day and never tomorrow's, even though production runs after
+the auction has published tomorrow (about 13:00 CET). All six long snapshots end on their
+own `today`, the four fetched at 22:00–23:00 included. So the frozen price lags were
+anchored on D+0, and the first sent day, D+2, carried a two-day-old price where every
+training row carries yesterday's. `predict.py` still knew tomorrow was published: it
+used Nordpool to skip predicting it, but never read the price. Nothing in the docs
+noticed. They described the anchor as D+1, and the vintage mapping in
+[FINDINGS.md](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)
+was built on that.
+
+**The change.** A second, short fetch (today → tomorrow) of SE4 and DE/DK2 day-ahead
+prices extends the series that `build_forecast_features` freezes. Tomorrow is kept only
+when every hour of the local day is present, checked separately for SE4 and for the
+DE/DK2 pair. The 10 columns that move are the SE4 lags, momentum, 7-day volatility and
+`price_de_lag1`/`price_dk2_lag1`. A run before publication, or a failed fetch, falls
+back to the D+0 anchor with a printed warning. The training inputs, and so every A/B
+snapshot, are untouched.
+
+**Measurement.** Horizon-honest walk-forward, rolling 1088-row fits, NOW / −3M / −6M /
+−9M / −12M × 4 points, on `long/2026-10-16` and `long/2026-10-10`. The fitted models were
+scored on D+2…D+7 twice: with the price family frozen at the first test row (D+0
+anchor) and at the second (D+1 anchor):
+
+| target | 2026-10-16 clmean | 2026-10-10 clmean |
+|---|---|---|
+| `cheap2h` | −0.144 REAL | −0.054 NOISE (−12M +0.22) |
+| `min` | +0.005 NOISE | +0.026 NOISE |
+| `avg` | 0 (reads no price lag) | 0 |
+| `max` | −1.311 REAL | −0.485 NOISE |
+
+The `cheap2h` gain is at D+2/D+3 (−0.44 / −0.36 and −0.28 / −0.11) and gone by D+4. It
+is small because `cheap2h` reads only `price_se4_max_lag1`, and `min` moves only through
+coherence. This does not pass the A/B bar as an *improvement*. It ships as a correctness
+fix: the forecast now carries the information production has when it runs, `min`/`avg`
+cannot be harmed, and no cell was harmful beyond noise.
+
+**Integration check** (`predict.main()` from HEAD and from this tree, on the cached
+forecast and `long/2026-10-16`, fetches stubbed):
+- With tomorrow unpublished, training, features, predictions and both pushed dicts are
+  bit-identical to HEAD.
+- With tomorrow published (synthetic, the last day ×1.3), training is identical. Only
+  the 10 price-family columns change, and the four SE4 lag1 values equal tomorrow's
+  aggregates. `avg` is bit-identical.
+- `fetch_tomorrow_prices` keeps a complete tomorrow (96 quarter-hours), drops one that
+  is three hours short, and returns empty frames on an exception.
+
+**What it changes for the eval.** Nothing in `evaluate.py`. `apply_forecast_freeze`
+freezes the lags at the first test row, so that row's lags are one day old, and that is
+now exactly D+2. Eval rows 1…6 (1-based) are the six sent days, D+2…D+7, by price
+staleness and by weather lead. Row 7 is D+8, which is not sent. Before this change the
+headline matched D+1…D+7, so it was optimistic for the sent days: rows 2–7 against 1–7
+was +0.28 / +0.32 `cheap2h`, +0.24 `min`, +0.35 `avg`, +0.55 `max` on the two caches.
 
 ## Whole Swedish days only
 

@@ -1211,8 +1211,11 @@ def build_forecast_features(
     # whole horizon. Prefer se4_prices_daily (raw daily aggregates, which extend
     # to the latest published day-ahead price) over training_daily, whose last
     # row lags ~WEATHER_ARCHIVE_LAG_DAYS behind due to the weather-archive join.
-    # The SE4 price lags are the dominant min/cheap2h features, so freshening
-    # this anchor is the highest-value single improvement for those targets.
+    # predict.py extends it through tomorrow once the auction has published it, so the
+    # first sent day (D+2) carries yesterday's price, as every training row does.
+    # Since the feature prunes only `max` reads the whole family; `cheap2h` reads
+    # price_se4_max_lag1 alone and `min`/`avg` none (docs/DECISIONS.md
+    # "Price anchor on D+1").
     price_source = None
     if se4_prices_daily is not None and not se4_prices_daily.empty:
         price_source = se4_prices_daily.sort_values("date")

@@ -264,3 +264,71 @@ def fetch_training_inputs(today: date) -> dict:
         "non_workdays": non_workdays,
         "eua_daily": eua_daily,
     }
+
+
+def _with_complete_day(hourly: pd.DataFrame, day: date, columns: list) -> pd.DataFrame:
+    """
+    Rows of `hourly` up to and including Swedish date `day`, but `day` itself only when
+    every hour of it has a value in every one of `columns`; otherwise the rows end the
+    day before.
+
+    ENTSO-E answers 15-minute points since the SDAC MTU go-live and hourly ones before,
+    so coverage is judged on hourly means, against the local day's length (23/24/25).
+    """
+    ts = pd.to_datetime(hourly["timestamp"], utc=True)
+    local_day = ts.dt.tz_convert(SWEDISH_TZ).dt.date
+    tail = hourly[local_day == day]
+    hourly_means = (tail.assign(timestamp=pd.to_datetime(tail["timestamp"], utc=True))
+                        .set_index("timestamp")[columns].resample("1h").mean()
+                        .dropna().reset_index())
+    keep_day = not hourly_means.empty and day in complete_swedish_dates(hourly_means)
+    return hourly[(local_day < day) | ((local_day == day) & keep_day)].reset_index(drop=True)
+
+
+def fetch_tomorrow_prices(today: date) -> tuple:
+    """
+    SE4 and DE/DK2 day-ahead prices for today and, once it is published, tomorrow.
+
+    fetch_training_inputs ends every ENTSO-E window at `today` 00:00 UTC, which returns
+    today's Swedish day and never tomorrow's -- even though production runs after the
+    day-ahead auction has published tomorrow (about 13:00 CET). The forecast's frozen
+    price lags were therefore anchored on D+0, and the first sent day, D+2, carried a
+    two-day-old price where the model was trained on yesterday's. This fetch extends
+    the price series by tomorrow for the FORECAST anchor only; the training inputs (and
+    so every A/B snapshot) are untouched. See docs/DECISIONS.md "Price anchor on D+1".
+
+    Tomorrow is kept only when every hour of it is in the answer, separately for SE4
+    and for the DE/DK2 pair; a run before publication gets today alone, which is the
+    old anchor. Any failure falls back to the same, loudly: a missing D+1 costs a
+    little accuracy, not the run.
+
+    Args:
+        today: The run's "as of" date, the same one fetch_training_inputs was called with.
+
+    Returns:
+        (prices_hourly, market_prices_hourly) covering today .. tomorrow at most, in
+        the same shape as the corresponding fetch_training_inputs frames.
+    """
+    tomorrow = today + timedelta(days=1)
+    start, end = today.strftime("%Y%m%d"), tomorrow.strftime("%Y%m%d")
+    empty_se4 = pd.DataFrame(columns=["timestamp", "price_eur_mwh"])
+    empty_market = pd.DataFrame(columns=["timestamp", "price_de", "price_dk2"])
+
+    print(f"Fetching tomorrow's ({tomorrow}) day-ahead prices for the forecast anchor...")
+    try:
+        se4 = _with_complete_day(fetch_prices(start, end), tomorrow, ["price_eur_mwh"])
+    except Exception as exc:  # noqa: BLE001 -- the old D+0 anchor is the fallback
+        print(f"  -> WARNING: SE4 fetch failed ({exc}); price lags stay anchored on {today}")
+        se4 = empty_se4
+    try:
+        market = _with_complete_day(fetch_market_prices(start, end), tomorrow,
+                                    ["price_de", "price_dk2"])
+    except Exception as exc:  # noqa: BLE001
+        print(f"  -> WARNING: DE/DK2 fetch failed ({exc}); their lags stay anchored on {today}")
+        market = empty_market
+
+    for name, frame in (("SE4", se4), ("DE/DK2", market)):
+        days = pd.to_datetime(frame["timestamp"], utc=True).dt.tz_convert(SWEDISH_TZ).dt.date
+        status = "published" if (days == tomorrow).any() else "not complete yet"
+        print(f"  -> {name}: {tomorrow} {status}")
+    return se4, market
