@@ -22,7 +22,8 @@ check whether the code it describes still looks that way.
 | [ENTSO-E omits a price point when the price repeats](#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10) | 2026-10-10 | A44 curves are A03 "variable sized block"; read point by point, repeated prices vanished from every target, every lag and the EUR/SEK rate — growing 9 → 246 points a year as 15-minute MTUs made repeats common |
 | [German prices: two auctions in one response](#german-prices-two-auctions-in-one-response-round-215) | 2026-10-11 | `price_de` was SDAC or the German intraday auction per hour; the clean series moves the DE-lag arms ~0.1 and changes no verdict's direction; `max` −0.32 |
 | [The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast](#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25) | 2026-10-11 | Two columns from three northern wind points: cheap2h −1.04 … −1.18 on all five caches, ~40–75 % of it surviving forecast-vintage weather, gone at a 7-day lead; Stockholm stays; a fourth site adds nothing |
-| [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar |
+| [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar. Re-measured on the current model 2026-10-22: +1.8 / +1.8 / +2.7 on the six sent days |
+| [A wind-carrying residual load pays only near the run day](#a-wind-carrying-residual-load-pays-only-near-the-run-day-round-27) | 2026-10-22 | The MW-scale residual load is −0.4…−0.6 on `avg` on archive weather and ~0 on production's six days: worth −0.1…−0.4 up to a 4-day lead, harmful at 6–7. Any feature that adds wind — plan 2.1-C included — has to be scored by lead on forecast vintages |
 | [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26). A72 (reservoir) is A03 too but arrives complete — checked 2026-10-14, 0 omitted of 158 weeks |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
@@ -763,7 +764,9 @@ five periods. Every one of the 60 points was favourable on cheap2h and min.
   northern points complement the Stockholm proxy; they do not replace it.
 * The MW-scale residual load ([plan 2.1-S](../IMPROVEMENT_PLAN_2026-09.md)) stacks on
   N1 for `min` (−0.20 … −0.31 further, REAL ×3) and `avg` (−0.37…−0.39 further), and
-  not for cheap2h (NOISE, one REAL-harmful +0.23).
+  not for cheap2h (NOISE, one REAL-harmful +0.23) — on archive weather. On a forecast
+  it does not, and it was closed in round 27
+  ([below](#a-wind-carrying-residual-load-pays-only-near-the-run-day-round-27)).
 
 **Mechanism, in the data.** Workdays of the last 365 days, cheap2h by tercile of
 `north_wind_power`: calm 63.6, mid 47.8, windy 23.9 EUR/MWh. Holding Stockholm wind
@@ -793,8 +796,10 @@ criterion (negative in every cluster on cheap2h) met.
 
 **As shipped:** the three keys in `sources.open_meteo.WIND_LOCATIONS`; the two columns in
 `features.aggregate_intraday_features`; appended last to the trough and `avg` lists and
-deliberately **not** to `FEATURE_COLUMNS`, which would have silently changed `max`. The
-2026-10-16 long cache is the next independent NOW window.
+deliberately **not** to `FEATURE_COLUMNS`, which would have silently changed `max`.
+Replayed 2026-10-22 on the 2026-10-16 long cache, the first independent NOW window, and
+under the coupling hurdle: it replicates
+([DECISIONS.md](DECISIONS.md#northern-wind-points-round-25)).
 
 ---
 
@@ -858,6 +863,76 @@ the production lead mapping rather than for every lead.
 
 Not measured: 2.3c (train on what you serve) — it needs per-horizon training sets;
 the L5–L7 penalty above is its headroom, +1 … +5 EUR/MWh on cheap2h.
+
+**Re-measured on the current model (round 27, 2026-10-22).** Coupling hurdle, northern
+wind points and coherence in, all nine weather points on vintages, six long caches ×
+12 points, production's map (sent rows 0–5, row j at lead j+2), penalty per cluster
+NOW / −6M / FAR, mean over caches: **cheap2h +2.74 / +1.66 / +1.06, `min`
++2.73 / +1.63 / +0.97, `avg` +3.06 / +2.13 / +2.77** — pooled +1.8 / +1.8 / +2.7, against
++1.30 / +1.49 / +2.38 for the round-25 model. Like for like (`long/2026-10-10`, the same points) the
+current model pays +0.3 … +0.6 more on the trough targets; the northern wind points,
+which lose part of their gain on a forecast, account for most of it. The newest
+window is the worst: `long/2026-10-16` NOW cheap2h +3.35, and +9.8 over the coupled
+weeks from 2026-09-14 (archive 16.0, forecast 25.8 EUR/MWh). That is the expectation to
+hold the production log (plan 2.2) against, not the archive headline.
+
+---
+
+## A wind-carrying residual load pays only near the run day (round 27)
+
+Measured 2026-10-22, plan item 2.1-S, on all six long caches against the current model.
+The verdict is a [REJECTED.md](REJECTED.md) row; this section is why, because the same
+limit applies to anything else that gives the model more wind.
+
+**What the MW scale changes.** Production's `residual_load` correlates −0.999 with
+temperature: demand spans ~40 degree-units and the wind and solar terms [0, 1]. Round 25's
+MW-equivalent version puts the three terms on one GW scale with fixed per-zone
+capacities, so wind moves it (−0.78). On archive weather that is worth `avg` −0.37 …
+−0.59 on every cache, 72 of 72 points favourable — the same number round 25 measured,
+reproduced to 5e-7.
+
+**On a forecast the gain is a function of lead.** Same fits, test rows fed the
+`best_match` forecast issued L days earlier (all rows at lead L), `avg`, the appended
+arm (SA) minus production, mean over six caches:
+
+| cluster | archive | L1 | L2 | L3 | L4 | L5 | L6 | L7 |
+|---|---|---|---|---|---|---|---|---|
+| NOW | −0.60 | −0.62 | −0.38 | −0.38 | −0.37 | −0.21 | +0.37 | +0.32 |
+| −6M | −0.55 | −0.63 | −0.49 | −0.45 | −0.44 | −0.29 | −0.05 | +0.17 |
+| FAR | −0.35 | −0.08 | −0.51 | −0.62 | −0.34 | −0.68 | −1.06 | −0.04 |
+
+In the two recent years the gain holds at about −0.4 to a 4-day lead, halves at 5 and
+turns harmful at 6–7, where a wind forecast has lost its skill and a temperature forecast
+has not: there, the old temperature-like column is the better feature. FAR (2024-10 →
+2025-10) keeps a gain at every lead, which nothing here explains. Production's own days
+are smaller still, because the archive gain is smallest on the first test rows (next
+paragraph): at production's map D+2…D+4 is worth −0.09 / −0.31 / −0.40 (SA, NOW / −6M /
+FAR) and D+5…D+7 +0.10 / −0.05 / −0.62, so the six days come to ≈ 0 in NOW. The in-place
+arm (SR) has the same shape. On `min` the
+same columns are *worse* on a forecast at every lead from L2 (NOW +0.01 … +0.28), though
+better on archive.
+
+**The leak-smell test saw it first.** The archive gain grew with the test row: row 6 over
+row 0 was **3.96 (SR) and 3.69 (SA)** on `avg`, against the flag of 2 in
+[AB_TESTING.md](AB_TESTING.md#archive-weather-is-a-perfect-forecast-re-score-weather-candidates-on-vintages),
+while the northern wind points sit at 0.90 (cheap2h) / 1.32 (`min`). Nothing was wired
+wrong. As the frozen lags go stale down the week, perfect-foresight weather becomes
+worth more, and a column that carries more weather collects more of it. On a weather
+candidate a flagged ratio can mean "this gain is foresight", not only "this is a leak";
+the vintage re-score tells the two apart.
+
+**What this changes.**
+- **Plan 2.1-C** (curves calibrated from ENTSO-E generation) fixes the *scale* of the
+  wind term, not the forecast skill of the wind it brings in, so it runs into the same
+  wall. Its oracle ceiling and C itself must be scored on vintages at production's map,
+  with D+2…D+4 and D+5…D+7 reported separately. An all-horizon archive number cannot
+  justify it.
+- **Score weather candidates by lead, not only by production's total.** The six-day total
+  hid a gain at short leads behind a loss at long ones. The near half is a candidate
+  input for a horizon-routed model (plan 2.18). It was found post hoc here, so it is a
+  hypothesis for that item, not a result.
+- The northern wind points show the same shape on `avg` (NOW L1 −0.45 → L5 +0.08) and
+  not on the trough targets, where they keep −0.7 … −0.9 to L6 in NOW.
 
 ---
 

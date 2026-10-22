@@ -1,16 +1,19 @@
 # SE4 Prediction — Improvement Plan, September 2026 (round 21 onwards)
 
-**Status 2026-10-16 (after rounds 25 and 24).** Written 2026-09-08 as a plan. Since then
+**Status 2026-10-22 (after rounds 25, 24 and 27).** Written 2026-09-08 as a plan. Since then
 2.4, 2.5 (labels), 2.8, 2.9, 2.15 and 2.16 were measured and closed and are gone from
 this file (rejections in [REJECTED.md](docs/REJECTED.md), adoptions in
 [DECISIONS.md](docs/DECISIONS.md)); 2.10 (`min ≤ cheap2h`) and 2.13 (northern wind
 points) shipped 2026-10-12 and are kept only for what they still owe; 2.3a was measured
 and written up in [FINDINGS.md](docs/FINDINGS.md). What is **half done** and carried here
-with where it stands: 2.1 (S measured, C open), 2.3b/c/d, 2.5-HS, 2.7 (the nuclear
-column), 2.10 and 2.13 (replays). 2.17 (round 24, the coupling hurdle and the
+with where it stands: 2.1 (S closed, C open), 2.3b/c/d, 2.5-HS, 2.7 (the nuclear
+column), 2.10 (replay) and 2.13 (its production check). 2.17 (round 24, the coupling hurdle and the
 warning-light band) shipped 2026-10-16 and is gone from this file; what it still owes is
 in 2.2 and 2.7. The prediction log (2.2) started 2026-10-18; **nothing that reads it is
-started before 2026-11-15** (Peter's call). What is open, in the order it should be done, is section 4. It is the
+started before 2026-11-15** (Peter's call). Round 27 (2026-10-22) ran the old first item of
+section 4, the batch on `long/2026-10-16`: the northern wind points replicate (2.13 items 1–2
+done) and the MW-scale residual load is closed for `avg` and `min` on forecast weather (2.1-S).
+What is open, in the order it should be done, is section 4. It is the
 successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays as the record of the
 round-12 → round-19 follow-ups.
 
@@ -89,10 +92,12 @@ round 25; layer 3 (calibration) is open and its data now exists.
    constants were guesses — the A68 data now fetched shows several too high (DK2
    wind 1.4 GW not 2.5, DK1 4.2 not 5.0, SE4 2.1 not 2.5). S stacks on the
    northern wind points for `min` (−0.20 … −0.31 further) and `avg` (−0.37 … −0.39
-   further). **Not shipped.** Because cheap2h does not want it, shipping means
-   *extra* columns (`residual_load_mw`, `residual_load_min_mw`) in the `avg` and,
-   after a replay, `min` lists only; the cheap2h list keeps today's. Re-score the
-   winner on forecast vintages first ([AB_TESTING.md](docs/AB_TESTING.md#archive-weather-is-a-perfect-forecast-re-score-weather-candidates-on-vintages)).
+   further). **Closed 2026-10-22 (round 27)** as separate `*_mw` columns for `avg` and
+   `min` (in place and appended), on six caches against the current model: `avg` REAL
+   on all six on archive weather, but on forecast vintages at production's map ≈ 0 in
+   NOW and −6M — worth −0.1…−0.4 up to a 4-day lead and harmful at 6–7; `min` NOISE or
+   worse on a forecast ([REJECTED.md](docs/REJECTED.md),
+   [FINDINGS.md](docs/FINDINGS.md#a-wind-carrying-residual-load-pays-only-near-the-run-day-round-27)).
 3. **Calibration instead of constants — C.** Fit the three mappings on the training
    window from ENTSO-E actuals, refit at every run: demand(T) from A65 actual load
    for SE4 against `mean_temp` / HDD (MW per °C); the aggregate wind power curve per
@@ -109,10 +114,16 @@ round 25; layer 3 (calibration) is open and its data now exists.
    **Measure the ceiling before building the calibration.** Add the *realised*
    zonal generation (SE1+SE2 wind MW, DK1/DK2 wind, DE_LU wind and solar — leaky, not
    knowable at run time) as columns to the trough models. If that oracle arm does
-   not beat the northern-wind points by more than the grid's noise (~0.1 on cheap2h,
-   see AB_TESTING), a calibrated weather→generation mapping has no headroom and C is
-   not worth its 2–3 days. If it does, the same A75 series trains the per-zone
-   mapping, and the honest version is scored on vintages.
+   not beat the northern-wind points by more than the grid's noise (~0.15 on cheap2h
+   under the current model, see AB_TESTING), a calibrated weather→generation mapping has
+   no headroom and C is not worth its 2–3 days. If it does, the same A75 series trains
+   the per-zone mapping, and the honest version is scored on vintages.
+   **Round 27 sharpens this.** S failed not on its constants but on the forecast skill
+   of the wind it adds: on `avg` in NOW about −0.4 at leads 2–4 and +0.15…+0.37 at leads
+   6–7. C calibrates the scale and inherits the skill. So the oracle can only show headroom on archive weather,
+   and C has to be judged on vintages at production's map, with D+2…D+4 and D+5…D+7
+   reported separately, from the first run. If its gain is near-only, it belongs with
+   2.18 (a horizon-routed model), not in the all-horizon lists.
 
 **Harness note (the trap from old item 1).** `ab.variants.Variant.transform`
 receives the merged daily frame, after these columns were computed from the
@@ -126,7 +137,7 @@ the unmodified `run_walk_forward`; an optional `build_fn(inputs) -> frame` on
 | arm | change | state |
 |---|---|---|
 | ~~U~~ | unit fix only | **shipped 2026-09-17** |
-| ~~S~~ | MW scaling, fixed constants | measured: avg VALIDATED, min PROMISING, cheap2h rejected (above) |
+| ~~S~~ | MW scaling, fixed constants | rejected: cheap2h (round 25), `avg`/`min` on forecast weather (round 27) |
 | C | per-year calibrated curves from A75/A65 | open; gated on the oracle ceiling above |
 | C+ | C plus `wind_night` and `radiation_midday` re-added to the trough list | open; judged against C |
 
@@ -404,21 +415,19 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
   majors so a bit-identity check across machines means something.
 
-### 2.13 Northern wind points — shipped 2026-10-12, replay still owed
+### 2.13 Northern wind points — shipped 2026-10-12, replayed 2026-10-22
 
 Record: [DECISIONS.md](docs/DECISIONS.md#northern-wind-points-round-25). Hydro
 precipitation and a fourth site (Sundsvall) were measured and rejected
-([REJECTED.md](docs/REJECTED.md)). Three things are left, all follow-ups:
+([REJECTED.md](docs/REJECTED.md)). The replay on `long/2026-10-16` and the `min` vintage
+re-score are done (round 27): it replicates on all six caches under the coupling hurdle,
+forecast-weather gain on the newest window cheap2h −0.45 / `min` −0.52 clmean. One thing
+is left:
 
-1. **Replay on `ab_cache/long/2026-10-16`** (fetch it with the fix in; the caches
-   carry the sites already) — the first genuinely later NOW window. The expectation
-   to score is "about half the archive gain": cheap2h −0.4 … −0.5 on forecast
-   weather, −1.0 … −1.2 on archive.
-2. **The same vintage re-score on `min`** at the production lead map, per cluster,
-   to put a number next to the cheap2h one (the audit has it for two caches).
-3. **The production log (2.2) is where the real gain shows** — not before 2026-11-15.
-   There is no before/after for `cheap2h`: the log starts 2026-10-18, after the change
-   (see 2.2), so score the served `cheap2h` against the expectation in item 1 instead.
+- **The production log (2.2) is where the real gain shows** — not before 2026-11-15.
+  There is no before/after for `cheap2h`: the log starts 2026-10-18, after the change
+  (see 2.2), so score the served `cheap2h` against the forecast-weather expectation in
+  DECISIONS.md (NOW cluster −0.7 … −1.2, of which −1.1 at D+2…D+4 and −0.7 at D+5…D+7).
 
 Not tested, low prior: other fleets (NO3/NO4, northern Finland beyond Ostrobothnia) —
 each single site gave ~half the three-site gain, so the regional average is the
@@ -506,6 +515,26 @@ reads the price today.
   cluster, and stop at the first horizon where it does not.
 - Targets: `cheap2h` and `min` first (`ab_test.py band` as well, since both feed the
   band), `avg` after. `max` already reads the family.
+- **Weather columns are near-horizon candidates too (round 27, post hoc).** On forecast
+  vintages the MW-scale residual load is worth `avg` −0.1 … −0.4 at D+2…D+4 and nothing
+  or worse at D+5…D+7, and the northern wind points on `avg` the same
+  ([FINDINGS.md](docs/FINDINGS.md#a-wind-carrying-residual-load-pays-only-near-the-run-day-round-27)).
+  A near model is where such a column could live. That makes it a hypothesis for this
+  item with its own bar, scored on vintages, not a result to carry over.
+  **Evaluate it in the same run as the price family (Peter, 2026-10-22).** Read off the
+  stored round-27 errors (no new run), `avg` with `residual_load_mw` +
+  `residual_load_min_mw` appended on D+2…D+k and today's model after, on forecast weather,
+  six caches, NOW / −6M / FAR: k = D+3 −0.02 / −0.07 / −0.20, D+4 −0.05 / −0.15 / −0.20,
+  **D+5 −0.14 / −0.24 / −0.36** (every cache and cluster negative, NOW −0.08 … −0.25),
+  against ≈ 0 in NOW with the columns on all six days. The split was picked after seeing
+  these numbers, so it is pre-registered here, before the 2.18 run: **near `avg` = AVG
+  list + the two `_mw` columns for D+2…D+5, today's `avg` for D+6…D+7**. Bar: production-
+  mapped forecast-weather delta negative in every cluster on ≥ 2 long caches with
+  genuinely new NOW windows (one fetched mid-November 2026 or later), and the six-day
+  total not worse. `min` and cheap2h do not get the columns at any horizon (worse on a
+  forecast at every lead, round 27). Build it on the same per-horizon routing as the
+  price-family near model; it is not worth a second avg model on its own (−0.14 in NOW
+  is near the ~0.10–0.15 `avg` noise floor).
 
 **Bar** (write it down before the run). Per horizon, `classify_clustered` REAL and
 favourable on ≥ 2 long caches with genuinely different NOW windows. The total over
@@ -536,33 +565,29 @@ index.
 
 ---
 
-## 4. Suggested order (2026-10-16)
+## 4. Suggested order (2026-10-22)
 
-1. **One batch on `ab_cache/long/2026-10-16`** (Peter fetches it; `ab_test.py fetch` carries
-   the northern sites now). It is the first genuinely later NOW window and serves four
-   things at once: the replay of the northern wind points (2.13), the vintage re-score of
-   them on `min` (2.13) and the MW-scale columns for `avg`/`min` before they are shipped
-   (2.1). The round-24 re-measurement it was also for is done and shipped (2026-10-16) —
-   **so the baseline moved again**: measure 2.13 and 2.1 against the current `BASELINE`
-   (coupling hurdle in), and score `python ab_test.py band` for anything touching
-   `min`/`cheap2h`. Do not run any of them on an older cache and call it a replay.
-2. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB) and the clock is
+The batch on `long/2026-10-16` that was item 1 is done (round 27, 2026-10-22): the
+northern wind points replicate, and the MW-scale residual load is closed for `avg`/`min`.
+
+1. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB) and the clock is
    running. **Nothing to do until 2026-11-15**; then `score_production.py` (reads a CSV
    export in `ab_cache/prediction_log/`). The 2.3b shadow push is the one piece that can
    be built earlier, because it has to run for those weeks. It prices everything
    weather-related for real, and the forward replays of 2.3b, 2.10 and 2.13 wait on it.
-3. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
+2. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
    `ab_cache/entsoe_r25/2026-10-11` has it. Then re-test the clean nuclear MW as a
    coupling-classifier input (see 2.7).
-4. **2.1 oracle ceiling, then C** — half a day on the same A75/A65 data tells whether a
+3. **2.1 oracle ceiling, then C** — half a day on the same A75/A65 data tells whether a
    calibrated weather → generation mapping has headroom beyond the northern wind points.
-5. **2.12 hygiene** — the NaN last close into the forecast fuel/carbon lags; the `build_fn`
+   Score it by lead on forecast vintages from the start (round 27, see 2.1).
+4. **2.12 hygiene** — the NaN last close into the forecast fuel/carbon lags; the `build_fn`
    hook; the tests. (The A72 probe is done: reservoir arrives complete.)
-6. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
+5. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
    so the scoring run measures the final features. 2.5-HS follows it.
-7. **2.3b forward replay / 2.3c** — not before 2026-11-15, and only if the 2.3b shadow push
+6. **2.3b forward replay / 2.3c** — not before 2026-11-15, and only if the 2.3b shadow push
    has been running since before then.
-8. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
-9. 2.11 horizon, 2.14 UMM (after 2.7 shows which nuclear features are worth having).
-10. **2.18 near-horizon price model**: to be taken up separately (Peter, 2026-10-22).
-    It needs no new fetch, and any long cache serves.
+7. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
+8. 2.11 horizon, 2.14 UMM (after 2.7 shows which nuclear features are worth having).
+9. **2.18 near-horizon price model**: to be taken up separately (Peter, 2026-10-22).
+   It needs no new fetch, and any long cache serves.

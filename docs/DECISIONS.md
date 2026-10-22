@@ -23,7 +23,7 @@ whether the number was ever achievable in production
 | [Risk-binned unwarned high](#risk-binned-unwarned-high-round-24b) | 2026-10-19 | band only (point models untouched): outcomes above `high` 20.6 → 13.5 % / 25.5 → 15.4 % / 16.2 → 10.2 % / last 8 weeks 7.1 → 3.6 %, now below the old symmetric band in every period; `high` = `cheap2h` on uncertain days 27–39 % → 0–2 % |
 | [Coupling hurdle and the warning-light band](#coupling-hurdle-and-the-warning-light-band-round-24) | 2026-10-16 | `min` −0.30 … −0.46 clmean (REAL on 3/3 caches, every cluster); `cheap2h` −0.29 / −0.14 / −0.04 (REAL on 2/3, flat on one); band: expensive days warned 80 % over the last year and 94 % in the last 8 weeks, outcomes above `high` 21 % vs 15 % over the year, 7 % vs 16 % in the last 8 weeks |
 | [`min ≤ cheap2h` coherence](#min--cheap2h-coherence-round-25) | 2026-10-12 | coherence for Home Assistant (the pair crossed on 40–50 % of days); `min` −0.17 … −0.23 clmean (every cluster, 4 of 5 caches), `cheap2h` −0.08 … 0.00 (not harmful); NOW slightly weaker |
-| [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead |
+| [Northern wind points](#northern-wind-points-round-25) | 2026-10-12 | cheap2h −1.04 … −1.18, min −0.71 … −0.81, avg −0.32 … −0.42 (REAL on 5/5 caches, 60/60 points); on forecast-vintage weather ~40–75 % of the cheap2h gain, ≈ 0 at a 7-day lead. Replayed 2026-10-22 under the coupling hurdle: cheap2h −0.81 … −0.94, min −0.85 … −0.91 (REAL on 6/6), forecast −0.45 / −0.52 on the newest window |
 | [A03 forward-fill of ENTSO-E price curves](#a03-forward-fill-of-entso-e-price-curves) | 2026-10-10 | correctness fix, harm-checked — cheap2h −0.029 / min +0.014 / avg +0.038 clmean against the corrected targets, none REAL-harmful; also fixes the EUR/SEK rate on 30 % of 2026 days |
 | [Production-length training in the A/B grid](#production-length-training-in-the-ab-grid) | 2026-10-10 | no delta of its own — it changes what every later measurement means (every test week now trains on production's 1088 rows) |
 | [One day-ahead price per hour, chosen deterministically](#one-day-ahead-price-per-hour-chosen-deterministically) | 2026-10-10 | data integrity, not accuracy — `price_de` was SDAC or the German 15-min intraday auction, re-drawn per hour and per fetch; now the SDAC curve (sequence 1), 100 % equal to SMARD 2021–2026 |
@@ -465,8 +465,22 @@ reproduces a cached column exactly (fresh archive vs the cached Stockholm wind o
 columns; comparing against the pre-change configuration needs an explicit `targets`
 override ([AB_TESTING.md](AB_TESTING.md#how-it-works)).
 
-**Not done.** `max` was not measured and does not read the columns. The 2026-10-16 long
-cache is the first independent NOW window for a replay.
+**Replayed 2026-10-22 (round 27): it replicates, under the coupling hurdle too.** The
+two columns were removed from the current model (coupling hurdle, coherence) on all six
+long caches, rolling 12-point grid, and every fit was scored on archive weather and on
+`best_match` forecast vintages at production's map (sent rows 0–5, row j at lead j+2).
+On `long/2026-10-16`, the first NOW window not measured before, cheap2h −0.94 clmean
+(NOW −1.40 / −6M −0.93 / FAR −0.49, REAL) and −0.76 / −0.38 / −0.22 on the forecast;
+`min` −0.91, forecast −0.66 / −0.49 / −0.39; `avg` −0.38, forecast +0.12 / −0.19 / −0.15.
+REAL on all six caches for cheap2h (−0.81 … −0.94) and `min` (−0.85 … −0.91), and every
+forecast cell negative on both (36 of 36). The pre-registered bar (2026-10-16 cheap2h
+REAL, forecast negative in every cluster) is met, and the plan's expectation (−1.0 …
+−1.2 archive, −0.4 … −0.5 forecast) nearly so: the coupling hurdle absorbed ~0.2 of the
+archive gain, in −6M and FAR, and left NOW at −1.27 … −1.64. On the forecast the gain is
+cheap2h −1.12 / −0.55 / −0.58 at D+2…D+4 and −0.74 / −0.22 / +0.14 at D+5…D+7 (NOW /
+−6M / FAR, mean over caches); `min` keeps −0.25 … −0.60 at D+5…D+7. Over the four coupled
+weeks from 2026-09-14 (shift 0, 24 sent days) it was +1.95 on archive and −1.42 on the
+forecast — too few days to read either way. `max` still does not read the columns.
 
 ## A03 forward-fill of ENTSO-E price curves
 

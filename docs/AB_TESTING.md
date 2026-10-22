@@ -864,6 +864,8 @@ Two properties of this set of caches decide what "replicated on all five" means:
 The null arm that prices this grid: identical features, xgboost `random_state` 7
 instead of 42, `min` and `cheap2h`. Its cluster-mean delta against the production seed, per cache: **cheap2h 0.010 – 0.115** (0.04 / 0.03 / 0.01 on the three 1d caches, 0.115 / 0.083 on the two 5d caches), **min 0.008 – 0.029**. So a cheap2h effect below ~0.15 on one cache is indistinguishable from refitting with another seed, and `MIN_CLUSTER_EFFECT = 0.10` sits inside that band; `min` resolves ~0.05. What carries a small verdict is agreement across caches and clusters, never the size of one clmean. (The 5d caches' larger floor is one cache each — read it as "up to ~0.1", not as a property of 5d caches.)
 
+**Re-measured under the coupling hurdle (round 27, `long/2026-10-16`, rolling FAR):** cheap2h NOW +0.16 / −6M +0.09 / FAR +0.15, clmean **+0.13 — and `classify_clustered` calls the reseed REAL**; `min` 0.05 (NOISE); `avg` NOW −0.14, clmean −0.01 (NOISE). That is three times round 25's 0.01–0.04 on the 1d caches; whether the newest window or the model change did it, one cache cannot say. Until a second cache says otherwise, one cache's cheap2h REAL below ~0.15 is not evidence, and neither is an `avg` cluster mean under ~0.15. Replication across caches is what separates them.
+
 ### How long a snapshot to fetch, and why a long one is shorter than you asked for
 
 **`--days 1825` is the right length. You will get fewer rows than that, and that
