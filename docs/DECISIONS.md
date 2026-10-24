@@ -831,7 +831,7 @@ finite; hourly SE4 wind-curve saturation measured at 6.8% post-fix (was
 unit labels (docs/FEATURES.md still says "10 m"; the pre-fix docstring said
 m/s) are left alone — that is a separate, purely-documentation commit. Arms S
 (fixed per-zone MW capacities) and C (per-year calibrated from ENTSO-E A75/A65)
-are the next, larger steps in `IMPROVEMENT_PLAN_2026-09.md` §2.1: the unit fix
+are the next, larger steps in `IMPROVEMENT_PLAN.md` §2.1: the unit fix
 alone does not cure the *scale* mismatch between the wind/solar terms and the
 demand proxy — `residual_load` stays ≥0.998 correlated with temperature even
 after this fix (FINDINGS.md §1.1) — so a materially bigger effect is expected

@@ -182,7 +182,7 @@ backtest covers.
   them against the exploration numbers in section 6, which used a different
   model, different features and actual weather).
 - `IMPROVEMENT_PLAN.md`: add the step-3 follow-ups (section 3) as open items,
-  and note that item 3 (`min ≤ cheap2h` coherence) now has a sibling identity
+  and note that item 2.10 (`min ≤ cheap2h` coherence) now has a sibling identity
   (5.3).
 - `experiments/ROUND20_FINDINGS.md`: the scoring run results (section 4),
   same shape as `ROUND19_FINDINGS.md`.
@@ -352,7 +352,7 @@ concrete template; it is the reason the feature exists.
 predictions it can be violated (independent regressors). Measure the
 violation rate in the scoring run and record it, but **do not clamp** without
 an A/B: the avg-anchored clamp was rejected because clipping toward a wrong
-neighbour moves away from truth (IMPROVEMENT_PLAN item 3). Treat it exactly
+neighbour moves away from truth ([REJECTED.md](docs/REJECTED.md)). Treat it exactly
 like `min ≤ cheap2h`.
 
 ### 5.4 Regime drift

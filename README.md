@@ -79,8 +79,7 @@ The full walkthrough for running an experiment, including what to put in
 | [docs/REJECTED.md](docs/REJECTED.md) | Ledger of **rejected** changes, grouped by what they touched | Before trying anything — it is probably in here |
 | [docs/AB_TESTING.md](docs/AB_TESTING.md) | The A/B harness, measurement grids, verdict functions, the adoption bar, the agent playbook | Before measuring anything |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Dated write-ups of what the model structurally cannot do and why | You are about to re-derive something the project already learned |
-| [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open items carried from the 2026-08 round | Looking for what to work on |
-| [IMPROVEMENT_PLAN_2026-09.md](IMPROVEMENT_PLAN_2026-09.md) | Open items from the September 2026 review, in priority order | Looking for what to work on — start here |
+| [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open work only: every open item, and the order to do them in | Looking for what to work on — start here |
 | [SLOT_PREDICTION_PLAN.md](SLOT_PREDICTION_PLAN.md) | Spec for the per-slot targets (round 20), planned, not implemented | Working on slot prediction |
 
 ## How changes are documented
@@ -197,6 +196,6 @@ For charging decisions ("charge today or wait for cheaper days"), compare `cheap
 
 `cheap2h_low` / `cheap2h_high` / `cheap2h_risk` are the **warning** next to the ranking, in the same SEK/kWh units as everything else except the risk (a probability). `cheap2h` is always inside `[low, high]`. **`cheap2h_high` has three levels in practice**: when `cheap2h_risk` is 0.3 or more it is the price the day would clear at if SE4 couples to the continent (1.3 × the gas plant's marginal cost, ~150 EUR/MWh in October 2026, the same on every warned day because the gas price is frozen over the forecast); below 0.3 it is a high that about 9 in 10 days at that risk stay under — low on calm days (risk < 0.1), with headroom on uncertain ones (0.1–0.3). So a rule like "do not defer charging to a day whose `cheap2h_high` is above today's known cheap price" fires on the days that can turn expensive and stays quiet on the calm ones; `cheap2h_risk` says how sure, and is the number to use for grading days within a warned week. Over the last year it warned on ~46 % of days, ~69 % of them correctly, and caught ~80 % of the expensive days. Rank days by `cheap2h`, not by `high` — that was tested and is **not** replicated. See [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band).
 
-A Node-RED flow in Home Assistant copies `predictions_raw` (plus the rate and commit above) into the MariaDB table `electricity_price_predictions_log` after every run, one row per target day, so what was served can later be scored against realised prices ([plan 2.2](IMPROVEMENT_PLAN_2026-09.md#22-production-prediction-log-and-realised-scorecard)). The flow lives in Home Assistant, not in this repo.
+A Node-RED flow in Home Assistant copies `predictions_raw` (plus the rate and commit above) into the MariaDB table `electricity_price_predictions_log` after every run, one row per target day, so what was served can later be scored against realised prices ([plan 2.2](IMPROVEMENT_PLAN.md#22-production-prediction-log-and-realised-scorecard)). The flow lives in Home Assistant, not in this repo.
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.

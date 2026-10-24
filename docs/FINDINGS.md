@@ -225,7 +225,7 @@ better answer to "can it get expensive" than any single number.
 
 ## Cross-border capacity and flows (round 21)
 
-Closed 2026-09-13. This was IMPROVEMENT_PLAN item 0, the last route the
+Closed 2026-09-13. This was item 0 of the 2026-08 improvement plan, the last route the
 [2026-08-17 break](#the-2026-08-17-regime-break) left open: ENTSO-E physical
 flows (A11) and transmission unavailability (A78) for the five SE4 borders,
 cached under `ab_cache/crossborder/`. Both verdicts and their numbers are in
@@ -329,7 +329,7 @@ for caches fetched before that.
   reductions, such as Baltic Cable at 210 MW from 2025-10-15 to 2026-02-02.
 
 One correction to the record: the DE_LU outage running 2026-08-17 → 11-08 that
-IMPROVEMENT_PLAN flagged as a suspected revision is Breared–Söderåsen, an
+the 2026-08 improvement plan flagged as a suspected revision is Breared–Söderåsen, an
 SE4-internal line, and it is **cancelled**. The Baltic Cable trip record is
 revision 3, created 2026-08-17 10:32 — its end date was posted on the break day.
 
@@ -412,7 +412,7 @@ temperature channel, not evidence that the trough physics is captured.
 validated it REAL on cheap2h across four independently-fetched snapshots; see
 [DECISIONS.md](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23) for the
 numbers. Point 2 (the scale mismatch) is unfixed and is exactly why arms S/C in
-`IMPROVEMENT_PLAN_2026-09.md` §2.1 are expected to matter more than the unit fix
+`IMPROVEMENT_PLAN.md` §2.1 are expected to matter more than the unit fix
 did.
 
 ### 1.2 The regime the model was tuned on is moving away from it
@@ -496,7 +496,7 @@ not with a wind-point addition.
 
 ## Solar-capacity buildout is visible in the data, a linear index still doesn't capture it (round 22)
 
-Item 1 of `IMPROVEMENT_PLAN.md` re-opened the 2026-07-rejected solar-capacity
+Item 1 of the 2026-08 improvement plan re-opened the 2026-07-rejected solar-capacity
 idea: `price_se4_min_lag1` (the claimed absorber) left `min`'s feature list in
 the 2026-08 prune, and the original test scaled `mean_radiation`/`radiation_midday`
 — neither a `TROUGH_FEATURE_COLUMNS` member — so it measured close to nothing.
@@ -538,7 +538,7 @@ an independently-fetched snapshot — rejected per the standing rule; see
 
 **Reading.** The trend itself is very likely real; a hand-drawn
 linear-in-calendar-time index just doesn't track its true shape closely
-enough to survive replication. `IMPROVEMENT_PLAN_2026-09.md` §2.1 (calibrate
+enough to survive replication. `IMPROVEMENT_PLAN.md` §2.1 (calibrate
 wind/solar terms from ENTSO-E actual generation per year, already planned)
 supersedes this — not a new hand-drawn index.
 
@@ -763,7 +763,7 @@ five periods. Every one of the 60 points was favourable on cheap2h and min.
 * `mean_wind_stockholm` stays: removing it from the N1 model costs +0.57…+0.79
   (cheap2h) and +0.27…+0.51 (min), `KEEP_LOAD_BEARING` on all three caches. The
   northern points complement the Stockholm proxy; they do not replace it.
-* The MW-scale residual load ([plan 2.1-S](../IMPROVEMENT_PLAN_2026-09.md)) stacks on
+* The MW-scale residual load ([plan 2.1-S](../IMPROVEMENT_PLAN.md)) stacks on
   N1 for `min` (−0.20 … −0.31 further, REAL ×3) and `avg` (−0.37…−0.39 further), and
   not for cheap2h (NOISE, one REAL-harmful +0.23) — on archive weather. On a forecast
   it does not, and it was closed in round 27
@@ -1065,7 +1065,7 @@ weather-derived, so the forecast-vintage trap does not apply, and the date is kn
 (+0.23) and `min` (+0.16) it is REAL-harmful on five caches, the same split as the time-decay rows in
 [REJECTED.md](REJECTED.md). It was found as a control, the six caches overlap in NOW, and a tree gives every future row the
 newest leaf, which is also how it would behave through a regime break; so it ships nothing, and is
-[plan item 2.19](../IMPROVEMENT_PLAN_2026-09.md). The plan's "a single dated indicator acts as a time index, do not add it
+[plan item 2.19](../IMPROVEMENT_PLAN.md). The plan's "a single dated indicator acts as a time index, do not add it
 speculatively" is now a measured statement, not a worry.
 
 **Data traps found.**
