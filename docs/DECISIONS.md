@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Walk-forward out of the production run](#walk-forward-out-of-the-production-run) | 2026-10-24 | pipeline cleanup, no A/B — predictions, band and feature importance unchanged; the `mae_*` / `mae_by_horizon` attributes are no longer sent |
 | [Price anchor on D+1](#price-anchor-on-d1) | 2026-10-22 | correctness fix: `avg` exactly 0 by construction, `min` +0.005 / +0.026 (NOISE); `cheap2h` −0.14 REAL / −0.05 NOISE clmean (the gain is at D+2/D+3); `max` −1.31 / −0.49 |
 | [Whole Swedish days only](#whole-swedish-days-only) | 2026-10-21 | correctness fix, no A/B — D+2…D+7 bit-identical; stops sending a 1–2 hour weather stub as D+8 (on history that day scored cheap2h +4.3 / +6.3 worse than the same day with its whole weather) |
 | [Risk-binned unwarned high](#risk-binned-unwarned-high-round-24b) | 2026-10-19 | band only (point models untouched): outcomes above `high` 20.6 → 13.5 % / 25.5 → 15.4 % / 16.2 → 10.2 % / last 8 weeks 7.1 → 3.6 %, now below the old symmetric band in every period; `high` = `cheap2h` on uncertain days 27–39 % → 0–2 % |
@@ -40,6 +41,27 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Walk-forward out of the production run
+
+Adopted 2026-10-24: `predict.py` no longer calls `evaluate.walk_forward_validate`.
+
+**Why.** The call fed nothing in the forecast. Models come from `train()` and the band
+from `train_band()`, so the eval's only output was the `mae_*` / `mae_by_horizon`
+attributes in Home Assistant, which nothing reads. They were already "monitoring only"
+and banned from the docs, because a run's result moves ±1.3 EUR/MWh with whatever
+window that day ends on. As an alarm the eval is weak by construction: a one-year mean
+moves by about 1/52 on a bad week, and it scores archive weather on training rows, so it
+never sees the forecast side, where this autumn's production defects were (the EUR/SEK
+NaN, the D+8 stub, the D+0 price anchor). It cost 52 full model fits per run against one
+for the forecast. Evidence for a change comes from the A/B grid, and the headline table
+from a deliberate snapshot measurement. Neither depends on production running the eval.
+
+**What stays.** `evaluate.py` itself: the headline table in
+[MODEL.md](MODEL.md#current-mae-baseline) is measured with it, and `ab.harness` is
+pinned to it at shift 0. `cheap2h_interval` (the band's calibration) is still sent.
+Monitoring what Home Assistant actually received is the job of the prediction log and its
+scoring (plan 2.2), on real forecast weather and real anchors, per issued horizon.
 
 ## Price anchor on D+1
 

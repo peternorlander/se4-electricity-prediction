@@ -40,7 +40,6 @@ Model training (model.py)
     → price_cheap2h also gets a band: cheap2h_low (conformal q10), cheap2h_high
       (a two-state warning light driven by the coupling probability) and
       cheap2h_risk (that probability)
-    → Walk-forward validation: 52 windows × 7 days (evaluate.py)
          │
          ▼
 Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (ha_client.py)
@@ -189,8 +188,6 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `wo
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
 - `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`, and `cheap2h_risk` — a probability 0–1, not converted)
 - `predictions_with_addon` — prices adjusted by `input_number.electricity_price_addon` (distribution costs etc.) with a 5% markup
-- `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` — current per-target MAE values from horizon-honest walk-forward validation. **Monitoring only — never quote these in documentation**: each run measures whatever window that day ends on, so the value moves with the evaluation period more than with the model ([docs/AB_TESTING.md](docs/AB_TESTING.md#how-changes-are-validated))
-- `mae_by_horizon` — per-target MAE broken down by forecast horizon (day+1 … day+7); shows how accuracy decays with forecast distance
 - `cheap2h_interval` — the band's own calibration for this run: `coverage_calibrated` vs `nominal_coverage` (the low half), `calm_high_holdout_coverage` (unwarned days, should sit near 0.90) with `calm_high_correction_eur_mwh` / `calm_high_holdout_days` per risk bin, `coupled_level_ratio`, `coupled_share_training` and `warning_threshold`. A drift in the last three is where a new price regime shows first — see [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band)
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
 - `eur_to_sek_rate` — SEK per EUR this run converted with, so a logged SEK/kWh value can be turned back into the model's EUR/MWh

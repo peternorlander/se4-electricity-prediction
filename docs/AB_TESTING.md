@@ -252,14 +252,12 @@ a production run:
 |---|---|
 | the headline MAE table in [MODEL.md](MODEL.md#current-mae-baseline) | one named snapshot, re-measured deliberately, `OMP_NUM_THREADS=4` pinned, with the snapshot date and the code state quoted beside it |
 | the evidence for any change | its **A/B delta** on the four-cluster grid — never a before/after of the headline table, and never a single run |
-| the production `mae_min` / `mae_avg` / `mae_max` / `mae_cheap2h` attributes | **monitoring only.** Do not copy them into any document. |
+| an Actions run's own walk-forward output | **nowhere.** Production stopped computing one on 2026-10-24 ([DECISIONS.md](DECISIONS.md#walk-forward-out-of-the-production-run)); `mae_*` attributes in old Home Assistant history are not a record either. |
 
-The last row is the easy mistake. Those attributes are a real walk-forward result
-and still useless as a record: each Actions run computes them on whatever
-window that day happens to end on, and the headline moves ±1.3 EUR/MWh with the
-evaluation period while the model is unchanged. A number lifted from one run
-cannot be compared with the one before it or reproduced afterwards. Watch them for
-drift and alarms; document the snapshot measurement.
+The last row was the easy mistake while it existed. Each run measured whatever
+window that day happened to end on, and the headline moves ±1.3 EUR/MWh with the
+evaluation period while the model is unchanged, so a number lifted from one run
+could not be compared with the one before it or reproduced afterwards.
 
 So when you update the table, re-measure it: quote the snapshot it was measured on
 and the code state it describes, and record the adopted change as its **A/B

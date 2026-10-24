@@ -506,6 +506,25 @@ reads the price today.
 favourable on ≥ 2 long caches with genuinely different NOW windows. The total over
 D+2…D+7 must not get worse.
 
+**Measurement geometry: decide before the run (Peter, 2026-10-24).** The step-7 grid is
+right for all-horizon verdicts, but this item makes one per horizon, and two properties of
+the grid then matter. Within one grid point, eval row k is always the same weekday, so a
+per-horizon delta is also a per-weekday delta. And each horizon gets only 52 test days per
+point. Consider rolling origins instead: fit once per test week as now, then issue a
+forecast from each of the seven start days in that week, each with its own freeze anchor.
+Every test day is then scored at every horizon and every horizon sees every weekday, for
+about the cost in fits of the current grid. Both arms share the same fits, so the model
+being 0–6 days old at an origin (production: ~1) does not bias the comparison. Three
+things to settle in writing first: (1) the extra origins sharpen each point's per-horizon
+estimate but are not replication, because the same day at D+3 and D+6 is strongly
+correlated; the cluster stays the unit of the verdict
+([AB_TESTING.md](docs/AB_TESTING.md)), and per-window spreads from overlapping origins are
+optimistic. (2) Score D+2…D+7 only; row 7 (D+8) is not sent. (3) Run it on forecast
+vintages as well as archive weather. On archive weather a day's D+3 and D+6 differ only by
+the age of the frozen lags, while most of the real decay with horizon is weather forecast
+error (+1.3 cheap2h / +1.5 min / +2.4 avg on the six sent days). The near/far split N is
+the quantity most exposed to that.
+
 **Cost.** One extra model per near horizon, plus routing in `predict.py` and
 `model.predict` by horizon. The harness needs a per-row target, the same shape as
 `run_round25_vintage.py`'s per-row scoring.

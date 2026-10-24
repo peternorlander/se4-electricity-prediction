@@ -24,7 +24,7 @@ from features import (
     aggregate_prices_daily,
 )
 from model import train, train_band, predict
-from evaluate import walk_forward_validate, get_feature_importance
+from evaluate import get_feature_importance
 from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
 from ha_client import fetch_addon_value, apply_addon, push_predictions
 
@@ -90,9 +90,6 @@ def main():
     )
     print(f"  → {len(training_data)} days of merged data")
 
-    print("Running walk-forward validation...")
-    model_metrics = walk_forward_validate(training_data)
-
     print("Training models...")
     models = train(training_data)
     feature_importance = get_feature_importance(models)
@@ -149,10 +146,11 @@ def main():
     print("\n=== Price predictions (SEK/kWh) ===")
     print(json.dumps(predictions_raw, indent=2))
 
-    # The band's own calibration travels with the metrics so drift is visible
+    # The band's own calibration travels with the predictions so drift is visible
     # in Home Assistant without re-running anything (docs/MODEL.md "The cheap2h
-    # band" lists which numbers to watch).
-    model_metrics = {**model_metrics, "cheap2h_interval": band.diagnostics}
+    # band" lists which numbers to watch). The run computes no walk-forward MAE:
+    # see docs/DECISIONS.md "Walk-forward out of the production run".
+    model_metrics = {"cheap2h_interval": band.diagnostics}
 
     print("\nPushing predictions to Home Assistant...")
     push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance,

@@ -111,8 +111,8 @@ def push_predictions(
     Args:
         predictions_raw:        Dict keyed by date string with min/avg/max/cheap2h in SEK/kWh.
         predictions_with_addon: Same structure with 5% markup and addon applied.
-        model_metrics:          Walk-forward MAE stats from walk_forward_validate()
-                                (mae_min/mae_avg/mae_max/mae_cheap2h/mae_overall).
+        model_metrics:          Extra attributes merged in as-is; predict.py sends the
+                                band's calibration as `cheap2h_interval`.
         feature_importance:     Dict keyed by target name from get_feature_importance().
         eur_to_sek_rate:        SEK per EUR the run converted with; sent as the
                                 `eur_to_sek_rate` attribute next to `git_sha`.
