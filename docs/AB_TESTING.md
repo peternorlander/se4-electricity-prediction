@@ -486,6 +486,42 @@ and any other point; a candidate cannot be scored before that.
 * The untouched targets **moved**. They must be bit-identical unless the change
   legitimately touches them; if they moved, the harness is not measuring what you
   think it is.
+* The candidate **beats its own leaky ceiling**. A published forecast of a quantity should not
+  outperform the realised quantity handed over for free (round 28: the week-ahead load −0.40 on
+  `avg` against −0.14 for the realised load). It means the column carries something other than
+  the quantity — see the time-index arm below.
+
+### A slowly moving external series needs a time-index arm (round 28)
+
+Any column that drifts with time — a load forecast, an installed-capacity figure, a count
+that grows as records accumulate — can win on `avg` as a clock. Run two controls next to the
+candidate, on the same grid, before reading its verdict: **`TI`**, a bare monotone index
+(days since the frame's start / 365), and **the residual**, the candidate minus its OLS fit
+on the controls the model already has (temperature, degree-days, workday, season, weekday).
+If `TI` reproduces most of the gain and the residual none, the candidate is a proxy. In
+round 28 the week-ahead load gave −0.40, `TI` −0.28, the residual +0.02. The control is not
+hypothetical: `TI` alone is REAL on `avg` on all six caches, and REAL-harmful on `min` and
+`cheap2h`, so the same bare index decides two different targets in opposite directions.
+
+### Score the test rows as production could know them: the AF condition (round 28)
+
+A per-day column built from a document with revisions (A77 unavailability, A65 week-ahead)
+hands the test rows the *final* records, while production has only what existed on the run
+date R. The harness cannot freeze such a column (it is per-day, not a lag), and the paired
+design hides the difference because both arms share it. Round 28 scored every arm twice from
+one fit: **HS**, every record as the cache knows it (what earlier rounds did, and what the
+pre-registered bar is written on), and **AF**, the 7 test rows rebuilt as of R = first test
+day − 2 — planned (A53) outages always visible, forced (A54) ones only once started, a
+week-ahead value only after its Friday publication, else NaN. Training stays on the final
+records, exactly as production trains. `experiments/round28_data.py` (`asof_nuclear`,
+`asof_week`) is the implementation. AF is an *upper bound* on what production knew: a visible
+record's end date is still its final revision's, because ENTSO-E keeps only the current one
+(the stored `created` is the latest revision's, a median ~200 days after the outage began,
+so it cannot be used to rewind). A true vintage needs Nord Pool UMM (plan 2.14) or a log of
+dated fetches — `experiments/fetch_round28_entsoe.py` stamps every row with `observed_at`.
+Size of the effect, measured: the old nuclear column is worth +0.044 EUR/MWh less on `avg` as
+production sees it (4–16 % of test-row days differ). Read AF as the honesty check next to the
+HS verdict; an arm that wins HS and loses AF is not adopted.
 
 ## How it works
 
@@ -854,7 +890,12 @@ Two properties of this set of caches decide what "replicated on all five" means:
 * **FAR is the same calendar window in every cache.** The frame cannot start before
   2021-10-21, so the largest shift ends the evaluation year on 2025-10-11 whatever
   the cache date; its deltas are identical to the digit across caches (cheap2h N1
-  −0.918 five times). It replicates nothing.
+  −0.918 five times). It replicates nothing. **Except for `long/2026-10-16`**: its frame
+  starts three days later (2021-10-24), so its FAR year ends 2025-10-14 and its
+  numbers differ from the other five caches' (round 28 saw base-arm MAE differences
+  up to 1.9). FAR therefore exists in two versions: run it on `2026-10-16` and on one
+  older cache and let the other four borrow the second's (round 28 did, and checked
+  one borrowed point to the last digit).
 * **NOW overlaps 92–99 % across the three 1d caches** (4–28 days apart), and ~80 %
   with the two 5d caches (about two months earlier). Five caches therefore test *fetch*
   dependence — the cross-vintage replay the bar asks for — and give two independent

@@ -138,9 +138,8 @@ Two columns computed in `aggregate_intraday_features` from the three northern po
 - `reservoir_sweden_change` — week-over-week change (filling vs draining trend)
 
 ### Nuclear Outages (SE3)
-- `nuclear_outage_se3` — count of simultaneous SE3 nuclear outages per day
-- Planned maintenance (A53) is published months ahead → usable for multi-day forecasts
-- Forced outages (A54) historical only → improves training accuracy
+- `nuclear_outage_se3` — per day, the number of distinct (start date, end date) windows of **every** A77 record in the SE3 response. Despite the name that is not a nuclear count: the response also holds gas CHP, hydro and wind units and cancelled records, so the column is about *distinct nuclear units out + non-nuclear units out + cancelled records* (R² 0.97), and averages 2.4 against 1.1 for nuclear units alone. Read by `avg` and `max` only. Worth ~0 on `avg` (dropping it: +0.02, inconclusive), and no decomposition, clean MW or even the realised nuclear output beats it — kept as it is on purpose ([round 28](FINDINGS.md#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28))
+- Planned maintenance (A53) is published ahead and is in the forecast rows; forced outages (A54) exist only once they start, so a backtest that feeds the final records to its test rows is slightly optimistic (+0.04 EUR/MWh on `avg`)
 
 ### Calendar
 - `is_workday` — 1 for normal workdays, 0 for weekends, Swedish public holidays, and bridge days (Friday after Ascension). Demand drops 20–40% on non-workdays. (**3rd–5th most important feature**)

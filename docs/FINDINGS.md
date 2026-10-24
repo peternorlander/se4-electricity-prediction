@@ -24,6 +24,7 @@ check whether the code it describes still looks that way.
 | [The northern wind belt is worth ~1 EUR/MWh on cheap2h, about half of it on a real forecast](#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25) | 2026-10-11 | Two columns from three northern wind points: cheap2h −1.04 … −1.18 on all five caches, ~40–75 % of it surviving forecast-vintage weather, gone at a 7-day lead; Stockholm stays; a fourth site adds nothing |
 | [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar. Re-measured on the current model 2026-10-22: +1.8 / +1.8 / +2.7 on the six sent days |
 | [A wind-carrying residual load pays only near the run day](#a-wind-carrying-residual-load-pays-only-near-the-run-day-round-27) | 2026-10-22 | The MW-scale residual load is −0.4…−0.6 on `avg` on archive weather and ~0 on production's six days: worth −0.1…−0.4 up to a 4-day lead, harmful at 6–7. Any feature that adds wind — plan 2.1-C included — has to be scored by lead on forecast vintages |
+| [The nuclear column and the week-ahead load carry nothing a model can use](#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28) | 2026-10-23 | `nuclear_outage_se3` is a sum of three counts and worth ~0 on `avg`; no decomposition, no clean MW, not even the realised nuclear output helps; the week-ahead load's −0.4 on `avg` is a trend proxy, and a bare time index gives −0.28 on `avg` (and hurts `min` / `cheap2h`) |
 | [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26). A72 (reservoir) is A03 too but arrives complete — checked 2026-10-14, 0 omitted of 158 weeks |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
@@ -994,8 +995,92 @@ column mean what its name says removes information the old one carried — plaus
 outages of hydro and gas units, which are a proxy for SE3 generation outage load, and
 the cancelled/duplicate structure — so **a defect in what a feature is called is not the
 same as a defect in what it does**. Production keeps the old behaviour (the fixed parser
-is saved as `experiments/results/nuclear_parser_fix.patch`); the follow-up is to split the
-column into its components and test each ([plan 2.7](../IMPROVEMENT_PLAN_2026-09.md)).
+is saved as `experiments/results/nuclear_parser_fix.patch`); the column was split into its
+components and each tested in round 28 — [below](#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28).
+
+## The nuclear column and the week-ahead load carry nothing a model can use (round 28)
+
+*2026-10-23. Plan 2.7, six long caches, rolling 1088-row grid (NOW / −6M / FAR, FAR run once per calendar window),
+`avg` first. The verdicts and their instruments are the round-28 rows in [REJECTED.md](REJECTED.md); this is the part
+that explains them.*
+
+**The old column is a sum, and a nearly worthless one.** Over the frame, `nuclear_outage_se3` ≈ distinct SE3 nuclear
+units out + non-nuclear units out (gas CHP, hydro, wind) + cancelled records, with OLS weights 1.01 / 1.04 / 0.95 and R² 0.97.
+Replacing it by each part, by pairs, by all four, by unavailable MW, adding MW to it, or deleting it, `avg` moves
++0.08 (units), +0.10 (MW), +0.10 (non-nuclear), +0.04 (cancelled), −0.01 (units + non-nuclear), −0.01 (all four), +0.10
+(old + MW) and **+0.02 for `drop`** (the ablation reading is INCONCLUSIVE on all six caches): the column is neither
+load-bearing nor harmful, and every richer version is as noisy as it. The pre-registered expectation that the
+cancelled-records part, which grows from 0 in 2021 to 1.1 in 2025, would be the carrier was wrong (+0.04, NOISE). Round 26
+read its +0.13 as "the old column carries something the clean one lacks"; the better reading is that it carries almost
+nothing and the clean version adds noise.
+
+**There is no headroom to find.** Given the realised SE3 nuclear generation (A75/B14, which no forecast could know) as an
+extra column, `avg` moves −0.03 (kept) / −0.05 (replacing the old column), NOISE on all six; `min` gets
+**+0.18 worse** (REAL-harmful on five). Within a year the realised output correlates −0.002 with `price_avg`
+(temperature: −0.12): SE3's nuclear fleet does not set SE4's price in this regime. The old count correlates −0.69 with
+realised nuclear output because both follow the maintenance season, and 0.44 with calendar time. So the mechanism stated for
+the trough ("5 units out in autumn 2026, which a linear classifier could extrapolate along") does not survive: unavailable MW
+as a coupling-classifier input is REAL-harmful on `min`.
+
+**What production sees is not what the backtest feeds it.** ENTSO-E keeps only the current revision of an A77 record, so
+history carries no vintage, and the stored `created` is the *latest* revision's — a median 200 days after the outage began
+(retrospective clean-up), so it cannot reconstruct what was known. What can be modelled is the structure: a forced (A54)
+record cannot be in the forecast row before it starts. Scoring the test rows with only the records visible on run date R
+(planned ones always, forced ones once started; their *end* is still the final revision's, which makes this an upper bound
+on production's knowledge) changes 4–16 % of test-row days, depending on the column (the old one: 16 %), and costs the old column **+0.044 EUR/MWh on `avg`** (all rows;
+up to +0.125 on one point). The condition, `AF`, is now part of the instrument:
+[AB_TESTING.md](AB_TESTING.md#score-the-test-rows-as-production-could-know-them-the-af-condition-round-28).
+Nord Pool UMM (plan 2.14) would turn the bound into a measurement, but with no headroom in the nuclear data there is
+nothing left for it to measure.
+
+**The week-ahead load (A65/A31).** Regulation 543/2013 art. 6.2(c): the forecast for a week is published each Friday, two
+hours before day-ahead gate closure. A run therefore misses the later sent days on Monday to Thursday:
+
+| run on | Mon | Tue | Wed | Thu | Fri | Sat | Sun |
+|---|---|---|---|---|---|---|---|
+| sent days D+2 … D+7 with a value | 5 of 6 | 4 | 3 | 2 | 6 | 6 | 6 |
+
+— 24 % of sent rows. The forecast tracks realised SE4 load closely (corr 0.95, MAE 143 MW on the daily maximum), but its
+bias against it rose in autumn 2025: the daily maximum from −50 … +0 to +50 … +110 MW, the minimum from +60 … +110 to
++170 … +275 MW. On `min` and `cheap2h` the question ends at the ceiling: the *realised* load is REAL-harmful (+0.14 each), so
+its forecast cannot help. On `avg` the forecast is REAL −0.37 … −0.49 on all six caches (11–12 of 12 points, std ×0.94) —
+**and larger than the realised-load ceiling (−0.14)**, the README's "candidate beats its own leaky ceiling" smell. Three
+controls, post hoc (written down before they ran, after the main result was read):
+
+| arm | `avg`, six-cache mean | reading |
+|---|---|---|
+| week-ahead min + max (`LW`) | −0.40 (as production serves it, unpublished days NaN: −0.25, NOISE) | the candidate |
+| a bare time index (`TI`) | **−0.28**, REAL on all six, all three clusters negative on every cache | reproduces ~70 % of it |
+| `LW` minus its fit on temperature, degree-days, workday, season and weekday (`LWres`) | **+0.02** | what only the forecast knows is nothing |
+| `LW` trained with the production publication pattern (`LWm`), scored as served | −0.13 (primary: NOW −0.13, −6M −0.32, FAR +0.08) | not robust |
+
+So the plan's mechanism (industrial calendars that temperature and `is_workday` miss) is refuted, and the column is a
+trend / level proxy plus temperature. One oddity left unexplained: with the unpublished days set to NaN the residual
+version improves (−0.14), i.e. the real values on the far days are worth less than none — consistent with, not proof of, the
+post-2025 bias shift.
+
+**A time index is a lever on `avg`, and only on `avg`.** `TI` alone is REAL −0.18 … −0.43 on all six caches, negative in NOW,
+−6M and FAR on every one, per-window std ×0.96 – 1.00, on top of the half-life-500 weights `avg` already has. It is not
+weather-derived, so the forecast-vintage trap does not apply, and the date is known for every forecast day. On `cheap2h`
+(+0.23) and `min` (+0.16) it is REAL-harmful on five caches, the same split as the time-decay rows in
+[REJECTED.md](REJECTED.md). It was found as a control, the six caches overlap in NOW, and a tree gives every future row the
+newest leaf, which is also how it would behave through a regime break; so it ships nothing, and is
+[plan item 2.19](../IMPROVEMENT_PLAN_2026-09.md). The plan's "a single dated indicator acts as a time index, do not add it
+speculatively" is now a measured statement, not a worry.
+
+**Data traps found.**
+* A65/A31 `P1D` points are stamped `start + (pos − 1) × 24 h` in UTC, so across a DST change a day's stamp drifts an hour off
+  local midnight; reading the local date at stamp + 12 h is correct, reading it directly puts every winter day on the day
+  before.
+* The round-25 parser expands A03 curves for hourly resolutions only; for `P1D` a repeated value is simply absent (98.0 % of
+  days present). Carry the previous value forward.
+* A75/B14 for SE3 starts on 2021-12-14; the first ~54 days of the frame have no realised nuclear output.
+* The DK2 week-ahead series is absent from 2026-09-04 to 2026-10-17.
+
+**Priors, scored.** `Ra` was expected at +0.13 (got +0.08, same sign); `Rb` at or better than `Ra` (worse, +0.10); `Rd` the
+carrier (no); `drop` slightly harmful (+0.02, INCONCLUSIVE — right); `CPb` NOISE (REAL-harmful); the realised-load ceiling
+weakly favourable on `avg` (−0.14, right) and NOISE on the trough targets (REAL-harmful); `LW` NOISE (REAL on `avg`, for the
+wrong reason).
 
 ## Appendix A — Source probes, 2026-09-08
 

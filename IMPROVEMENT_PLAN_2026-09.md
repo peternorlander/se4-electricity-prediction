@@ -1,21 +1,24 @@
 # SE4 Prediction — Improvement Plan, September 2026 (round 21 onwards)
 
-**Status 2026-10-22 (after rounds 25, 24 and 27).** Written 2026-09-08 as a plan. Since then
-2.4, 2.5 (labels), 2.8, 2.9, 2.15 and 2.16 were measured and closed and are gone from
+**Status 2026-10-23 (after rounds 25, 24, 27 and 28).** Written 2026-09-08 as a plan. Since then
+2.4, 2.5 (labels), 2.7, 2.8, 2.9, 2.15 and 2.16 were measured and closed and are gone from
 this file (rejections in [REJECTED.md](docs/REJECTED.md), adoptions in
 [DECISIONS.md](docs/DECISIONS.md)); 2.10 (`min ≤ cheap2h`) and 2.13 (northern wind
 points) shipped 2026-10-12 and are kept only for what they still owe; 2.3a was measured
 and written up in [FINDINGS.md](docs/FINDINGS.md). What is **half done** and carried here
-with where it stands: 2.1 (S closed, C open), 2.3b/c/d, 2.5-HS, 2.7 (the nuclear
-column), 2.10 (replay) and 2.13 (its production check). 2.17 (round 24, the coupling hurdle and the
-warning-light band) shipped 2026-10-16 and is gone from this file; what it still owes is
-in 2.2 and 2.7. The prediction log (2.2) started 2026-10-18; **nothing that reads it is
-started before 2026-11-15** (Peter's call). Round 27 (2026-10-22) ran the old first item of
-section 4, the batch on `long/2026-10-16`: the northern wind points replicate (2.13 items 1–2
-done) and the MW-scale residual load is closed for `avg` and `min` on forecast weather (2.1-S).
-What is open, in the order it should be done, is section 4. It is the
-successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays as the record of the
-round-12 → round-19 follow-ups.
+with where it stands: 2.1 (S closed, C open), 2.3b/c/d, 2.5-HS, 2.10 (replay) and 2.13 (its
+production check). 2.17 (round 24, the coupling hurdle and the warning-light band) shipped
+2026-10-16 and is gone from this file; what it still owes is in 2.2. The prediction log
+(2.2) started 2026-10-18; **nothing that reads it is started before 2026-11-15**
+(Peter's call). Round 27 (2026-10-22) replicated the northern wind points and closed the
+MW-scale residual load for `avg` and `min` on forecast weather. **Round 28 (2026-10-23) ran
+all of 2.7**: the nuclear column and the clean nuclear MW carry nothing a model can use (not
+even the realised nuclear output), and the week-ahead load's gain on `avg` is a trend proxy —
+which turned up the one new open item, **2.19, a time index for `avg`** (REAL on all six
+caches, harmful for `min` and `cheap2h`), plus **2.20**, a replay of the decomposed nuclear column
+scored as production sees it, added 2026-10-24. What is open, in the order it should be done, is
+section 4. It is the successor to `IMPROVEMENT_PLAN.md` (2026-08), which stays as the record
+of the round-12 → round-19 follow-ups.
 
 Read first, as before: [docs/AB_TESTING.md](docs/AB_TESTING.md) in full (the
 harness, "How changes are validated", "Measurement grids", "Which verdict
@@ -130,7 +133,9 @@ receives the merged daily frame, after these columns were computed from the
 hourly inputs. It cannot rebuild them. Round 25 worked around it by building the
 frames in the experiment script (`experiments/run_round25.py`) and feeding them to
 the unmodified `run_walk_forward`; an optional `build_fn(inputs) -> frame` on
-`Variant` is still the clean fix, and 2.3 and 2.7 need it too.
+`Variant` is still the clean fix, and 2.3 needs it too. (Round 28 got its per-window as-of columns by
+writing its own loop, `experiments/run_round28.py`; the pattern — fit once, score the test rows under
+several conditions — is in [AB_TESTING.md](docs/AB_TESTING.md#score-the-test-rows-as-production-could-know-them-the-af-condition-round-28).)
 
 **Arms.**
 
@@ -310,49 +315,6 @@ Do not interleave them mid-A/B. `ab.variants.BASELINE` mirrors `model.TARGETS`
 candidate is
 being measured, and vice versa.
 
-### 2.7 ENTSO-E documents that publish a week ahead
-
-Because D+1 is never predicted, only documents that describe D+2..D+7 *in
-advance* are forecast features. Three qualify and none is used:
-
-- **A65 week-ahead load forecast** (processType A31): daily min/max load for
-  SE4 for the coming week. Stated mechanism: a TSO's load forecast embeds
-  industrial calendars and known large-consumer schedules that temperature and
-  `is_workday` do not. Small expected effect (demand is the stable side of SE4
-  pricing), cheap to test.
-- **A77 nuclear outages weighted by MW** (old item 4). The documents carry
-  `nominal_P`; the feature today counts events. A 1400 MW Oskarshamn-3 outage
-  and a small unit both score 1.
-  **A production defect sits under this item, and fixing it was tested and rejected
-  (round 26, 2026-10-12).** `fetch_nuclear_outages_se3` sends `psrType=B14` but the API
-  ignores it for A77: the SE3 response also holds gas CHP (B04), hydro (B12) and wind (B19)
-  units, the parser counts them, and it counts cancelled records (docStatus A09) and every
-  partial derate as a full event. Over five years the daily `nuclear_outage_se3` averages
-  2.39 against 1.12 for distinct non-cancelled nuclear units and differs on 70 % of days.
-  The column is in `FEATURE_COLUMNS`, so `avg` and `max` read it; the trough lists do not,
-  and the round-24 coupling classifier deliberately leaves it out. Once decomposed, the
-  clean nuclear MW is a natural coupling-classifier input — re-test it there (its
-  contaminated version was REAL on `min` but weaker than leaving it out).
-  **The straightforward fix is REAL-harmful on `avg` (+0.13 on 3 of 5 caches)** — see
-  [REJECTED.md](docs/REJECTED.md) — so production keeps the old, misnamed column and the item
-  becomes a decomposition: from the saved A77 records build (a) distinct non-cancelled nuclear
-  units, (b) the same MW-weighted (`nominal − available`), (c) a count of non-nuclear
-  production units out (hydro, gas, wind), (d) a count of cancelled records, and test each
-  and the old column's replacement by the pair (a)+(c) on `avg` with `classify_clustered`.
-  Keep the old column until one arm beats it. The fixed parser is
-  `experiments/results/nuclear_parser_fix.patch`; it also has a guard worth keeping — it
-  raises if the response stops carrying `psrType`/unit, instead of zeroing the feature.
-  Parsed data: `ab_cache/entsoe_r25/2026-10-11/unavail.pkl`, raw responses beside it
-  (`experiments/fetch_round25_entsoe.py`).
-
-  **The data is fetched** (`ab_cache/entsoe_r25/2026-10-11`: week-ahead min/max load for SE4, SE3, DK2, DE_LU from 2021-07 with ~98 % day coverage; A77/A80 with unit, `psr`, nominal and available MW, revision and a `cancelled` flag; the traps are in [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11)).
-
-Order: the nuclear decomposition above first (it needs no new fetch), then the
-week-ahead load on its own, then as one "week-ahead block" if both help (block tests
-are more sensitive than singles, docs/AB_TESTING.md).
-
-**Effort.** 1 day for the fetches, half a day per A/B.
-
 ### 2.10 `min ≤ cheap2h` coherence — shipped 2026-10-12, re-check in ~3 months
 
 Record and arms: [DECISIONS.md](docs/DECISIONS.md#min--cheap2h-coherence-round-25). Every
@@ -443,9 +405,12 @@ answer it**: every record for an event before 2025-11 was re-published in
 November 2025, so the cache holds no vintage at all before that date
 (docs/FINDINGS.md "If you touch ab_cache/crossborder/"). With the trough targets
 having rejected this data outright and the `avg` export-headroom candidate now
-closed on its serve-time encoding, **the remaining value of UMM is the
-nuclear features of 2.7, as-of-date correct** — the interconnector half has no consumer
-left, so build it only if something asks for it. Nord Pool's UMM API is the upstream of those
+closed on its serve-time encoding, **the one consumer UMM had was the nuclear features of
+old item 2.7, and round 28 closed it** (the realised nuclear output, as a leaky ceiling, moves
+`avg` by −0.03 and `min` by +0.18; [FINDINGS.md](docs/FINDINGS.md#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28)).
+**Parked 2026-10-23: build it only if a new per-day column from a revisioned document appears.**
+The interconnector half has no consumer either. What follows is what was verified, kept
+for that day. Nord Pool's UMM API is the upstream of those
 records and keeps **every version of every message with its
 `publicationDate`** — `GET /messages/{id}/{version}` returns the record as it
 stood then — for production units (nuclear with installed and available MW per
@@ -481,8 +446,9 @@ the SE2→SE3 and FI→SE3 cuts that set the import price.
   frame per variant instead (`experiments/run_round25_vintage.py`), which does not
   generalise to a per-window as-of feature — so this is its own piece of machinery.
 
-**Bar.** The 2.7 decomposition arms rebuilt as-of, against the best of them on
-ENTSO-E data; `avg` first, `classify_clustered`.
+**Bar.** Whatever the new column's arms are, rebuilt as-of, against the same arms under the `AF` condition
+of [AB_TESTING.md](docs/AB_TESTING.md#score-the-test-rows-as-production-could-know-them-the-af-condition-round-28);
+`classify_clustered`.
 
 **Effort.** One day for the source and cache, one day for the per-window
 builder shared with 2.3a.
@@ -544,6 +510,66 @@ D+2…D+7 must not get worse.
 `model.predict` by horizon. The harness needs a per-row target, the same shape as
 `run_round25_vintage.py`'s per-row scoring.
 
+### 2.19 A time index for `avg` (added 2026-10-23, found as a control in round 28)
+
+**What was found.** Adding `t_index` (days since 2021-10-21 / 365) to the `avg` model is REAL on all
+six long caches — six-cache mean **−0.28** (−0.18 … −0.43), negative in NOW, −6M and FAR on every cache,
+per-window std ×0.96 – 1.00 — on top of the half-life-500 weights `avg` already has. The date is known for every
+forecast day and nothing in the column is weather, so neither the forecast-vintage trap nor the AF condition
+applies. On `cheap2h` (+0.23) and `min` (+0.16) the same column is REAL-harmful on five caches
+([REJECTED.md](docs/REJECTED.md), [FINDINGS.md](docs/FINDINGS.md#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28)).
+It is a control that turned out to be a result, found after the main round was read, and measured only on
+the six overlapping caches — a lead, not a change.
+
+**Mechanism to test, not assume.** `avg` is the one target that wants recency. Half-life weights give recent
+rows more weight; a time index lets the trees give the newest regime its own leaf, and every forecast row
+lands in it. If the second is only a cheaper way to get the first, a shorter half-life reproduces the gain and the
+index is redundant; if the index beats every half-life, it carries something weights cannot. The hazard is
+the same property: through a regime break the model keeps predicting the newest leaf.
+
+**Arms** (`avg` only; `min` and `cheap2h` are closed): `TI` alone; half-lives 250 and 365 without it
+(production is 500); `TI` with each; a step version, whole years since 2021 (is the gain the slope or the
+levels?); SEED7 as the null. Against production `avg`.
+
+**Bar** (written now, before any run). On the six existing caches: `classify_clustered` REAL, six-cache mean
+≤ −0.15, std ratio ≤ 1.05, favourable on ≥ 4 of 6. **And** on a cache fetched at least four weeks after
+`long/2026-10-16` (mid-November 2026 or later), because the six caches share most of their NOW window and the
+gain in NOW is partly the recent coupled weeks: NOW negative there, or the item stays a lead. **And** the four
+weeks from 2026-08-17 (the regime break) are scored apart and must not be worse than `base`. `max` reads the
+full list, so it is reported (a REAL-harmful `max` is Peter's call). `ab_test.py band` is not needed — `avg`
+feeds no band.
+
+**Effort.** Half a day; about one hour of compute (one target, 12 points per cache). No new fetch except the
+replication cache.
+
+### 2.20 The decomposed nuclear column, replayed as production sees it (added 2026-10-24, run with 2.19)
+
+**What is open.** Round 28 closed the nuclear column on its pre-registered bar (scored with every record
+visible, HS). Scored as production actually serves it (AF: planned outages visible, forced ones only once
+started — which is what `predict.py` fetches today), two arms read slightly better than today's column on
+`avg`: `Rac` (distinct nuclear units + distinct non-nuclear units, replacing `nuclear_outage_se3`) −0.05,
+negative on all six caches, and `Rall` (those two + unavailable nuclear MW + cancelled records) −0.07, negative
+on five. About half of it is the old column losing more than the new ones when future forced outages are
+invisible. It is inside the `avg` noise floor, the six caches share most of their windows, and the two arms
+were the best of seven, so it is a lead picked after the fact, not a result
+([FINDINGS.md](docs/FINDINGS.md#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28)).
+
+**When and how.** In the same run as 2.19, on the first long cache fetched at least four weeks after
+`long/2026-10-16` (mid-November 2026 or later), plus a top-up of the A77 records to that date
+(`experiments/fetch_round28_entsoe.py --only a77 --since <four weeks before the cache>`). Re-use
+`experiments/run_round28.py` (`kind avg`, arms `base`, `Rac`, `Rall`; the data layer picks the newest
+`ab_cache/entsoe_r28/` directory). Only the new cache's own grid counts; the six old caches are not re-run.
+
+**Bar (written 2026-10-24, before the run).** For `Rac` and `Rall` separately, delta against `base` under AF on
+the new cache: negative in each of NOW, −6M and FAR, cluster mean ≤ −0.05, and the HS delta not REAL-harmful.
+If one arm passes, it is a parser change in `sources/entso_e.py` (keep unit, `psrType` and document status —
+the guard in `experiments/results/nuclear_parser_fix.patch` is the starting point) and needs `max` reported and
+the local integration check before it ships. If both pass, `Rac` (two columns, less to maintain) unless `Rall`
+is ahead by more than 0.05. If neither passes, 2.20 is closed for good and the column stays.
+
+**Effort.** No extra compute beyond 2.19's run (one target, two arms); the parser change about two hours if it
+passes.
+
 ## 3. Carried at low priority, and what stays closed
 
 **Low priority, carried:** `ttf_vs_30d` (old item 5, unchanged reasoning);
@@ -565,22 +591,23 @@ index.
 
 ---
 
-## 4. Suggested order (2026-10-22)
+## 4. Suggested order (2026-10-23)
 
-The batch on `long/2026-10-16` that was item 1 is done (round 27, 2026-10-22): the
-northern wind points replicate, and the MW-scale residual load is closed for `avg`/`min`.
+Round 27 (2026-10-22) replicated the northern wind points and closed the MW-scale residual load; round 28
+(2026-10-23) ran all of 2.7 and closed it: no nuclear feature of any kind, and no week-ahead load.
 
 1. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB) and the clock is
    running. **Nothing to do until 2026-11-15**; then `score_production.py` (reads a CSV
    export in `ab_cache/prediction_log/`). The 2.3b shadow push is the one piece that can
    be built earlier, because it has to run for those weeks. It prices everything
    weather-related for real, and the forward replays of 2.3b, 2.10 and 2.13 wait on it.
-2. **2.7: decompose `nuclear_outage_se3`**, then the week-ahead load. No new fetch needed;
-   `ab_cache/entsoe_r25/2026-10-11` has it. Then re-test the clean nuclear MW as a
-   coupling-classifier input (see 2.7).
-3. **2.1 oracle ceiling, then C** — half a day on the same A75/A65 data tells whether a
-   calibrated weather → generation mapping has headroom beyond the northern wind points.
-   Score it by lead on forecast vintages from the start (round 27, see 2.1).
+2. **2.19 a time index for `avg`, and 2.20 the decomposed nuclear column under AF** — one run on the
+   first long cache from mid-November 2026 or later (the same fetch 2.18 needs), plus an A77 top-up. Both
+   bars are written down; neither needs anything else.
+3. **2.1 oracle ceiling, then C** — half a day on the A75/A65 data tells whether a calibrated
+   weather → generation mapping has headroom beyond the northern wind points. Score it by lead on
+   forecast vintages from the start (round 27, see 2.1), and run a `TI` and a residual arm next to
+   any `avg` result (round 28: a slowly moving column can be a clock).
 4. **2.12 hygiene** — the NaN last close into the forecast fuel/carbon lags; the `build_fn`
    hook; the tests. (The A72 probe is done: reservoir arrives complete.)
 5. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
@@ -588,6 +615,6 @@ northern wind points replicate, and the MW-scale residual load is closed for `av
 6. **2.3b forward replay / 2.3c** — not before 2026-11-15, and only if the 2.3b shadow push
    has been running since before then.
 7. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
-8. 2.11 horizon, 2.14 UMM (after 2.7 shows which nuclear features are worth having).
+8. 2.11 horizon. (2.14 UMM is parked: nothing consumes it.)
 9. **2.18 near-horizon price model**: to be taken up separately (Peter, 2026-10-22).
    It needs no new fetch, and any long cache serves.
