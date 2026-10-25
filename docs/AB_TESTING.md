@@ -501,6 +501,22 @@ round 28 the week-ahead load gave −0.40, `TI` −0.28, the residual +0.02. The
 hypothetical: `TI` alone is REAL on `avg` on all six caches, and REAL-harmful on `min` and
 `cheap2h`, so the same bare index decides two different targets in opposite directions.
 
+### Adding columns has a price: the permuted-null arm (round 29)
+
+Every addition is paid for twice: once in what its columns carry, once in what *more columns* does to a model fitted on
+1088 rows. Measured on the current lists, six caches, the same grid: appending **11 copies of real columns permuted across
+days** (same marginals, no information) costs `cheap2h` **+0.33**, `min` **+0.31**, `avg` **+0.32**, REAL-harmful on all six
+caches and 0–3 of 12 points favourable; two permuted columns cost +0.09 / +0.13 (`cheap2h` / `min`). The paired design does
+not remove it, because the baseline arm has fewer columns. Round 29's gate arm (11 columns of realised generation) read
+−0.54 raw and −0.87 net of that cost.
+
+So for any block of more than two or three columns, run a **permuted null of the same width** next to it (build the columns by
+permuting the candidate's values across rows with a fixed seed, so the marginals match, and name them `perm_*`) and report both
+`arm − base` (what production would pay, the verdict) and `arm − null` (what the columns carry). Do not use the net number to adopt
+something: production pays the raw one. Use it to avoid rejecting a block that is informative but wide, and to decide whether a
+narrower encoding (two columns that are the block's summary) is worth building. Earlier block additions in
+[REJECTED.md](REJECTED.md) (up to nine columns) were measured without it.
+
 ### Score the test rows as production could know them: the AF condition (round 28)
 
 A per-day column built from a document with revisions (A77 unavailability, A65 week-ahead)
@@ -983,7 +999,10 @@ per-window and answered three.
 **Make the run resumable.** Skip (point, config) pairs already on disk. These
 runs are tens of minutes; an interrupted one should continue, not restart. For a
 multi-target run a point counts as done only once *every* target's result is
-written.
+written. When an input is topped up after rows were written (a later fetch of a
+source the arms read), store a hash of the columns each point reads in its row:
+a re-run then redoes exactly the points whose inputs changed (round 29: 16 of
+112, after a top-up that revised ten days of one zone's wind) and nothing else.
 
 **Screen and confirm in two separate invocations.** Run the screen, look at it,
 *then* pass the surviving configs to the confirm run as an explicit argument.

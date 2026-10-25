@@ -25,6 +25,7 @@ check whether the code it describes still looks that way.
 | [Archive weather flatters the eval by 1–3 EUR/MWh, almost all of it beyond D+4](#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b) | 2026-10-11 | The "unmeasured" weather-axis limitation, measured: +1.63 cheap2h / +1.69 min / +2.81 avg at production's leads, +3…+5 at D+7; a three-model blend recovers a quarter and missed its strict bar. Re-measured on the current model 2026-10-22: +1.8 / +1.8 / +2.7 on the six sent days |
 | [A wind-carrying residual load pays only near the run day](#a-wind-carrying-residual-load-pays-only-near-the-run-day-round-27) | 2026-10-22 | The MW-scale residual load is −0.4…−0.6 on `avg` on archive weather and ~0 on production's six days: worth −0.1…−0.4 up to a 4-day lead, harmful at 6–7. Any feature that adds wind — plan 2.1-C included — has to be scored by lead on forecast vintages |
 | [The nuclear column and the week-ahead load carry nothing a model can use](#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28) | 2026-10-23 | `nuclear_outage_se3` is a sum of three counts and worth ~0 on `avg`; no decomposition, no clean MW, not even the realised nuclear output helps; the week-ahead load's −0.4 on `avg` is a trend proxy, and a bare time index gives −0.28 on `avg` (and hurts `min` / `cheap2h`) |
+| [The physical residual load is a high ceiling that the weather reaches little of](#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29) | 2026-10-25 | Handing the models the realised load − wind − solar of the eight zones is −1.19 `cheap2h` / −0.96 `min` / −1.30 `avg` (REAL on all six caches), a net worth twice its parts; a weather-based first stage keeps 11–21 % of it on `cheap2h`, nothing on `min`, and on `avg` loses it on forecast vintages. Eleven noise columns cost +0.33 by themselves. One near-horizon lead (D+2…D+4 −0.36) |
 | [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26). A72 (reservoir) is A03 too but arrives complete — checked 2026-10-14, 0 omitted of 158 weeks |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
 
@@ -1081,6 +1082,79 @@ speculatively" is now a measured statement, not a worry.
 carrier (no); `drop` slightly harmful (+0.02, INCONCLUSIVE — right); `CPb` NOISE (REAL-harmful); the realised-load ceiling
 weakly favourable on `avg` (−0.14, right) and NOISE on the trough targets (REAL-harmful); `LW` NOISE (REAL on `avg`, for the
 wrong reason).
+
+## The physical residual load is a high ceiling that the weather reaches little of (round 29)
+
+*2026-10-24/25. Plan 2.1-C, six long caches, rolling 1088-row grid, archive weather and — for the calibrated arms —
+forecast vintages at production's lead map. The verdicts are the round-29 rows in [REJECTED.md](REJECTED.md); this is
+the part that explains them.*
+
+**The ceiling.** Handing the models the REALISED eight-zone (SE1–SE4, DK1, DK2, DE_LU, FI) quantities of the target day
+(A75 generation, A65 load; leaky, and carrying the price's own feedback through curtailment) moves the picture a lot, but
+not where the plan looked. Six-cache means of `arm − base`, archive weather, all seven test rows:
+
+| arm | columns | `cheap2h` | `min` | `avg` |
+|---|---|---|---|---|
+| wind block (`OW`) | 8 | −0.19 | −0.12 | −0.57 |
+| solar block (`OS`) | 3 | −0.50 | −0.38 | −0.20 |
+| both (`OG`, **the pre-registered gate**) | 11 | −0.54 (primary NOW **+0.15**) | −0.43 (primary NOW **+0.14**) | −0.63 |
+| the same 11, permuted across days (`NUL`) | 11 | **+0.33** | **+0.31** | **+0.32** |
+| load of the eight zones (`OL`) | 2 | −0.20 | −0.18 | |
+| wind + solar of the eight zones (`OV`) | 2 | −0.45 | −0.37 | |
+| the same 2, permuted (`NUL2`) | 2 | +0.09 | +0.13 | |
+| **load − wind − solar, mean and hourly minimum (`OR`)** | 2 | **−1.19** | **−0.96** | **−1.30** |
+| `OR` + `OG` (`OA`) | 13 | −1.31 | −1.01 | −1.56 |
+
+`OR` is REAL on all six caches, 12 of 12 points each, NOW included (cheap2h −0.86 … −1.26), per-window std ×0.93 – 0.97,
+and larger than the northern wind points (−0.9). It is already −0.74 at D+2 and −1.0 / −1.3 over D+2…D+4 / D+5…D+7, so unlike
+`OG` it is not mainly a stale-lag foresight gain.
+
+**Three readings.**
+* **The net is worth far more than its parts.** `OL` −0.20 and `OV` −0.45 sum to −0.65; their difference, `OR`, is −1.19. The models
+  hold temperature and the wind and solar columns separately and cannot build "demand minus supply" out of 1088 rows. This is
+  the mechanism behind plan 2.1 — a physical residual is the feature the model wants — and it is measured as a ceiling, not as
+  something production can serve.
+* **Adding columns has a price.** Eleven permuted columns cost +0.33 / +0.31 / +0.32, REAL-harmful on all six caches
+  (0–3 of 12 points favourable), two cost +0.09 / +0.13. So the gate arm `OG` (−0.54) is worth −0.87 net of its own
+  dilution. It failed the pre-registered gate on `cheap2h` on one cell (the primary's NOW window, +0.15) and on `min` on two,
+  because the freshest window is where extra columns hurt most. Earlier block additions in the ledger (up to nine columns)
+  paid a tax of that order and were read without it
+  ([AB_TESTING.md](AB_TESTING.md#adding-columns-has-a-price-the-permuted-null-arm-round-29)).
+* **The newest weeks are the exception.** On the primary cache's four weeks from 2026-09-14 (sent rows, archive, 28 days — descriptive)
+  every oracle arm is worse than `base`: cheap2h 16.00 against `OR` 17.81, `OG` 19.05, `NUL` 18.46; `min` 19.32 against `OR` 21.87.
+  The ceiling was measured over 52 windows, the regime that matters now is not where it lives.
+
+**What the weather reaches.** A first stage fitted per window on the training rows (XGBoost, 200 trees, depth 3, the nine points' weather
+and the calendar → the realised residual, out-of-fold for the rows the price model trains on) explains `resid_mean` with
+R² 0.85 on archive weather and 0.81 / 0.70 / 0.57 on the forecast issued 2 / 5 / 7 days earlier (`resid_min`: 0.80 /
+0.77 / 0.71 / 0.61). Fed to the price models as two columns (`CALR`), it keeps 11–21 % of `OR`'s `cheap2h` gain (−0.15 / −0.32 / −0.11 in
+NOW / −6M / FAR against −1.07 / −1.53 / −0.96), none of `min`'s (+0.00 against −0.96) and 36 % of `avg`'s (−0.47 against −1.30). On forecast vintages at production's map the
+`avg` gain is gone (−0.05; NOW **+0.77**, and +0.57 even over D+2…D+4). What `OR` carries is the part of the system balance that
+the day's weather does not explain — outages, industrial load, conventional dispatch, curtailment — and that is not available for D+2…D+7.
+
+**A lead, found after the main result was read.** The first stage with a time index (`CALR`) is worse in NOW than the same
+stage without it (`CALRn`; cheap2h NOW +0.32 on the primary, in line with the bare time index being harmful on the trough
+targets, round 28). `CALRn` on forecast vintages is negative in every cluster on both trough targets (cheap2h
+−0.19: NOW −0.20 / −6M −0.23 / FAR −0.14; `min` −0.18) and concentrated at the short leads: D+2…D+4 **−0.36** on cheap2h
+(−0.37 / −0.36 / −0.34 in the three clusters) and −0.25 on `min`, against −0.03 and −0.11 at D+5…D+7. It does **not** hold on archive
+weather (−0.13 on cheap2h, REAL on the primary only, NOISE on four caches), so what it carries is not the generation but a
+smooth summary of the nine points' forecasts that the raw columns give the model with more noise. In the newest four weeks it is neutral (25.26 against
+25.75 on vintages). It is one of two first-stage variants, picked after the numbers were seen, so it is plan 2.18's hypothesis with a
+bar written beforehand, not a result.
+
+**Data traps found.**
+* ENTSO-E revises A75 for the days just before a fetch: the top-up fetched on 2026-10-24 changed DE_LU wind by up to 2.5 % over 1–11
+  October. A cache holds provisional values for its last ~10 days.
+* DK1/DK2 A65 load arrives two days late (the round-25 fetch has none for its last 48 hours) and has isolated hour holes; FI has no
+  offshore wind (the request returns "No matching data"). SE and FI solar start 2021-12 / 2022-12.
+* The oracle columns are absent from the last five days of `ab_cache/long/2026-10-16` unless
+  `experiments/fetch_round29_entsoe.py` is run; rows record a hash of the oracle columns they read, so a later top-up
+  redoes exactly the points it changed (16 of 112 on the first one).
+
+**Priors, scored.** `OG` cheap2h −0.2 … −0.6 (−0.54, but the primary's NOW went the other way); `OR` harmful on the trough targets
+because the realised SE4 load was (wrong: −1.19 — the load was only half of it); `OG` on `avg` mostly a clock (wrong: `OGt` beats the
+bare time index by −0.79); `NUL` +0.0 … +0.1 (wrong: +0.33); `CALR` cheap2h −0.2 … −0.6, vintage about half (archive −0.19, vintage −0.16);
+`CALRn` weaker than `CALR` on the newest caches (the opposite).
 
 ## Appendix A — Source probes, 2026-09-08
 
