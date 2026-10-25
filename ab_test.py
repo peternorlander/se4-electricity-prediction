@@ -6,11 +6,19 @@ the full design and the agent playbook.
     python ab_test.py fetch --days 1095             # production-shaped -> ab_cache/
     python ab_test.py list                          # list long snapshots
     python ab_test.py list --root ab_cache          # list production-shaped snapshots
-    python ab_test.py run [--snapshot YYYY-MM-DD] [--shifts 0-5] [--expanding]
+    python ab_test.py run [--snapshot YYYY-MM-DD] [--shifts 0-5 | --grid] [--expanding]
+                          [--no-vintage] [--workers 4]
+    python ab_test.py vintages [--snapshot YYYY-MM-DD] [--grid]   # warm the vintage cache
     python ab_test.py band [--snapshot YYYY-MM-DD] [--workers 4]   # cheap2h band scorecard
 
 Needs ENTSO_E_TOKEN (and the other source-API env vars) only for `fetch`;
-`run` and `list` are offline once a snapshot exists.
+`run` and `list` are offline once a snapshot exists -- except that `run` also
+scores every fit on forecast-vintage weather (Open-Meteo Previous Runs, public,
+no token), which fetches ab_cache/vintages/ the first time and extends it when
+a newer snapshot reaches past it. `--no-vintage` skips that and reports archive
+weather only. The report always labels the two numbers ARCHIVE and FORECAST: the
+eval's weather is ERA5 archive, a forecast with no error, and FORECAST is what
+production pays (docs/AB_TESTING.md, "Archive weather is a perfect forecast").
 
 LONG SNAPSHOTS ARE THE DEFAULT (changed 2026-10-10, and `run` now trains on a
 rolling window). A ~3-year fetch builds to ~1088 rows, which IS production's
@@ -47,6 +55,7 @@ from ab.snapshot import (save_snapshot, list_snapshots, load_snapshot, read_meta
                          DEFAULT_CACHE_ROOT, LONG_CACHE_ROOT)
 from ab.harness import parse_shift_range, PRODUCTION_TRAIN_ROWS, LAG_WARMUP_ROWS
 from ab.verdict import run_ab
+from ab.vintage import default_root as default_vintage_root
 
 # Default fetch length. 1825 days (~5 years) is the right number and asking for
 # more buys nothing: the frame cannot start before EUA carbon data does
@@ -173,13 +182,54 @@ def cmd_list(args):
     print("'*' means the snapshot predates the field and it was derived on read.")
 
 
+def _grid(inputs, train_window):
+    """The per-snapshot NOW / -6M / FAR cluster grid (ab.verdict.default_clusters)."""
+    import features as feat
+    from ab.verdict import default_clusters
+    if train_window is None:
+        sys.exit("--grid needs the rolling geometry (it places FAR from the training window); "
+                 "drop --expanding or pass --shifts.")
+    return default_clusters(len(feat.build_training_data(**inputs)), train_window)
+
+
 def cmd_run(args):
     cache_root = Path(args.root) if args.root else LONG_CACHE_ROOT
     inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
     print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
-    shifts = parse_shift_range(args.shifts)
     train_window = None if args.expanding else args.train_window
-    run_ab(inputs, shifts, train_window=train_window)
+    if args.grid:
+        clusters = _grid(inputs, train_window)
+        shifts = [s for ss in clusters.values() for s in ss]
+        print(f"  cluster grid: {clusters}")
+    else:
+        clusters, shifts = None, parse_shift_range(args.shifts)
+    # Forecast-vintage scoring is the default: every weather input in the eval is a perfect
+    # forecast, and a run that reports only that number invites reading it as production's.
+    # Opting out is explicit, and the report says so.
+    vintage_root = None if args.no_vintage else (
+        Path(args.vintage_root) if args.vintage_root else default_vintage_root(cache_root))
+    run_ab(inputs, shifts, train_window=train_window, clusters=clusters,
+           vintage_root=vintage_root, workers=args.workers, save=args.save_errors)
+
+
+def cmd_vintages(args):
+    """Fetch/extend the vintage cache for a snapshot's evaluated days and check coverage."""
+    import features as feat
+    from ab.vintage import ensure_vintages, check_coverage, evaluated_dates
+    cache_root = Path(args.root) if args.root else LONG_CACHE_ROOT
+    inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
+    print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
+    data = feat.build_training_data(**inputs)
+    if args.grid:
+        shifts = [s for ss in _grid(inputs, args.train_window).values() for s in ss]
+    else:
+        shifts = parse_shift_range(args.shifts)
+    days = evaluated_dates(data["date"], shifts)
+    vintage_root = Path(args.vintage_root) if args.vintage_root else default_vintage_root(cache_root)
+    print(f"Vintage cache: {vintage_root}  (evaluated days {days[0]} -> {days[-1]}, {len(days)})")
+    vintages = ensure_vintages(max(days), root=vintage_root)
+    check_coverage(vintages, days)
+    print(f"OK -- {len(vintages)} points, every evaluated hour has a finite vintage at leads 1-7.")
 
 
 def cmd_band(args):
@@ -240,6 +290,37 @@ def main():
                                   "(the headline eval's geometry, and what every grid "
                                   "before 2026-10 used). Only way to run on a "
                                   "production-shaped snapshot.")
+    run_parser.add_argument("--grid", action="store_true",
+                             help="Run the per-snapshot cluster grid (NOW 0/1/4/7, -6M "
+                                  "180/183/186/189, FAR = the oldest four shifts the "
+                                  "rolling geometry fits) instead of --shifts, and report "
+                                  "per cluster.")
+    run_parser.add_argument("--no-vintage", action="store_true",
+                             help="Archive weather only. By default every fit is ALSO "
+                                  "scored on the forecast Open-Meteo issued L days ahead "
+                                  "(Previous Runs, no token) and the report carries both "
+                                  "numbers; the first run fetches the vintage cache "
+                                  "(~3 min), later runs are offline.")
+    run_parser.add_argument("--vintage-root", default=None,
+                             help="Vintage cache directory (default: ab_cache/vintages, "
+                                  "next to the snapshot root).")
+    run_parser.add_argument("--workers", type=int, default=1,
+                             help="Processes for the (variant, shift) jobs. Pin "
+                                  "OMP_NUM_THREADS yourself (4 for the ledger): XGBoost is "
+                                  "not bit-identical across thread counts.")
+    run_parser.add_argument("--save-errors", default=None, metavar="PATH",
+                             help="Pickle every point's per-row error arrays (all "
+                                  "conditions, all targets) for later analysis.")
+
+    vintage_parser = subparsers.add_parser(
+        "vintages", help="Fetch/extend the forecast-vintage cache for a snapshot and check its coverage.")
+    vintage_parser.add_argument("--snapshot", default=None, help="Snapshot date (YYYY-MM-DD). Default: newest.")
+    vintage_parser.add_argument("--shifts", default="0-5", help="Shift range to cover. Default: 0-5.")
+    vintage_parser.add_argument("--grid", action="store_true", help="Cover the cluster grid, as `run --grid`.")
+    vintage_parser.add_argument("--train-window", type=int, default=PRODUCTION_TRAIN_ROWS,
+                                help="Training rows (only places FAR for --grid).")
+    vintage_parser.add_argument("--root", default=None, help="Cache root of the snapshot (default: ab_cache/long/).")
+    vintage_parser.add_argument("--vintage-root", default=None, help="Vintage cache directory.")
 
     band_parser = subparsers.add_parser(
         "band", help="Score the cheap2h band (low/high/risk) for BASELINE vs CANDIDATE.")
@@ -254,7 +335,8 @@ def main():
 
     args = parser.parse_args()
 
-    {"fetch": cmd_fetch, "list": cmd_list, "run": cmd_run, "band": cmd_band}[args.command](args)
+    {"fetch": cmd_fetch, "list": cmd_list, "run": cmd_run, "band": cmd_band,
+     "vintages": cmd_vintages}[args.command](args)
 
 
 if __name__ == "__main__":

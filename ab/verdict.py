@@ -7,7 +7,8 @@ import pandas as pd
 
 import model as model_module
 from features import build_training_data
-from ab.harness import run_walk_forward, apply_shift
+from ab.harness import (run_walk_forward, run_walk_forward_errors, summarize_errors, apply_shift,
+                        ARCHIVE, LEADS)
 from ab.variants import BASELINE, CANDIDATE
 
 DEFAULT_TARGET_NAMES = tuple(model_module.TARGETS.keys())
@@ -411,12 +412,146 @@ def classify_ablation_clustered(cluster_deltas: dict, baseline_mae: float = None
     return "INCONCLUSIVE"
 
 
+# --- Forecast-vintage scoring (docs/AB_TESTING.md, "Archive weather is a perfect forecast") ---
+#
+# The same fits are scored a second way. Two numbers come out of every run and they must
+# never be mistaken for one another:
+#
+#   ARCHIVE   test rows carry ERA5 archive weather -- a forecast with no error. Every
+#             ledger number to date, and the standing gate, is this.
+#   FORECAST  test rows carry the forecast issued j+2 days ahead for sent row j (D+2..D+7),
+#             rows 0-5 only: what production pays. Row 6 (D+8) is not sent and is left out.
+#
+# The FORECAST total covers six rows and the ARCHIVE total seven, so the penalty is taken
+# against archive rows 0-5 ("archive_sent"), never against the seven-row figure.
+_ARCHIVE_TAG = "ARCHIVE weather (perfect forecast)"
+_FORECAST_TAG = "FORECAST weather (production-mapped: rows 0-5, row j at lead j+2)"
+
+_WORKER = {}
+
+
+def _point_errors(data: pd.DataFrame, variant, shift: int, train_window=None, vintage_frames=None) -> dict:
+    """One variant at one shift: the harness's error arrays for every condition."""
+    transformed = _apply_variant(apply_shift(data, shift), variant)
+    vintage = None
+    if vintage_frames:
+        vintage = {lead: _apply_variant(apply_shift(frame, shift), variant)
+                   for lead, frame in vintage_frames.items()}
+    return run_walk_forward_errors(
+        transformed, variant.fit_fn, variant.targets,
+        frozen_features=variant.frozen_features, frozen_rolling=variant.frozen_rolling,
+        train_window=train_window, vintage_frames=vintage,
+    )
+
+
+def _init_worker(data, vintage_frames, train_window):
+    _WORKER.update(data=data, vintage_frames=vintage_frames, train_window=train_window)
+
+
+def _worker_job(job):
+    which, variant, shift = job
+    return which, shift, _point_errors(_WORKER["data"], variant, shift,
+                                       train_window=_WORKER["train_window"],
+                                       vintage_frames=_WORKER["vintage_frames"])
+
+
+def _compute_points(data, jobs, train_window, vintage_frames, workers):
+    """Yield (which, shift, errors) in job order, in-process or on a pool."""
+    if workers <= 1:
+        for which, variant, shift in jobs:
+            yield which, shift, _point_errors(data, variant, shift, train_window=train_window,
+                                              vintage_frames=vintage_frames)
+        return
+    # Process workers pickle the variants: module-level functions only, no lambdas. Pin
+    # OMP_NUM_THREADS before launching -- XGBoost is not bit-identical across thread counts.
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(workers, initializer=_init_worker,
+                             initargs=(data, vintage_frames, train_window)) as pool:
+        yield from pool.map(_worker_job, jobs)
+
+
+def _signed(x: float) -> str:
+    return f"{x:+.2f}"
+
+
+def _print_point_lines(base, cand, target_names, with_vintage):
+    """Per-shift lines. `base`/`cand` are {target: summarize_errors(...)}."""
+    def line(key):
+        return "  ".join(
+            f"{name}: base={base[name][key]:.2f} cand={cand[name][key]:.2f} "
+            f"delta={cand[name][key] - base[name][key]:+.2f}"
+            for name in target_names)
+    if not with_vintage:
+        print(f"  {line('archive')}")
+        return
+    print(f"  ARCHIVE  weather, all 7 rows : {line('archive')}")
+    print(f"  FORECAST weather, rows 0-5   : {line('forecast')}")
+
+
+def _print_cluster_tables(clusters, summ, target_names):
+    """Per target and cluster: the archive and the forecast numbers on separate, labelled rows."""
+    print("\n=== ARCHIVE vs FORECAST weather, per cluster (EUR/MWh; delta = cand - base, negative = cand better) ===")
+    print("    ARCHIVE rows 0-6   : what every ledger number and the verdict gate use (perfect forecast)")
+    print("    archive rows 0-5   : the same fits on the six rows production sends -- the like-for-like base")
+    print("    FORECAST rows 0-5  : row j scored on the forecast issued j+2 days ahead (D+2..D+7)")
+    print("    penalty            : FORECAST - archive rows 0-5, i.e. what production pays")
+    for name in target_names:
+        print(f"\n  {name}" + ("   <-- priority" if name in PRIORITY_TARGETS else ""))
+        print(f"    {'':<53}{'base':>8}{'cand':>8}{'delta':>8}")
+        for cname, cshifts in clusters.items():
+            def mean(which, key):
+                return float(np.mean([summ[(s, which)][name][key] for s in cshifts]))
+            rows = [("ARCHIVE weather, rows 0-6", "archive"),
+                    ("archive weather, rows 0-5 (penalty base)", "archive_sent"),
+                    ("FORECAST weather, rows 0-5", "forecast"), ("penalty (FORECAST - archive 0-5)", "penalty")]
+            for k, (label, key) in enumerate(rows):
+                b, c = mean("base", key), mean("cand", key)
+                head = f"{cname} ({len(cshifts)} pt)" if k == 0 else ""
+                fmt = _signed if key == "penalty" else (lambda x: f"{x:.2f}")
+                print(f"    {head:<11}{label:<42}{fmt(b):>8}{fmt(c):>8}{c - b:>+8.2f}")
+
+
+def _print_lead_tables(clusters, summ, target_names):
+    """MAE by lead, per cluster and arm, plus the archive-gain-by-row leak check."""
+    print("\n=== MAE by lead: every test row scored on the forecast issued L days ahead (L1..L7), per cluster ===")
+    print("    (production reads row j at lead j+2, so the sent days sit on the diagonal of this view;")
+    print("     'archive' = ARCHIVE weather, all rows. An honest weather feature's gain decays with L.)")
+    for name in target_names:
+        print(f"\n  {name}" + ("   <-- priority" if name in PRIORITY_TARGETS else ""))
+        print(f"    {'cluster':<9}{'arm':<7}{'archive':>9}" + "".join(f"{'L' + str(L):>8}" for L in LEADS))
+        for cname, cshifts in clusters.items():
+            vals = {}
+            for which in ("base", "cand"):
+                vals[which] = [float(np.mean([summ[(s, which)][name]["archive"] for s in cshifts]))] + \
+                              [float(np.mean([summ[(s, which)][name]["by_lead"][L] for s in cshifts])) for L in LEADS]
+            for k, (label, row) in enumerate([("base", vals["base"]), ("cand", vals["cand"]),
+                                              ("delta", [c - b for b, c in zip(vals["base"], vals["cand"])])]):
+                head = cname if k == 0 else ""
+                fmt = _signed if label == "delta" else (lambda x: f"{x:.2f}")
+                print(f"    {head:<9}{label:<7}" + "".join(f"{fmt(x):>{9 if i == 0 else 8}}" for i, x in enumerate(row)))
+    print("\n=== Leak check: ARCHIVE gain by test row j (cand - base, pooled over every shift) ===")
+    print("    Real weather skill is flat or decaying in j; archive gain at row 6 over row 0 above ~2 is the leak signature.")
+    all_shifts = [s for ss in clusters.values() for s in ss]
+    for name in target_names:
+        d = np.mean([summ[(s, "cand")][name]["archive_by_row"] - summ[(s, "base")][name]["archive_by_row"]
+                     for s in all_shifts], axis=0)
+        ratio = d[6] / d[0] if d[0] != 0 else float("nan")
+        flag = "   <-- LEAK SMELL: gain grows with the horizon" if d[0] < 0 and d[6] < 0 and ratio > 2 else ""
+        print(f"  {name:<8}" + " ".join(f"{x:+.2f}" for x in d) + f"   j6/j0 = {ratio:.2f}{flag}")
+
+
 def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
-           train_window=None) -> dict:
+           train_window=None, clusters: dict = None, vintage=None, vintage_root=None,
+           workers: int = 1, save=None) -> dict:
     """
     Build training data once from a snapshot, then run BASELINE and
-    CANDIDATE through run_walk_forward at each shift, printing a verdict
+    CANDIDATE through the walk-forward at each shift, printing a verdict
     table classified per the replication rule above.
+
+    With forecast vintages (`vintage` or `vintage_root`) every fit is also scored
+    on forecast-vintage weather and the report carries BOTH numbers, labelled
+    ARCHIVE and FORECAST, per shift, per cluster and by lead. The ARCHIVE
+    numbers and verdict are exactly what a run without vintages prints.
 
     Args:
         inputs:       fetch_training_inputs()-shaped dict (from a snapshot).
@@ -426,10 +561,22 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
                       expanding window. ab_test.py passes
                       harness.PRODUCTION_TRAIN_ROWS by default, which needs a
                       long snapshot (see ab.harness.run_walk_forward).
+        clusters:     {name: [shifts]} -- reported per cluster, and judged with the
+                      cluster rule when there are MIN_CLUSTERS of them. Overrides
+                      `shifts`. Default: one cluster, "shifts".
+        vintage:      an ab.vintage.VintageSet built for this snapshot, or None.
+        vintage_root: where the vintage cache lives; builds the VintageSet (fetching
+                      what is missing) when `vintage` is None. Both None = archive only.
+        workers:      Processes for the (variant, shift) jobs (default 1). Pin
+                      OMP_NUM_THREADS yourself; variants must pickle.
+        save:         Optional path: pickle every point's error arrays there
+                      ({"clusters", "points": {(variant, shift): errors}}) for analysis.
 
     Returns:
         {target_name: {"deltas": [...], "mean_delta": float, "spread": float,
-                        "verdict": str}}
+                        "verdict": str}}   -- ARCHIVE weather, one delta per shift.
+        With vintages each entry also has "forecast": the same keys for the
+        production-mapped forecast numbers, plus "penalty_base" / "penalty_cand".
     """
     print("Building training data from snapshot...")
     data = build_training_data(**inputs)
@@ -443,31 +590,94 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
               f"{expanding_first + 357} rows across the evaluation year "
               f"(headline-eval geometry)\n")
 
-    base_by_shift = {}
-    cand_by_shift = {}
+    if clusters is None:
+        clusters = {"shifts": list(shifts)}
+    shifts = [s for ss in clusters.values() for s in ss]
 
-    for shift in shifts:
-        print(f"--- shift={shift} ---")
-        base_by_shift[shift] = _mean_mae(data, BASELINE, shift, train_window=train_window)
-        cand_by_shift[shift] = _mean_mae(data, CANDIDATE, shift, train_window=train_window)
-        line = "  ".join(
-            f"{name}: base={base_by_shift[shift][name]:.2f} cand={cand_by_shift[shift][name]:.2f} "
-            f"delta={cand_by_shift[shift][name] - base_by_shift[shift][name]:+.2f}"
-            for name in target_names
-        )
-        print(f"  {line}")
+    if vintage is None and vintage_root is not None:
+        from ab.vintage import VintageSet
+        print("Forecast-vintage weather (Open-Meteo Previous Runs, best_match):")
+        vintage = VintageSet.for_snapshot(inputs, data, shifts, vintage_root)
+        print()
+    vintage_frames = vintage.frames if vintage is not None else None
+    with_vintage = vintage_frames is not None
+    if with_vintage:
+        print(f"Reporting {_ARCHIVE_TAG}")
+        print(f"     and  {_FORECAST_TAG}")
+        print("from the same fits.\n")
+    else:
+        print("Reporting ARCHIVE weather only (no forecast-vintage scoring: every weather input is a "
+              "perfect forecast, so a weather-derived candidate is optimistic by the forecast error).\n")
 
-    print("\n=== Verdict (priority: cheap2h, then min) ===")
-    results = {}
-    report_order = [n for n in _REPORT_ORDER if n in target_names] + \
-                   [n for n in target_names if n not in _REPORT_ORDER]
-    for name in report_order:
-        deltas = [cand_by_shift[s][name] - base_by_shift[s][name] for s in shifts]
-        verdict = classify(deltas)
-        mean_delta = float(np.mean(deltas))
-        spread = float(np.max(deltas) - np.min(deltas))
-        results[name] = {"deltas": deltas, "mean_delta": mean_delta, "spread": spread, "verdict": verdict}
-        marker = " <-- priority" if name in PRIORITY_TARGETS else ""
-        print(f"  {name:<8} mean_delta={mean_delta:+.3f}  spread={spread:.3f}  -> {verdict}{marker}")
+    jobs = [(which, variant, shift) for shift in shifts
+            for which, variant in (("base", BASELINE), ("cand", CANDIDATE))]
+    errors, summ = {}, {}
+    pending = {}
+    for which, shift, err in _compute_points(data, jobs, train_window, vintage_frames, workers):
+        errors[(shift, which)] = err
+        summ[(shift, which)] = {name: summarize_errors(err, name) for name in err[ARCHIVE]}
+        pending.setdefault(shift, set()).add(which)
+        if pending[shift] == {"base", "cand"}:
+            cname = next(c for c, ss in clusters.items() if shift in ss)
+            print(f"--- shift={shift}" + (f"  ({cname})" if len(clusters) > 1 else "") + " ---")
+            _print_point_lines(summ[(shift, "base")], summ[(shift, "cand")], target_names, with_vintage)
+
+    if save:
+        import pickle
+        with open(save, "wb") as f:
+            pickle.dump({"clusters": clusters, "points": errors, "vintage_points": vintage.points if vintage else None}, f)
+        print(f"\nSaved per-row error arrays to {save}")
+
+    def verdict_table(title, key):
+        print(f"\n=== {title} ===")
+        out = {}
+        report_order = [n for n in _REPORT_ORDER if n in target_names] + \
+                       [n for n in target_names if n not in _REPORT_ORDER]
+        for name in report_order:
+            deltas = [summ[(s, "cand")][name][key] - summ[(s, "base")][name][key] for s in shifts]
+            verdict = classify(deltas)
+            mean_delta = float(np.mean(deltas))
+            spread = float(np.max(deltas) - np.min(deltas))
+            out[name] = {"deltas": deltas, "mean_delta": mean_delta, "spread": spread, "verdict": verdict}
+            marker = " <-- priority" if name in PRIORITY_TARGETS else ""
+            extra = ""
+            if key == "forecast":
+                pb = float(np.mean([summ[(s, "base")][name]["penalty"] for s in shifts]))
+                pc = float(np.mean([summ[(s, "cand")][name]["penalty"] for s in shifts]))
+                out[name].update(penalty_base=pb, penalty_cand=pc)
+                extra = f"   (pays over archive rows 0-5: base {pb:+.2f}, cand {pc:+.2f})"
+            line = f"  {name:<8} mean_delta={mean_delta:+.3f}  spread={spread:.3f}  -> {verdict}{marker}{extra}"
+            print(line)
+            if len(clusters) >= MIN_CLUSTERS:
+                cl = {c: [summ[(s, "cand")][name][key] - summ[(s, "base")][name][key] for s in ss]
+                      for c, ss in clusters.items()}
+                means = " ".join(f"{c} {np.mean(v):+.3f}" for c, v in cl.items())
+                print(f"           clusters: {means} -> {classify_clustered(cl)} (cluster rule)")
+        return out
+
+    results = verdict_table(f"Verdict on {_ARCHIVE_TAG} -- the standing gate (priority: cheap2h, then min)"
+                            if with_vintage else "Verdict (priority: cheap2h, then min)", "archive")
+    if with_vintage:
+        forecast = verdict_table(f"Same fits on {_FORECAST_TAG} -- what production pays", "forecast")
+        for name, entry in forecast.items():
+            results[name]["forecast"] = entry
+        _print_cluster_tables(clusters, summ, [n for n in results])
+        _print_lead_tables(clusters, summ, [n for n in results])
 
     return results
+
+
+def default_clusters(n_rows: int, train_window: int) -> dict:
+    """
+    The per-snapshot cluster grid of rounds 24-29: NOW (0, 1, 4, 7), -6M
+    (180..189) and FAR, the four shifts (steps of 3) ending at the largest one
+    the rolling geometry still fits -- so FAR is the oldest period this snapshot
+    can reach and the clusters have almost no calendar overlap. See
+    docs/AB_TESTING.md, "Measurement grids".
+    """
+    far = n_rows - train_window - 364
+    if far < 189 + 90:
+        raise ValueError(f"a {n_rows}-row frame is too short for a FAR cluster at a {train_window}-row "
+                         f"training window (largest shift {far}); use --shifts")
+    return {"NOW": [0, 1, 4, 7], "-6M": [180, 183, 186, 189],
+            "FAR": [far - 9, far - 6, far - 3, far]}
