@@ -4,13 +4,19 @@ The to-do list for model accuracy: only what is **not yet done**. Since 2026-10-
 the one plan file — the 2026-08 list (the round-12 → round-19 follow-ups) and the
 September 2026 review (round 21 onwards, written 2026-09-08 as `IMPROVEMENT_PLAN_2026-09.md`)
 were merged here. What is open, in the order it should be done, is
-[section 4](#4-suggested-order-2026-10-23).
+[section 4](#4-what-to-do-next-2026-10-31): what is ready now, what waits
+for what, and the shadow arms running in production. **"The next step" is the first item of
+[4.1](#41-ready-now-in-order); if 4.1 is empty, there is nothing to do yet** — waiting items
+are never started early or in part.
 
 **Item numbers are stable.** They are the September review's, and the docs, ledgers and
 commits refer to items by number ("plan 2.19", "2.1-C"), so a closed item leaves a gap
 (2.1, 2.4, 2.7–2.9 and 2.15–2.17 are closed) and nothing is renumbered; a new item takes the
 next free number. "Old item N" — a single number — means an item of the 2026-08 list, as
-it does in older commit messages that say "`IMPROVEMENT_PLAN.md` item N".
+it does in older commit messages that say "`IMPROVEMENT_PLAN.md` item N". **A number alone
+says nothing to a reader:** wherever an item is named outside its own heading — section 4, a
+ledger row, a commit message, a report to Peter — give it with its short title ("2.19 Time
+index for `avg`").
 
 Everything settled lives under [docs/](docs/): the current model in
 [MODEL.md](docs/MODEL.md), shipped changes in [DECISIONS.md](docs/DECISIONS.md), the
@@ -44,19 +50,17 @@ deleted outright — as soon as its verdict is in the ledgers:
 not, plus a section in [FINDINGS.md](docs/FINDINGS.md) when the round explained something
 ([README](README.md#how-changes-are-documented) has the rules). A half-done item keeps only
 what it still owes and where it stands. The ledgers are the record; this file is the
-to-do list.
+to-do list. Section 4 is kept current in the same commit as the change that moves an item:
+ready or waiting (with its condition), and the shadow register while an arm runs.
 
-**Status 2026-10-25.** Half done and carried with what they still owe: 2.2 (the
-prediction log has run since 2026-10-18; the scorer is open), 2.3b/c/d, 2.5-HS, 2.10 (a
-re-check) and 2.13 (its production check). **Nothing that reads the prediction log is
-started before 2026-11-15** (Peter's call). Round 28 (2026-10-23) closed 2.7 and turned up
-the two newest items, 2.19 (a time index for `avg`) and 2.20 (the decomposed nuclear column
-as production sees it), which run together on the first long cache from mid-November 2026.
-Round 29 (2026-10-25) closed 2.1: the realised physical residual load is a −1.2 `cheap2h`
-ceiling, the weather reaches 11–21 % of it, and the all-horizon version of C failed
-([FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29)).
-One lead survives it, a near-horizon column, and lives in 2.18; the same mid-November cache
-serves it.
+**Status 2026-10-31.** Only 2.12 Engineering hygiene is ready to start; everything else waits on a date, a
+cache or a decision, listed with its condition in [4.2](#42-waiting--not-started-until-the-condition-holds).
+One shadow arm runs in production, `blend` for 2.3b Three-model weather blend ([4.3](#43-shadow-arms-in-production)).
+Round 28 (2026-10-23) closed 2.7 (week-ahead documents) and turned up 2.19 (time index for
+`avg`) and 2.20 (nuclear column as production sees it); round 29 (2026-10-25) closed 2.1
+(rebuilding the residual load)
+([FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29))
+and left one lead, a near-horizon column, in 2.18 (near-horizon model).
 
 `SLOT_PREDICTION_PLAN.md` (round 20) is unchanged and still in the queue; 2.6 has its one
 sequencing rule.
@@ -169,9 +173,10 @@ with the addon value for its period.
   `sources.open_meteo.BLEND_MODELS` (all nine weather points) and pushes it as arm `blend`
   of `predictions_shadow` (`{variant: rows}`, the generic slot for any production A/B arm;
   the flow writes each key as its `variant`); any failure leaves the arm out and never
-  blocks the served push (`experiments/integration_check_blend_shadow.py`). **Open: the
-  generic Node-RED write** (Peter). The forward-replay clock for 2.3b starts on the first
-  day blend rows are logged, not on 2026-10-18. The scorer must drop a shadow row whose
+  blocks the served push (`experiments/integration_check_blend_shadow.py`). The Node-RED
+  node writes every arm generically (done 2026-10-31, Peter). The arm is in the shadow
+  register ([4.3](#43-shadow-arms-in-production)); the forward-replay clock for 2.3b starts
+  on the first day blend rows are logged, not on 2026-10-18. The scorer must drop a shadow row whose
   `created_at` is older than the served row's for the same `prediction_date`: a same-day
   rerun whose arm failed upserts the served rows and leaves the earlier run's shadow rows.
 - Not logged: the run's `cheap2h_interval` diagnostics (`coupled_level_ratio`,
@@ -621,30 +626,66 @@ index.
 
 ---
 
-## 4. Suggested order (2026-10-25)
+## 4. What to do next (2026-10-31)
 
-Round 27 (2026-10-22) replicated the northern wind points and closed the MW-scale residual load; round 28
-(2026-10-23) ran all of 2.7 and closed it: no nuclear feature of any kind, and no week-ahead load; round 29
-(2026-10-25) measured the ceiling of 2.1-C, found it high and out of the weather's reach, and closed 2.1.
+Three lists. **A request for "the next step" of this plan means the first item of 4.1, and
+nothing else.**
 
-1. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB) and the clock is
-   running. **Nothing to do until 2026-11-15**; then `score_production.py` (reads a CSV
-   export in `ab_cache/prediction_log/`). The 2.3b shadow push is built on the pipeline
-   side (2026-10-31); the Node-RED write of the blend rows is open. It prices everything
-   weather-related for real, and the forward replays of 2.3b, 2.10 and 2.13 wait on it.
-2. **2.19 a time index for `avg`, 2.20 the decomposed nuclear column under AF, and the 2.18
-   calibrated-residual lead** — one run on the first long cache from mid-November 2026 or later (the same
-   fetch 2.18 needs), plus an A77 top-up (`fetch_round28_entsoe.py --only a77`), an A75/A65 top-up
-   (`fetch_round29_entsoe.py --since 2026-10-01`) and the vintage fetch. All three bars are written down.
-   Run `TI` and a residual arm next to any `avg` result (round 28: a slowly moving column can be a clock) and a
-   permuted null of the same width next to any block of more than a few columns (round 29: it costs +0.33).
-3. **2.12 hygiene** — the `build_fn` hook; the tests. (The A72 probe is done: reservoir
-   arrives complete.)
-4. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
-   so the scoring run measures the final features. 2.5-HS follows it.
-5. **2.3b forward replay / 2.3c** — not before 2026-11-15 and four weeks of logged blend rows.
-6. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
-7. 2.11 horizon. (2.14 UMM is parked: nothing consumes it.)
-8. **2.18 near-horizon price model**: to be taken up separately (Peter, 2026-10-22).
-   The price family needs no new fetch and any long cache serves; the calibrated-residual
-   lead in it needs the mid-November cache and the A75/A65 top-up.
+- Nothing in 4.2 is started — not partly, not early, not "the half that can run now", not a
+  fetch script or a prepared run for it — until its condition holds. A result measured on
+  today's model goes stale with the next change to main (round 30, 2026-10-31: the six-cache half
+  of 2.19 was started early and stopped for that reason).
+- Before taking the first item of 4.1, check 4.2: an item whose condition now holds (its date
+  has passed, its cache exists, its decision is made) moves into 4.1 at its place in the priority
+  order, in the same commit that starts it.
+- **If 4.1 is empty, the answer is that nothing is ready**: say so, list what 4.2 waits for and
+  the earliest date, and stop. Do not pick a waiting item instead.
+- 4.3 is the register of shadow arms running in production.
+
+### 4.1 Ready now, in order
+
+1. **2.12 Engineering hygiene** — tests, a `build_fn` hook in the A/B harness, a run-status
+   attribute to Home Assistant, pinned `xgboost` / `pandas` versions. No model risk, nothing to
+   wait for.
+2. **Section 3, low-priority leads** — `ttf_vs_30d` (gas price against its 30-day mean),
+   `cpl_gap7` (a coupling-gap lag for `cheap2h`), the q90 charging rule. Only with a stated
+   mechanism, and not while a 4.2 run is due within a week (the same staleness rule).
+
+### 4.2 Waiting — not started until the condition holds
+
+| Item | Waits for | Earliest | Then |
+|---|---|---|---|
+| **2.19 Time index for `avg`** — does a "days since start" column (or a shorter half-life) help the `avg` model? · **2.20 Nuclear column as production sees it** — two rebuilt outage columns for `avg` · **2.18 Near-horizon model** — a second model for the first sent days that reads recent prices and a calibrated residual load | A long cache fetched four weeks after `long/2026-10-16` | 2026-11-13 | One fetch day: `experiments/fetch_round30.ps1 -WithTopUps` (cache, vintages, A77 and A75/A65 top-ups). Then the time index (`run_round30.py`, six old caches + the new one in one go), the nuclear column (`run_round28.py`, new cache only), the near-horizon model (Peter takes it up separately, 2026-10-22). Run `TI` and a residual arm next to any `avg` result and a permuted null next to any block of more than a few columns. All bars are written down. |
+| **2.2 Production scorecard** — score what was sent to Home Assistant against realised prices · **2.13 Northern wind, production check** — does the shipped wind feature pay off live? | Four weeks of the prediction log (Peter, 2026-10-18) | 2026-11-15 | Export the table to `ab_cache/prediction_log/`; write `score_production.py`; score the northern wind against the forecast-weather expectation in DECISIONS.md. |
+| **2.3b Three-model weather blend, forward test** — is the blend shadow (4.3) better than the served forecast? | The production scorecard, and four weeks of logged `blend` rows | four weeks after the first blend row | Score `served` against `blend` on the same days with the bar in 2.3b; then end the arm (4.3). |
+| **2.3c Train on forecast weather** — train on the weather production is served, not the archive | The blend test's verdict (is the loss in the forecast, or in the model?) | after 2.3b | As 2.3c. |
+| **2.3d Weather-uncertainty band** — widen the `cheap2h` band on days the weather ensemble disagrees | The production scorecard; scorable only live, so it needs its own shadow arm and a written bar first (README, "Adding a shadow arm") | after 2.2 | As 2.3d. |
+| **2.6 Slot targets** — predict the cheap price per part of day (00–08 / 08–16 / 16–24) · then **2.5-HS** — a negative-price probability per slot | The feature set settling: the verdicts of the November run above | after that run | `SLOT_PREDICTION_PLAN.md`; not wired in while another candidate is being measured. |
+| **2.10 `min ≤ cheap2h` coherence, re-check** — is the shipped rule still worth it on the freshest year? | A long cache from mid-January 2027 | 2027-01-15 | On/off on NOW and −6M, bar in 2.10. |
+| **2.11 Longer horizon** — send 14 days instead of 6 | Peter's product decision: does the automation want a 14-day view? | — | Parameter change + band; reported separately in the scorecard. |
+| **2.14 Nord Pool outage messages (UMM)** — a versioned outage source | A consumer: a new per-day column from a revisioned document | — | Parked; nothing uses it. |
+| **`B6_fuel_co2` on `min`** — fuel and carbon prices back into the `min` model (section 3) | Far periods that train on post-crisis windows | the mid-November cache, with the time-index run | Re-read as the rejected-table row says. |
+
+### 4.3 Shadow arms in production
+
+A shadow arm is a prediction pushed next to the served one in `predictions_shadow` and logged
+under its own `variant` ([README](README.md#adding-a-shadow-arm-to-the-prediction-log)). It is
+used only for a question a backtest cannot answer, because while it runs every change to what it
+or the served model reads restarts its comparison. Rules:
+
+- **Every arm in `predict.py` has a row here, written once** by whoever adds the arm (agent or
+  person), in the same commit: its `variant`, the item it serves (number and title), what it
+  predicts, the date, its bar and its end condition. Nothing in the row is updated afterwards;
+  it changes only when the arm is extended (new end, with a reason) or removed (row deleted).
+- **The item that owns an arm is not deleted from this plan while the arm is in `predict.py`.**
+  Its verdict goes into the ledgers as usual; the arm is then removed from `predict.py` and its
+  row from this table in one commit, and only then may the item go.
+- An arm past its end condition with no verdict is a decision to take, not something to leave
+  running: extend it here with a reason and a new date, or remove it.
+- There is no start date to fill in: an arm logs from the first production run after its commit
+  reaches main (normally the next day), and the scorer reads the first `prediction_date` with that
+  `variant` from the log.
+
+| `variant` | Item | What it predicts | Added | Bar | Ends |
+|---|---|---|---|---|---|
+| `blend` | 2.3b Three-model weather blend | The served models and band on the hourly mean of ECMWF IFS, ICON and GFS (`BLEND_MODELS`, all nine points) instead of `best_match` | 2026-10-31 | 2.3b: production-mapped `cheap2h` and `min` negative in every cluster-equivalent period, pooled ≤ −0.2 | When the 2.3b replay has its verdict, at the latest twelve weeks after the first logged row; adopt (blend becomes `served`) or remove |

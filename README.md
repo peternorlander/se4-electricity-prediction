@@ -82,7 +82,7 @@ The full walkthrough for running an experiment, including what to put in
 | [docs/REJECTED.md](docs/REJECTED.md) | Ledger of **rejected** changes, grouped by what they touched | Before trying anything — it is probably in here |
 | [docs/AB_TESTING.md](docs/AB_TESTING.md) | The A/B harness, measurement grids, verdict functions, the adoption bar, the agent playbook | Before measuring anything |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Dated write-ups of what the model structurally cannot do and why | You are about to re-derive something the project already learned |
-| [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open work only: every open item, and the order to do them in | Looking for what to work on — start here |
+| [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open work only: every open item; in section 4 what is ready now (in order), what waits for what, and the register of shadow arms running in production | Looking for what to work on — start here; "the next step" is the first item of its 4.1, and if 4.1 is empty there is nothing to do yet (waiting items are never started early or in part) |
 | [SLOT_PREDICTION_PLAN.md](SLOT_PREDICTION_PLAN.md) | Spec for the per-slot targets (round 20), planned, not implemented | Working on slot prediction |
 
 ## How changes are documented
@@ -96,7 +96,8 @@ a commit message, a chat transcript, or a script under `experiments/`.
 | A/B rejected | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round. Delete the item from the improvement plan. |
 | Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
-| Not done yet | The improvement plan only — never a ledger. |
+| Not done yet | The improvement plan only — never a ledger. Ready work in its 4.1, work that waits on a date, a cache or a decision in 4.2 with the condition. |
+| A shadow arm running in production | A row in the plan's [shadow register (4.3)](IMPROVEMENT_PLAN.md#43-shadow-arms-in-production), from the commit that adds it to the one that removes it. Its item stays in the plan until then. |
 
 Five rules that make this work:
 
@@ -212,8 +213,8 @@ To run something in production *next to* the served prediction, without the auto
 2. Add it as `predictions_shadow["<name>"] = ...`. That is the whole change: the attribute is pushed and the flow writes one row per day with `variant = '<name>'`, with the run's rate and commit.
 3. **The name** is the `variant` value forever, so pick it to be readable in a query a year from now. It must match `ha_client.SHADOW_VARIANT_NAME`: lower-case letters, digits and `_`, starting with a letter, **at most 16 characters** (the column is `VARCHAR(16)` and part of the key), never `served`. A name that does not match is dropped with a warning in the run log; the Node-RED node applies the same rule.
 4. **A shadow must never cost the served push.** Wrap its computation so a failure returns `None` and the arm is simply left out (`predict_blend_shadow` is the pattern). A missing arm in a run is a missing row, not an error.
-5. Record what the arm is and the bar it is scored on in the improvement plan, and the date it started: the forward comparison counts from the first logged row.
+5. **Register it** in the same commit — whoever adds the arm, agent or person, writes the row once: a row in the plan's [shadow register (4.3)](IMPROVEMENT_PLAN.md#43-shadow-arms-in-production) with the `variant`, the item it serves (number and short title), what it predicts, the date, its bar and when it ends. Nothing is filled in later: the arm logs from the first production run after the commit reaches main, and the forward comparison counts from the first row with its `variant` in the log. The item that owns the arm stays in the plan for as long as the arm runs.
 
-Removing an arm is deleting the line; its rows stay in the table under their name. Rerunning on the same day replaces each variant's rows for that day, but an arm that failed on the rerun leaves the earlier run's rows in place — the scorer drops a shadow row older than the served row of the same `prediction_date`.
+Removing an arm is deleting its line in `predict.py` and its register row, in one commit, once its verdict is in the ledgers; its rows stay in the table under their name. Rerunning on the same day replaces each variant's rows for that day, but an arm that failed on the rerun leaves the earlier run's rows in place — the scorer drops a shadow row older than the served row of the same `prediction_date`.
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.
