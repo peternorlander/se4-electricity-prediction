@@ -1,5 +1,6 @@
 import math
 import os
+import re
 import requests
 from datetime import datetime, timezone
 
@@ -95,13 +96,31 @@ def _run_provenance(eur_to_sek_rate: float = None) -> dict:
     return provenance
 
 
+# A shadow arm's name is written verbatim into the prediction log's `variant` column, next
+# to the served rows' 'served'. Lower-case identifier, short enough for the column.
+SHADOW_VARIANT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def _shadow_attribute(predictions_shadow: dict) -> dict:
+    """{variant: [{date, ...}, ...]} for the arms with a valid name; a shadow must never
+    cost the served push, so a bad name is dropped with a warning instead of raising."""
+    out = {}
+    for variant, predictions in (predictions_shadow or {}).items():
+        if variant == "served" or not SHADOW_VARIANT_NAME.match(variant):
+            print(f"  → WARNING: shadow variant {variant!r} dropped: names must match "
+                  f"{SHADOW_VARIANT_NAME.pattern} and not be 'served'")
+            continue
+        out[variant] = _to_list(predictions)
+    return out
+
+
 def push_predictions(
     predictions_raw: dict,
     predictions_with_addon: dict,
     model_metrics: dict = None,
     feature_importance: dict = None,
     eur_to_sek_rate: float = None,
-    predictions_blend_raw: dict = None,
+    predictions_shadow: dict = None,
 ) -> None:
     """
     Push price predictions to a HA sensor via the REST API.
@@ -117,9 +136,14 @@ def push_predictions(
         feature_importance:     Dict keyed by target name from get_feature_importance().
         eur_to_sek_rate:        SEK per EUR the run converted with; sent as the
                                 `eur_to_sek_rate` attribute next to `git_sha`.
-        predictions_blend_raw:  The plan-2.3b shadow (same structure as predictions_raw,
-                                three-model weather), sent as `predictions_blend_raw` for
-                                the prediction log only; None leaves the attribute out.
+        predictions_shadow:     {variant: predictions in the predictions_raw structure} for
+                                arms predicted next to the served one (the plan-2.3b blend,
+                                any later production A/B). Sent as one attribute,
+                                `predictions_shadow`, keyed by variant name; the prediction
+                                log writes each under its own `variant`, so a new arm is
+                                logged without touching the Node-RED flow. Names must match
+                                SHADOW_VARIANT_NAME; others are dropped with a warning. None
+                                or empty leaves the attribute out.
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
@@ -130,8 +154,9 @@ def push_predictions(
         **_run_provenance(eur_to_sek_rate),
     }
 
-    if predictions_blend_raw is not None:
-        attributes["predictions_blend_raw"] = _to_list(predictions_blend_raw)
+    shadow = _shadow_attribute(predictions_shadow)
+    if shadow:
+        attributes["predictions_shadow"] = shadow
 
     if model_metrics is not None:
         attributes.update(model_metrics)

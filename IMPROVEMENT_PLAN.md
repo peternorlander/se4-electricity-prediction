@@ -166,12 +166,14 @@ with the addon value for its period.
   gap1 effects, and the per-horizon slope is the weather part.
 - A shadow arm for 2.3b. **Pipeline side built 2026-10-31**: `predict.predict_blend_shadow`
   re-predicts with the same fitted models, band and rate on the hourly mean of
-  `sources.open_meteo.BLEND_MODELS` (all nine weather points) and pushes it as
-  `predictions_blend_raw`, same shape as `predictions_raw`; any failure leaves the attribute
-  out and never blocks the served push (`experiments/integration_check_blend_shadow.py`).
-  **Open: the Node-RED flow** has to write it with `variant = 'blend'` (Peter). The
-  forward-replay clock for 2.3b starts on the first day blend rows are logged, not on
-  2026-10-18.
+  `sources.open_meteo.BLEND_MODELS` (all nine weather points) and pushes it as arm `blend`
+  of `predictions_shadow` (`{variant: rows}`, the generic slot for any production A/B arm;
+  the flow writes each key as its `variant`); any failure leaves the arm out and never
+  blocks the served push (`experiments/integration_check_blend_shadow.py`). **Open: the
+  generic Node-RED write** (Peter). The forward-replay clock for 2.3b starts on the first
+  day blend rows are logged, not on 2026-10-18. The scorer must drop a shadow row whose
+  `created_at` is older than the served row's for the same `prediction_date`: a same-day
+  rerun whose arm failed upserts the served rows and leaves the earlier run's shadow rows.
 - Not logged: the run's `cheap2h_interval` diagnostics (`coupled_level_ratio`,
   `calm_high_holdout_coverage`, …), which is where a new regime shows first. Add a JSON
   column if drift tracking needs them.

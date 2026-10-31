@@ -182,8 +182,13 @@ def main():
     predictions_eur = predict(models, forecast_features, band=band)
     predictions_raw = convert_predictions_to_sek(predictions_eur, eur_to_sek_rate)
 
-    predictions_blend_raw = predict_blend_shadow(
+    # Arms predicted next to the served one, keyed by the `variant` the prediction log
+    # stores them under (ha_client.SHADOW_VARIANT_NAME). Not served to the automation.
+    predictions_shadow = {}
+    blend = predict_blend_shadow(
         build_features, forecast_features["date"].dt.date, known_price_dates, models, band, eur_to_sek_rate)
+    if blend is not None:
+        predictions_shadow["blend"] = blend
 
     print("Fetching electricity price addon from HA...")
     addon_value = fetch_addon_value()
@@ -191,9 +196,9 @@ def main():
 
     print("\n=== Price predictions (SEK/kWh) ===")
     print(json.dumps(predictions_raw, indent=2))
-    if predictions_blend_raw is not None:
-        print("\n=== Blend shadow, not served (SEK/kWh) ===")
-        print(json.dumps(predictions_blend_raw, indent=2))
+    for variant, shadow in predictions_shadow.items():
+        print(f"\n=== Shadow '{variant}', not served (SEK/kWh) ===")
+        print(json.dumps(shadow, indent=2))
 
     # The band's own calibration travels with the predictions so drift is visible
     # in Home Assistant without re-running anything (docs/MODEL.md "The cheap2h
@@ -203,7 +208,7 @@ def main():
 
     print("\nPushing predictions to Home Assistant...")
     push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance,
-                     eur_to_sek_rate=eur_to_sek_rate, predictions_blend_raw=predictions_blend_raw)
+                     eur_to_sek_rate=eur_to_sek_rate, predictions_shadow=predictions_shadow)
 
 
 if __name__ == "__main__":
