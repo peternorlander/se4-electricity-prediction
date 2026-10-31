@@ -435,7 +435,7 @@ it will, and the route closes properly:
 Label such an arm as leaky in the ledger entry, with the honest arm beside it. An
 upper bound is evidence; an upper bound mistaken for a result is not.
 
-### Archive weather is a perfect forecast: re-score weather candidates on vintages
+### Archive weather is a perfect forecast: every run scores forecast vintages too
 
 Every weather input in this repo's eval is ERA5 archive — a forecast with no error.
 Production pays the error, and it is not small: scoring the same models on the
@@ -449,27 +449,112 @@ cheap2h −1.04 … −1.18 on archive weather on all five caches and **−0.4 �
 forecast vintages** (40–75 % of it), falling to ~0 at a 7-day lead; the `avg`
 version, −0.32 … −0.42 on archive, kept almost nothing.
 
-So, for any addition whose columns derive from weather inputs:
+So `ab_test.py run` scores every fit twice, from the same fits, and labels the two
+numbers so they cannot be taken for one another:
 
-1. Re-score the winner (not every arm) with the model still trained on archive
-   weather and the test rows fed `*_previous_dayL` vintages for **every** weather
-   point it reads, the new ones included (`experiments/run_round25_n1.py` is the
-   worked implementation; fetch with `fetch_round25_vintage*.py`). Row j (0-based)
-   of the eval maps to lead j + 2. Its frozen lags are one day old on the first row,
-   which is production's first *sent* day, D+2, because production anchors them on
-   D+1 ([DECISIONS.md](DECISIONS.md#price-anchor-on-d1), 2026-10-22). Before that the
-   anchor was D+0 and the first row stood for D+1, a day that is never sent.
-   Production sends rows 0–5 (D+2…D+7). Row 6 is D+8, which it no longer sends:
-   score it at lead 7 if at all, and leave it out of a production-mapped total.
-2. Record both numbers in the ledger entry. The survival criterion written before
-   the run for N1 was "negative in every cluster on cheap2h"; a gain that keeps its
-   sign at a fraction of its size is a smaller true effect, not a failure.
-3. Read the gain by lead. An honest weather feature decays with lead (here
-   −1.0 at L1–L3 → −0.45 at L6 → 0 at L7); archive gain at test row 6 over row 0
-   above ~2 would be the leak signature.
+| label | the test rows carry | rows | what it is |
+|---|---|---|---|
+| **ARCHIVE** | ERA5 archive weather — a perfect forecast | all 7 of a test week | the standing gate and every ledger number to date |
+| **FORECAST** | the forecast issued j + 2 days ahead, for row j (0-based) | rows 0–5 (D+2 … D+7) | what production pays |
 
-Vintages exist from 2024-03 (ECMWF IFS from 2024-04) for the 6 production points
-and any other point; a candidate cannot be scored before that.
+The mapping is production's: it sends D+2 … D+7 and anchors its frozen price lags on
+D+1 ([DECISIONS.md](DECISIONS.md#price-anchor-on-d1), 2026-10-22), so the first eval row
+stands for D+2 and reads a forecast one day older than the run date. Row 6 is D+8, which
+production no longer sends; it is left out of the FORECAST total. Because the FORECAST
+total therefore covers six rows and the ARCHIVE total seven, **the penalty is taken against
+archive rows 0–5** (`archive_sent` in `ab.harness.summarize_errors`), never against the
+seven-row figure.
+
+**What the harness does.** The model is fitted once per window on archive weather, exactly
+as production fits it. Per lead L = 1 … 7 a second copy of the merged frame is built by the
+*unmodified* `features.build_training_data` on inputs whose hourly weather carries the
+`<var>_previous_dayL` forecast ([Open-Meteo Previous Runs](https://open-meteo.com/en/docs/previous-runs-api),
+`best_match` — what production's forecast fetch resolves to — public, no token, from
+2024-03-01), so every derived column (residual load, HDD, `wind_night`, the northern power
+curves …) is the production recipe on forecast inputs. A CANDIDATE's `transform` is applied
+to each lead frame as it is to the archive frame. Each test week is then scored on archive
+weather and once per lead, with the columns that differ between the frames swapped into the
+test rows — **except the frozen ones**: `residual_load_lag1`, the rolling variability
+signals, the price lags. Production holds those at values from before the run, and
+`apply_forecast_freeze` does the same here; swapping them would hand the model a
+forecast-derived "yesterday". Nothing else changes between conditions (fits, freeze,
+`min ≤ cheap2h` coherence), so the two numbers differ in weather and nothing more.
+
+**The points are derived, not listed.** `ab/vintage.py` reads the SE4 point and every
+`WIND_LOCATIONS` entry from `sources/open_meteo.py`; a point added to production is fetched
+and swapped with no change here, and a cached point whose coordinates changed is refetched.
+`ab/check_vintage.py` pins the column naming to what production's fetch actually produces.
+
+**The cache** is `ab_cache/vintages/best_match/<point>.pkl` — one directory beside the
+snapshots, never inside one, shared by every snapshot (a vintage is a forecast issued
+earlier, so history does not change). The first run fetches all points from 2024-03-01
+(about 4 MB each, ~30 s per point, paced under Open-Meteo's per-minute weight cap); a newer
+snapshot only extends the tail, re-fetching the last 3 days; a warm cache makes `run`
+offline again. `python ab_test.py vintages` fetches ahead of a long run and checks coverage.
+
+**It fails rather than falls back.** A vintage missing for an evaluated hour at any point
+or lead is an error naming the series and the hours, never a silent fallback to archive
+(which would make the newest test days look perfectly forecast — the optimism this removes).
+Two consequences: a window that evaluates before 2024-03-01 cannot be scored (`--no-vintage`
+runs archive-only and says so), and a snapshot's newest day needs a day or so to be
+published. `--no-vintage` is an explicit choice; there is no quiet degrade.
+
+**Reading the report.** Per shift: one ARCHIVE line and one FORECAST line. Then the verdict
+twice (the standing `classify` rule, and the cluster rule when there are three clusters), on
+ARCHIVE and on FORECAST. Then, per target and cluster, four labelled rows — ARCHIVE
+rows 0–6, archive rows 0–5, FORECAST rows 0–5, and the penalty — and the MAE by lead
+(every row scored at lead L, L1 … L7) with the candidate − baseline delta. Last, the
+**leak check**: the ARCHIVE delta by test row j, and `j6/j0` (flagged above 2).
+`--grid` runs the per-snapshot cluster grid (NOW 0/1/4/7, −6M 180/183/186/189, FAR the four
+oldest shifts the rolling geometry fits) so the tables are per cluster; `--workers N` runs
+the (variant, shift) jobs in processes (pin `OMP_NUM_THREADS=4`); `--save-errors PATH` keeps
+every row's error for later analysis.
+
+For any addition whose columns derive from weather inputs:
+
+1. Take the FORECAST number as seriously as the ARCHIVE one. Row j maps to lead j + 2, and
+   the report already scores the sent rows only; nothing needs re-running by hand.
+2. Record both in the ledger entry. The survival criterion written before the run for N1
+   was "negative in every cluster on cheap2h"; a gain that keeps its sign at a fraction of
+   its size is a smaller true effect, not a failure.
+3. Read the gain by lead. An honest weather feature decays with lead (here −1.0 at L1–L3 →
+   −0.45 at L6 → 0 at L7); archive gain at test row 6 over row 0 above ~2 is the leak
+   signature, and the report prints it.
+
+A non-weather change (a model setting, a price feature) does not need the FORECAST verdict
+to decide it, and its two deltas should agree to within noise; if they do not, the change
+interacts with weather and that is worth a sentence in the ledger entry.
+
+**What it cannot do.** A CANDIDATE is a `transform` of the merged *daily* frame, and that
+is all the harness can rebuild on a vintage. A candidate whose columns are computed from the
+*hourly* weather inside `features.py` (the northern power curves were) has to exist in
+production code first, or be scored by a script that builds both frame sets with its own
+builder and calls the two public pieces, `ab.vintage.build_vintage_frames(..., build=...)`
+and `ab.harness.run_walk_forward_errors(..., vintage_frames=...)`. `python ab_test.py band`
+still scores the band on archive weather only. Vintages are one model (`best_match`) from
+2024-03-01 (ECMWF IFS from 2024-04); a candidate cannot be scored before that.
+
+**Checked against the scripts it replaces (2026-10-25).** `python ab/check_vintage.py
+--snapshot YYYY-MM-DD` (pin `OMP_NUM_THREADS=4`) is the standing check: ARCHIVE numbers
+bit-identical to the harness as it was before vintages existed (an embedded copy of the old
+loop), unchanged by scoring vintages in the same call; a vintage that is the archive itself
+reproduces it at every lead; the real lead-1 vintages correlate 0.90–0.99 with the archive
+they stand in for, best aligned at lag 0 for wind and radiation. The same was done on whole
+grids against the unmodified harness in the main checkout (`long/2026-10-16`, shifts 0 and
+180, all four targets, 52 windows each: bit-identical). And `ab_test.py run --grid`, on
+`long/2026-10-16` and on `long/2026-08-06` (a 5-day-tail cache, so a different row count
+and FAR window), reproduces **round 27's stored per-row errors for all 12 points × 3
+targets × archive + 7 leads to the 4 decimals they were stored at (max difference 5.0e-5),
+so its production-mapped penalty is round 27's to three decimals**. Penalty by cluster,
+NOW / −6M / FAR, EUR/MWh:
+
+| cache | cheap2h | min | avg |
+|---|---|---|---|
+| `long/2026-10-16` | +3.353 / +1.908 / +1.151 | +3.173 / +1.935 / +1.102 | +3.372 / +1.838 / +2.985 |
+| `long/2026-08-06` | +2.664 / +1.432 / +1.030 | +2.587 / +1.288 / +0.936 | +1.769 / +1.641 / +2.732 |
+
+A fresh fetch of the vintage cache (2026-10-25) equals round 27's (2026-10-21) on all 4.3
+million overlapping values: published vintages do not get revised.
 
 ### Smells that mean "check the wiring before believing it"
 
@@ -575,7 +660,14 @@ instead of comparing across shifts.
   does **not** import or modify `evaluate.walk_forward_validate`, so the headline eval
   and every recorded baseline stay untouched; the two are pinned together by an
   acceptance test (shift-0 `BASELINE` must reproduce `walk_forward_validate`'s
-  per-window MAE exactly).
+  per-window MAE exactly). The loop is `run_walk_forward_errors()`, which keeps every
+  test row's error and can score the same fits on forecast-vintage weather;
+  `run_walk_forward()` is a wrapper over its archive condition and is bit-identical to the
+  loop it replaced (`ab/check_vintage.py --snapshot …` asserts it).
+- `ab/vintage.py` — the forecast-vintage data layer: fetches and caches Open-Meteo Previous
+  Runs for every production weather point under `ab_cache/vintages/`, checks that every
+  evaluated hour is covered, and builds the per-lead frames the harness swaps into the test
+  rows ([above](#archive-weather-is-a-perfect-forecast-every-run-scores-forecast-vintages-too)).
 - `ab/variants.py` — a `Variant` dataclass and the two instances the harness runs:
   `BASELINE` (mirrors production) and `CANDIDATE` (the only thing you edit per
   experiment).
@@ -585,7 +677,9 @@ instead of comparing across shifts.
   measures nothing. Finish the measurements, then ship. (Corollary: after
   shipping, comparing against the *old* configuration needs an explicit `targets`
   override, not `BASELINE`.)
-- `ab/verdict.py` — runs both variants across the shifts and classifies each target.
+- `ab/verdict.py` — runs both variants across the shifts (or the `--grid` clusters),
+  classifies each target on ARCHIVE weather and, with vintages, on FORECAST weather too, and
+  prints the report.
 
 **The verdict rule** (`ab/verdict.py::classify`), applied per target on the list of
 per-shift deltas (`candidate_MAE − baseline_MAE`, negative = candidate better):
@@ -648,8 +742,14 @@ Follow this whenever testing a feature or model change from the improvement plan
    specific one, `--shifts 0-5` to change the grid). It loads from
    `ab_cache/long/` and trains every test week on a rolling 1088 rows, printing
    the geometry it used; `--expanding` reverts to the pre-2026-10 geometry, and
-   is the only way to run against a production-shaped snapshot. Read the
-   per-target verdict table. **Priority order is cheap2h first, then min**;
+   is the only way to run against a production-shaped snapshot. `--grid` runs
+   the NOW / −6M / FAR cluster grid instead of `--shifts` and reports per cluster;
+   `--workers 4` with `OMP_NUM_THREADS=4` runs the jobs in parallel. Every fit is also
+   scored on forecast-vintage weather (first run: fetches `ab_cache/vintages/`, no token;
+   `--no-vintage` to skip), so the report carries two labelled numbers, **ARCHIVE** (a
+   perfect forecast — the gate) and **FORECAST** (what production pays); see
+   [Archive weather is a perfect forecast](#archive-weather-is-a-perfect-forecast-every-run-scores-forecast-vintages-too).
+   Read the per-target verdict table. **Priority order is cheap2h first, then min**;
    `avg` is welcome, `max` is not a priority.
 4. **Decide by the verdict**, weighing cheap2h/min and checking std isn't inflated:
    - `REAL` → adopt: implement the change properly in the real modules, then revert
@@ -763,7 +863,8 @@ and are as provisional as `MIN_CLUSTER_EFFECT`.
 **What a historical walk-forward cannot tell you.** Weather in the grid is archive
 weather, so `risk` is scored on a perfect forecast — the same optimism
 [the weather-axis finding](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)
-measured for MAE. The honest check of a warning is forward: the prediction log
+measured for MAE. (`ab_test.py run` now reports the MAE half of that on forecast
+vintages; `band` does not yet.) The honest check of a warning is forward: the prediction log
 (plan 2.2) should record `low` / `high` / `risk` per issued day and horizon, and the
 same `score_band` then runs on what was actually served.
 

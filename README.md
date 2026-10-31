@@ -56,8 +56,10 @@ pip install -r requirements.txt
 | Production run (fetch → train → predict → push to HA) | `python predict.py` | Needs `ENTSO_E_TOKEN`, `HA_URL`, `HA_TOKEN`. This is what GitHub Actions runs. |
 | Cache a data snapshot for experiments | `python ab_test.py fetch` | Needs `ENTSO_E_TOKEN`. Caches ~5 years under `ab_cache/long/` — the only shape that can train every test week on production's own 1088 rows. `--days 1095` caches a production-shaped one under `ab_cache/` for the integration check. |
 | List cached snapshots | `python ab_test.py list` | Lists `ab_cache/long/`; `--root ab_cache` for the production-shaped ones. Reports each snapshot's **weather tail**; snapshots with different tails must not share one measurement grid. |
-| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5`. Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `ab/variants.py` says. |
+| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters). Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
+| Fetch / check the forecast vintages | `python ab_test.py vintages` | Warms `ab_cache/vintages/` for a snapshot's evaluated days and fails if any hour lacks a vintage. `run` does this itself; use it to fetch ahead of a long run. |
 | Self-check the verdict rules | `python ab/check_verdict.py` | |
+| Self-check forecast-vintage scoring | `python ab/check_vintage.py` | Offline mechanics; add `--snapshot YYYY-MM-DD` for the bit-identity check against the pre-vintage harness. |
 
 **Pin `OMP_NUM_THREADS=4` before comparing any two MAE numbers.** XGBoost's
 floating-point reduction order depends on the thread count, so the same
