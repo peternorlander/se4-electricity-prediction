@@ -298,14 +298,6 @@ the interval, and report it separately in 2.2. Whether the automation wants a
   run leaves the sensor silently stale. Push a `last_run_status` attribute (or
   a separate binary sensor) from a `finally:` block so the automation can fall
   back to "charge now" when predictions are older than a day.
-- **A NaN last close reaches the forecast features (found 2026-10-12).** The cached
-  EUA series from 2026-10-10 ends with a NaN close (Yahoo returned no `CO2.L` price for
-  2026-10-09). `build_forecast_features` takes the *last row* of `eua_daily` (and
-  `ttf_daily`) as `co2_price_lag1` / `ttf_price_lag1` without dropping NaN, so on such a
-  day every forecast row gets NaN `co2_price_lag1` and `gas_marginal_cost` — the latter is
-  in the trough lists — and XGBoost treats it as missing without a word. The training side
-  forward-fills, the forecast side does not. Fix: take the last non-NaN value (and log it);
-  add the case to the test suite above.
 - ~~**Does ENTSO-E A72 (Swedish reservoir) omit repeated weeks?**~~ **Closed 2026-10-14:**
   no — 0 omitted of 158 weeks over three years. Record:
   [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11).
@@ -630,8 +622,8 @@ Round 27 (2026-10-22) replicated the northern wind points and closed the MW-scal
    (`fetch_round29_entsoe.py --since 2026-10-01`) and the vintage fetch. All three bars are written down.
    Run `TI` and a residual arm next to any `avg` result (round 28: a slowly moving column can be a clock) and a
    permuted null of the same width next to any block of more than a few columns (round 29: it costs +0.33).
-3. **2.12 hygiene** — the NaN last close into the forecast fuel/carbon lags; the `build_fn`
-   hook; the tests. (The A72 probe is done: reservoir arrives complete.)
+3. **2.12 hygiene** — the `build_fn` hook; the tests. (The A72 probe is done: reservoir
+   arrives complete.)
 4. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
    so the scoring run measures the final features. 2.5-HS follows it.
 5. **2.3b forward replay / 2.3c** — not before 2026-11-15, and only if the 2.3b shadow push
