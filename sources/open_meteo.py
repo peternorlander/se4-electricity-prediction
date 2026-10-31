@@ -38,15 +38,37 @@ WIND_LOCATIONS = {
 }
 
 
-def _parse_response(data: dict) -> pd.DataFrame:
+# The three global models whose hourly mean is the plan-2.3b blend (IMPROVEMENT_PLAN.md).
+# Production serves `best_match` (no `models=` parameter); the blend is only predicted
+# next to it as a shadow, so the prediction log can score both on the same days. These
+# are the models the backtest blended (docs/FINDINGS.md "Archive weather flatters the eval").
+BLEND_MODELS = ("ecmwf_ifs025", "icon_global", "gfs_global")
+
+
+def _hourly_values(hourly: dict, variable: str, models=None) -> list:
+    """One hourly variable from an Open-Meteo response: as is, or -- when `models` were
+    requested -- the per-hour mean of the `{variable}_{model}` columns, skipping a model
+    that has no value for that hour (NaN only where every model is missing)."""
+    if not models:
+        return hourly[variable]
+    per_model = pd.DataFrame({m: pd.to_numeric(pd.Series(hourly[f"{variable}_{m}"]), errors="coerce")
+                              for m in models})
+    return per_model.mean(axis=1, skipna=True).tolist()
+
+
+def _model_params(models) -> dict:
+    return {"models": ",".join(models)} if models else {}
+
+
+def _parse_response(data: dict, models=None) -> pd.DataFrame:
     hourly = data["hourly"]
     return pd.DataFrame(
         {
             # UTC-aware timestamps — consistent with ENTSO-E data
             "timestamp": pd.to_datetime(hourly["time"], utc=True),
-            "temperature": hourly["temperature_2m"],
-            "windspeed": hourly["windspeed_100m"],
-            "radiation": hourly["shortwave_radiation"],
+            "temperature": _hourly_values(hourly, "temperature_2m", models),
+            "windspeed": _hourly_values(hourly, "windspeed_100m", models),
+            "radiation": _hourly_values(hourly, "shortwave_radiation", models),
         }
     )
 
@@ -114,9 +136,14 @@ def fetch_recent(past_days: int) -> pd.DataFrame:
     return _parse_response(response.json())
 
 
-def fetch_forecast() -> pd.DataFrame:
+def fetch_forecast(models=None) -> pd.DataFrame:
     """
     Fetch 8-day hourly weather forecast from Open-Meteo.
+
+    Args:
+        models: None for Open-Meteo's `best_match` (what production serves), or a
+                sequence of model names whose hourly mean is returned (BLEND_MODELS
+                for the plan-2.3b shadow).
 
     Returns:
         DataFrame with columns: timestamp, temperature, windspeed, radiation (W/m²).
@@ -126,14 +153,15 @@ def fetch_forecast() -> pd.DataFrame:
         "longitude": LOCATION_LON,
         "hourly": HOURLY_VARIABLES,
         "forecast_days": 8,
-        "timezone": TIMEZONE
+        "timezone": TIMEZONE,
+        **_model_params(models),
     }
 
     response = get_with_retry(OPEN_METEO_FORECAST_URL, params)
-    return _parse_response(response.json())
+    return _parse_response(response.json(), models)
 
 
-def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict) -> pd.DataFrame:
+def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict, models=None) -> pd.DataFrame:
     """Fetch wind speed, solar radiation and temperature for a single location."""
     params = {
         "latitude": lat,
@@ -141,21 +169,22 @@ def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict)
         "hourly": INTL_VARIABLES,
         "timezone": TIMEZONE,
         **extra_params,
+        **_model_params(models),
     }
     response = get_with_retry(url, params)
     hourly = response.json()["hourly"]
     return pd.DataFrame({
         # UTC-aware timestamps — consistent with main SE4 weather fetch
         "time": pd.to_datetime(hourly["time"], utc=True),
-        "windspeed": hourly["windspeed_100m"],
-        "radiation": hourly["shortwave_radiation"],
-        "temperature": hourly["temperature_2m"],
+        "windspeed": _hourly_values(hourly, "windspeed_100m", models),
+        "radiation": _hourly_values(hourly, "shortwave_radiation", models),
+        "temperature": _hourly_values(hourly, "temperature_2m", models),
     })
 
 
-def _fetch_all_locations(url: str, extra_params: dict) -> pd.DataFrame:
+def _fetch_all_locations(url: str, extra_params: dict, models=None) -> pd.DataFrame:
     location_data = {
-        name: _fetch_location_series(lat, lon, url, extra_params)
+        name: _fetch_location_series(lat, lon, url, extra_params, models)
         for name, (lat, lon) in WIND_LOCATIONS.items()
     }
     first = next(iter(location_data.values()))
@@ -203,9 +232,12 @@ def fetch_international_wind_recent(past_days: int) -> pd.DataFrame:
     )
 
 
-def fetch_international_wind_forecast() -> pd.DataFrame:
+def fetch_international_wind_forecast(models=None) -> pd.DataFrame:
     """
     Fetch 8-day hourly wind speed and solar radiation forecast for all WIND_LOCATIONS.
+
+    Args:
+        models: as fetch_forecast -- None for `best_match`, or the models to average.
 
     Returns:
         DataFrame with columns: timestamp, windspeed_{key}, radiation_{key}, ...
@@ -213,4 +245,5 @@ def fetch_international_wind_forecast() -> pd.DataFrame:
     return _fetch_all_locations(
         OPEN_METEO_FORECAST_URL,
         {"forecast_days": 8},
+        models,
     )

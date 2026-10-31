@@ -11,7 +11,7 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-from sources.open_meteo import fetch_forecast, fetch_international_wind_forecast
+from sources.open_meteo import fetch_forecast, fetch_international_wind_forecast, BLEND_MODELS
 from sources.entso_e import fetch_nuclear_outages_se3
 from sources.swedish_calendar import get_non_workdays
 from sources.nordpool import get_dates_with_known_prices
@@ -37,6 +37,58 @@ def _extend_prices(history: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
     combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
     return (combined.drop_duplicates("timestamp", keep="first")
                     .sort_values("timestamp").reset_index(drop=True))
+
+
+def _sendable_days(forecast_features, forecast_hourly, wind_intl_forecast, known_price_dates):
+    """Whole Swedish days only, and none whose prices are already published.
+
+    The forecast is 8 UTC days, so its last Swedish date holds just the 1-2 hours between
+    Swedish and UTC midnight (and today misses its first 1-2); aggregated, such a stub is
+    not a forecast for that day. See docs/DECISIONS.md "Whole Swedish days only".
+    """
+    complete_dates = (complete_swedish_dates(forecast_hourly)
+                      & complete_swedish_dates(wind_intl_forecast))
+    forecast_dates = forecast_features["date"].dt.date
+    incomplete = sorted(set(forecast_dates) - complete_dates)
+    if incomplete:
+        print(f"  → Dropping incomplete Swedish days: {', '.join(map(str, incomplete))}")
+    return forecast_features[
+        forecast_dates.isin(complete_dates) & ~forecast_dates.isin(known_price_dates)
+    ].reset_index(drop=True)
+
+
+def predict_blend_shadow(build_features, served_dates, known_price_dates, models, band, eur_to_sek_rate):
+    """
+    The plan-2.3b shadow: the same fitted models and band, fed the hourly mean of the
+    three global NWP models (BLEND_MODELS) instead of the served `best_match` forecast.
+
+    Only the weather differs from the served prediction; every frozen lag, price and fuel
+    input is the served run's own. Home Assistant receives it as a separate attribute that
+    the automation does not read, and the prediction log stores it with variant = 'blend',
+    so both can be scored against realised prices on the same days (IMPROVEMENT_PLAN.md 2.3b).
+
+    Returns SEK/kWh predictions for exactly the served dates, or None. A shadow must never
+    cost the served push, so any failure is printed and swallowed.
+    """
+    try:
+        print(f"Blend shadow: fetching the 8-day forecast as the mean of {', '.join(BLEND_MODELS)}...")
+        forecast_hourly = fetch_forecast(models=BLEND_MODELS)
+        wind_intl_forecast = fetch_international_wind_forecast(models=BLEND_MODELS)
+        weather_nan = int(forecast_hourly.isna().sum().sum() + wind_intl_forecast.isna().sum().sum())
+        if weather_nan:
+            print(f"  → Blend shadow skipped: {weather_nan} hourly values missing in every model")
+            return None
+        features = _sendable_days(build_features(forecast_hourly, wind_intl_forecast),
+                                  forecast_hourly, wind_intl_forecast, known_price_dates)
+        if list(features["date"].dt.date) != list(served_dates):
+            print(f"  → Blend shadow skipped: its days {list(features['date'].dt.date)} "
+                  f"are not the served days {list(served_dates)}")
+            return None
+        predictions_eur = predict(models, features, band=band)
+        return convert_predictions_to_sek(predictions_eur, eur_to_sek_rate)
+    except Exception as exc:  # noqa: BLE001 -- see docstring: the shadow must never block the push
+        print(f"  → Blend shadow skipped: {type(exc).__name__}: {exc}")
+        return None
 
 
 def main():
@@ -115,29 +167,23 @@ def main():
     # at the most recent price.
     se4_prices_daily = aggregate_prices_daily(anchor_prices_hourly)
 
-    forecast_features = build_forecast_features(
-        forecast_hourly, wind_intl_forecast, market_daily, nuclear_outages_forecast,
-        training_data, training_inputs["ttf_daily"], training_inputs["norway_reservoir_weekly"],
-        training_inputs["norway_reservoir_median"], training_inputs["sweden_reservoir_weekly"],
-        non_workdays, training_inputs["eua_daily"], se4_prices_daily=se4_prices_daily,
-    )
-    # Whole Swedish days only. The forecast is 8 UTC days, so its last Swedish date holds
-    # just the 1-2 hours between Swedish and UTC midnight (and today misses its first
-    # 1-2); aggregated, such a stub is not a forecast for that day. See docs/DECISIONS.md
-    # "Whole Swedish days only". Days whose prices are already published go too.
-    complete_dates = (complete_swedish_dates(forecast_hourly)
-                      & complete_swedish_dates(wind_intl_forecast))
-    forecast_dates = forecast_features["date"].dt.date
-    incomplete = sorted(set(forecast_dates) - complete_dates)
-    if incomplete:
-        print(f"  → Dropping incomplete Swedish days: {', '.join(map(str, incomplete))}")
-    forecast_features = forecast_features[
-        forecast_dates.isin(complete_dates) & ~forecast_dates.isin(known_price_dates)
-    ].reset_index(drop=True)
+    def build_features(weather_hourly, wind_hourly):
+        return build_forecast_features(
+            weather_hourly, wind_hourly, market_daily, nuclear_outages_forecast,
+            training_data, training_inputs["ttf_daily"], training_inputs["norway_reservoir_weekly"],
+            training_inputs["norway_reservoir_median"], training_inputs["sweden_reservoir_weekly"],
+            non_workdays, training_inputs["eua_daily"], se4_prices_daily=se4_prices_daily,
+        )
+
+    forecast_features = _sendable_days(build_features(forecast_hourly, wind_intl_forecast),
+                                       forecast_hourly, wind_intl_forecast, known_price_dates)
 
     print(f"Running inference on {len(forecast_features)} days...")
     predictions_eur = predict(models, forecast_features, band=band)
     predictions_raw = convert_predictions_to_sek(predictions_eur, eur_to_sek_rate)
+
+    predictions_blend_raw = predict_blend_shadow(
+        build_features, forecast_features["date"].dt.date, known_price_dates, models, band, eur_to_sek_rate)
 
     print("Fetching electricity price addon from HA...")
     addon_value = fetch_addon_value()
@@ -145,6 +191,9 @@ def main():
 
     print("\n=== Price predictions (SEK/kWh) ===")
     print(json.dumps(predictions_raw, indent=2))
+    if predictions_blend_raw is not None:
+        print("\n=== Blend shadow, not served (SEK/kWh) ===")
+        print(json.dumps(predictions_blend_raw, indent=2))
 
     # The band's own calibration travels with the predictions so drift is visible
     # in Home Assistant without re-running anything (docs/MODEL.md "The cheap2h
@@ -154,7 +203,7 @@ def main():
 
     print("\nPushing predictions to Home Assistant...")
     push_predictions(predictions_raw, predictions_with_addon, model_metrics, feature_importance,
-                     eur_to_sek_rate=eur_to_sek_rate)
+                     eur_to_sek_rate=eur_to_sek_rate, predictions_blend_raw=predictions_blend_raw)
 
 
 if __name__ == "__main__":

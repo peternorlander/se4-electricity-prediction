@@ -14,7 +14,8 @@ The pipeline runs via GitHub Actions, triggered from Node-RED/Home Assistant, an
 Data sources (API)
     │
     ├── ENTSO-E      → SE4/DE/DK2 day-ahead prices, SE3 nuclear outages, Sweden reservoir (A72)
-    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 8 regional locations)
+    ├── Open-Meteo   → Weather archive + recent-analysis top-up + 8-day forecast (SE4/Malmö + 8 regional locations);
+    │                  the forecast once more as a three-model mean for the blend shadow (plan 2.3b)
     ├── Yahoo Finance → TTF natural gas futures, EU ETS carbon allowance (EUA)
     ├── NVE          → Norwegian hydro reservoir levels + 20-year seasonal median
     └── Nordpool     → Published prices (to skip days already known)
@@ -193,11 +194,12 @@ The pipeline creates/updates `sensor.electricity_price_predictions` with attribu
 - `feature_importance_min` / `feature_importance_avg` / `feature_importance_cheap2h` — top features per model (for debugging)
 - `eur_to_sek_rate` — SEK per EUR this run converted with, so a logged SEK/kWh value can be turned back into the model's EUR/MWh
 - `git_sha` — the commit the run executed (`GITHUB_SHA`); absent on a local run
+- `predictions_blend_raw` — a **shadow**, not for the automation: the same model and band fed the hourly mean of three weather models (ECMWF IFS, ICON, GFS) instead of the served forecast, same structure and units as `predictions_raw`. It exists only so the prediction log can score both on the same days ([plan 2.3b](IMPROVEMENT_PLAN.md#23-the-weather-axis-price-it-then-improve-it)); absent if its fetch failed, which never stops the served push
 
 For charging decisions ("charge today or wait for cheaper days"), compare `cheap2h` across days — it is the expected price of a ~2h session picking the day's cheapest hours, which is what the schedule can actually achieve.
 
 `cheap2h_low` / `cheap2h_high` / `cheap2h_risk` are the **warning** next to the ranking, in the same SEK/kWh units as everything else except the risk (a probability). `cheap2h` is always inside `[low, high]`. **`cheap2h_high` has three levels in practice**: when `cheap2h_risk` is 0.3 or more it is the price the day would clear at if SE4 couples to the continent (1.3 × the gas plant's marginal cost, ~150 EUR/MWh in October 2026, the same on every warned day because the gas price is frozen over the forecast); below 0.3 it is a high that about 9 in 10 days at that risk stay under — low on calm days (risk < 0.1), with headroom on uncertain ones (0.1–0.3). So a rule like "do not defer charging to a day whose `cheap2h_high` is above today's known cheap price" fires on the days that can turn expensive and stays quiet on the calm ones; `cheap2h_risk` says how sure, and is the number to use for grading days within a warned week. Over the last year it warned on ~46 % of days, ~69 % of them correctly, and caught ~80 % of the expensive days. Rank days by `cheap2h`, not by `high` — that was tested and is **not** replicated. See [docs/MODEL.md](docs/MODEL.md#the-cheap2h-band).
 
-A Node-RED flow in Home Assistant copies `predictions_raw` (plus the rate and commit above) into the MariaDB table `electricity_price_predictions_log` after every run, one row per target day, so what was served can later be scored against realised prices ([plan 2.2](IMPROVEMENT_PLAN.md#22-production-prediction-log-and-realised-scorecard)). The flow lives in Home Assistant, not in this repo.
+A Node-RED flow in Home Assistant copies `predictions_raw` (plus the rate and commit above) into the MariaDB table `electricity_price_predictions_log` after every run, one row per target day, so what was served can later be scored against realised prices ([plan 2.2](IMPROVEMENT_PLAN.md#22-production-prediction-log-and-realised-scorecard)). It is to write `predictions_blend_raw` the same way with `variant = 'blend'` (served rows keep `'served'`). The flow lives in Home Assistant, not in this repo.
 
 The addon value is fetched live from Home Assistant each run, so distribution cost changes take effect immediately without redeploying.

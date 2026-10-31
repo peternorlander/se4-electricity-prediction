@@ -101,6 +101,7 @@ def push_predictions(
     model_metrics: dict = None,
     feature_importance: dict = None,
     eur_to_sek_rate: float = None,
+    predictions_blend_raw: dict = None,
 ) -> None:
     """
     Push price predictions to a HA sensor via the REST API.
@@ -116,6 +117,9 @@ def push_predictions(
         feature_importance:     Dict keyed by target name from get_feature_importance().
         eur_to_sek_rate:        SEK per EUR the run converted with; sent as the
                                 `eur_to_sek_rate` attribute next to `git_sha`.
+        predictions_blend_raw:  The plan-2.3b shadow (same structure as predictions_raw,
+                                three-model weather), sent as `predictions_blend_raw` for
+                                the prediction log only; None leaves the attribute out.
     """
     predicted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4]
 
@@ -125,6 +129,9 @@ def push_predictions(
         "friendly_name": "Electricity Price Predictions",
         **_run_provenance(eur_to_sek_rate),
     }
+
+    if predictions_blend_raw is not None:
+        attributes["predictions_blend_raw"] = _to_list(predictions_blend_raw)
 
     if model_metrics is not None:
         attributes.update(model_metrics)

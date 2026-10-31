@@ -164,8 +164,14 @@ with the addon value for its period.
 - Re-derive the two optimism figures empirically once ~13 weeks are logged:
   production MAE at D+2 minus backtest MAE at D+2 is the sum of the weather and
   gap1 effects, and the per-horizon slope is the weather part.
-- A shadow arm for 2.3b: the pipeline would push the blend's prediction as a second
-  attribute and the flow would write it with `variant = 'blend'`. Not built.
+- A shadow arm for 2.3b. **Pipeline side built 2026-10-31**: `predict.predict_blend_shadow`
+  re-predicts with the same fitted models, band and rate on the hourly mean of
+  `sources.open_meteo.BLEND_MODELS` (all nine weather points) and pushes it as
+  `predictions_blend_raw`, same shape as `predictions_raw`; any failure leaves the attribute
+  out and never blocks the served push (`experiments/integration_check_blend_shadow.py`).
+  **Open: the Node-RED flow** has to write it with `variant = 'blend'` (Peter). The
+  forward-replay clock for 2.3b starts on the first day blend rows are logged, not on
+  2026-10-18.
 - Not logged: the run's `cheap2h_interval` diagnostics (`coupled_level_ratio`,
   `calm_high_holdout_coverage`, …), which is where a new regime shows first. Add a JSON
   column if drift tracking needs them.
@@ -200,10 +206,10 @@ hourly mean of ECMWF, ICON and GFS recovers ~25 % of the penalty (cheap2h −0.3
 min −0.42, avg 0) and is negative in all 15 cache × cluster cells, but the
 pre-registered per-lead bar was met on 0 of 5 ([REJECTED.md](docs/REJECTED.md)).
 Next step is a *forward* replay, not another backtest: log the blend's prediction next
-to the served forecast (a `variant = 'blend'` row in the 2.2 log, which needs the shadow
-push from the pipeline), and score both on the
-days the log covers — not before 2.2's 2026-11-15, and the shadow push has to run for
-those weeks too, so it is built first, with a bar written for production's lead mapping (row j at
+to the served forecast (a `variant = 'blend'` row in the 2.2 log; the pipeline pushes it
+since 2026-10-31, the Node-RED write is open, see 2.2), and score both on the
+days the log covers — not before 2.2's 2026-11-15 and not before four weeks of blend rows,
+with a bar written for production's lead mapping (row j at
 lead j + 2): production-mapped cheap2h and min negative in every cluster-equivalent
 period and the pooled change ≤ −0.2. Cost at serve time: three model requests for
 nine points.
@@ -524,6 +530,14 @@ feeds no band.
 **Effort.** Half a day; about one hour of compute (one target, 12 points per cache). No new fetch except the
 replication cache.
 
+**Prepared 2026-10-31 (round 30), not run.** `experiments/run_round30.py` holds the arms above (plus `max`
+with and without the index) and a pre-registered rule for which arm becomes the candidate; its selfcheck
+reproduces round 28's `base` and `TI` to the digit. The six old caches are run **together with** the
+replication cache, not ahead of it: about two hours of compute that any change to main before then would
+make stale. `experiments/fetch_round30.ps1` fetches the cache (refuses before 2026-11-13) and the vintages;
+`-WithTopUps` adds the A77 and A75/A65 top-ups of 2.20 / 2.18, `-Run` runs the replication grid. Then
+`run_round30.py run` and `analyze` for the six caches.
+
 ### 2.20 The decomposed nuclear column, replayed as production sees it (added 2026-10-24, run with 2.19)
 
 **What is open.** Round 28 closed the nuclear column on its pre-registered bar (scored with every record
@@ -613,8 +627,8 @@ Round 27 (2026-10-22) replicated the northern wind points and closed the MW-scal
 
 1. **2.2 prediction log** — the log has existed since 2026-10-18 (MariaDB) and the clock is
    running. **Nothing to do until 2026-11-15**; then `score_production.py` (reads a CSV
-   export in `ab_cache/prediction_log/`). The 2.3b shadow push is the one piece that can
-   be built earlier, because it has to run for those weeks. It prices everything
+   export in `ab_cache/prediction_log/`). The 2.3b shadow push is built on the pipeline
+   side (2026-10-31); the Node-RED write of the blend rows is open. It prices everything
    weather-related for real, and the forward replays of 2.3b, 2.10 and 2.13 wait on it.
 2. **2.19 a time index for `avg`, 2.20 the decomposed nuclear column under AF, and the 2.18
    calibrated-residual lead** — one run on the first long cache from mid-November 2026 or later (the same
@@ -626,8 +640,7 @@ Round 27 (2026-10-22) replicated the northern wind points and closed the MW-scal
    arrives complete.)
 4. **2.6 slot targets** — unchanged; best built once the feature set above has settled,
    so the scoring run measures the final features. 2.5-HS follows it.
-5. **2.3b forward replay / 2.3c** — not before 2026-11-15, and only if the 2.3b shadow push
-   has been running since before then.
+5. **2.3b forward replay / 2.3c** — not before 2026-11-15 and four weeks of logged blend rows.
 6. **2.10 coherence re-check** — when a long cache from mid-January 2027 exists.
 7. 2.11 horizon. (2.14 UMM is parked: nothing consumes it.)
 8. **2.18 near-horizon price model**: to be taken up separately (Peter, 2026-10-22).
