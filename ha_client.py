@@ -97,8 +97,9 @@ def _run_provenance(eur_to_sek_rate: float = None) -> dict:
 
 
 # A shadow arm's name is written verbatim into the prediction log's `variant` column, next
-# to the served rows' 'served'. Lower-case identifier, short enough for the column.
-SHADOW_VARIANT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+# to the served rows' 'served'. Lower-case identifier of at most 16 characters: the column
+# is VARCHAR(16) and part of the table's key, so a longer name would fail the whole insert.
+SHADOW_VARIANT_NAME = re.compile(r"^[a-z][a-z0-9_]{0,15}$")
 
 
 def _shadow_attribute(predictions_shadow: dict) -> dict:
