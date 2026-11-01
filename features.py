@@ -1146,9 +1146,21 @@ def build_training_data(
     merged = add_reservoir_features(merged, norway_reservoir_weekly, norway_reservoir_median, sweden_reservoir_weekly)
     merged = add_workday_feature(merged, non_workdays or set())
     merged = add_time_features(merged)
-    merged = merged.dropna().reset_index(drop=True)
+    complete = merged.dropna().reset_index(drop=True)
+    if complete.empty and not merged.empty:
+        # An input that covers only part of the window leaves NaN on every day
+        # before its first row; dropna() then removes the lot and the failure
+        # surfaces much later as a cross-validation error on 0 samples.
+        nan_days = merged.isna().sum()
+        culprits = ", ".join(f"{col} ({n}/{len(merged)} days)"
+                             for col, n in nan_days[nan_days > 0].sort_values(ascending=False).head(8).items())
+        raise ValueError(
+            f"No complete training days: dropna() removed all {len(merged)} rows. "
+            f"Columns with gaps: {culprits}. An input source probably covers only "
+            f"part of the training window."
+        )
 
-    return merged
+    return complete
 
 
 def build_forecast_features(

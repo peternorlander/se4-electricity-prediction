@@ -1,6 +1,8 @@
 import logging
+
 import pandas as pd
-import yfinance as yf
+
+from sources.yahoo_finance import download_daily_close
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +41,6 @@ def fetch_eua_prices(start_date: str, end_date: str) -> pd.DataFrame:
             eua_close - settlement/close price in EUR/tonne
     """
     logger.info(f"Fetching EUA carbon prices {start_date} → {end_date}")
-
-    raw = yf.download(
-        EUA_TICKER,
-        start=start_date,
-        end=end_date,
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-    )
-
-    if raw.empty:
-        logger.warning(f"No EUA data returned for {start_date} → {end_date}")
-        return pd.DataFrame(columns=["date", "eua_close"])
-
-    df = raw[["Close"]].copy()
-    df.columns = ["eua_close"]
-    df.index.name = "date"
-    df = df.reset_index()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["eua_close"] = df["eua_close"].astype(float)
-
+    df = download_daily_close(EUA_TICKER, start_date, end_date, "eua_close", "EU ETS carbon")
     logger.info(f"  → {len(df)} EUA price records")
     return df
