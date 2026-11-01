@@ -57,15 +57,20 @@ pip install -r requirements.txt
 | Production run (fetch → train → predict → push to HA) | `python predict.py` | Needs `ENTSO_E_TOKEN`, `HA_URL`, `HA_TOKEN`. This is what GitHub Actions runs. |
 | Cache a data snapshot for experiments | `python ab_test.py fetch` | Needs `ENTSO_E_TOKEN`. Caches ~5 years under `ab_cache/long/` — the only shape that can train every test week on production's own 1088 rows. `--days 1095` caches a production-shaped one under `ab_cache/` for the integration check. |
 | List cached snapshots | `python ab_test.py list` | Lists `ab_cache/long/`; `--root ab_cache` for the production-shaped ones. Reports each snapshot's **weather tail**; snapshots with different tails must not share one measurement grid. |
-| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters). Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
+| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters); `--targets cheap2h` (or `avg`, …) fits only what the screen needs — `min` and `cheap2h` always together. Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
 | Fetch / check the forecast vintages | `python ab_test.py vintages` | Warms `ab_cache/vintages/` for a snapshot's evaluated days and fails if any hour lacks a vintage. `run` does this itself; use it to fetch ahead of a long run. |
+| Run the tests | `python -m pytest` | `pip install -r requirements-dev.txt` first. Offline; the snapshot checks run once per cache under `ab_cache/long/` and are skipped where there is none (the Actions runner). The workflow runs the suite before `predict.py`, so a failing test stops the production run. |
 | Self-check the verdict rules | `python ab/check_verdict.py` | |
 | Self-check forecast-vintage scoring | `python ab/check_vintage.py` | Offline mechanics; add `--snapshot YYYY-MM-DD` for the bit-identity check against the pre-vintage harness. |
 
 **Pin `OMP_NUM_THREADS=4` before comparing any two MAE numbers.** XGBoost's
 floating-point reduction order depends on the thread count, so the same
 unchanged model lands a few hundredths apart at 4 vs 16 threads — the size of a
-small real effect.
+small real effect. **And compare on one platform**: Windows and Linux fit different models
+from the same data with the same pinned versions (MAE up to ±0.3 on `min`/`cheap2h`, every row
+different), so a local number never reproduces production's to the bit — see
+[FINDINGS.md](docs/FINDINGS.md#windows-and-linux-fit-different-models-from-the-same-data-round-31).
+Install exactly `requirements.txt`: the numeric stack is pinned, and a change of pin moves numbers.
 
 The full walkthrough for running an experiment, including what to put in
 `CANDIDATE` and which verdict function to call, is
@@ -182,11 +187,15 @@ pip install -r requirements.txt
 python predict.py
 ```
 
+For the tests: `pip install -r requirements-dev.txt`, then `python -m pytest`.
+
 ### GitHub Actions
 
-The pipeline is defined in `.github/workflows/daily_predict.yml` and runs on `workflow_dispatch` — triggered via the GitHub API from a Node-RED flow in Home Assistant (no fixed schedule). Secrets are configured in the repository settings matching the environment variables above.
+The pipeline is defined in `.github/workflows/daily_predict.yml` (install the pinned requirements → `pytest` → `predict.py`; a failure before `predict.py` is reported to the run-status sensor by its last step) and runs on `workflow_dispatch` — triggered via the GitHub API from a Node-RED flow in Home Assistant (no fixed schedule). Secrets are configured in the repository settings matching the environment variables above.
 
 ## Home Assistant Integration
+
+Every run also writes **`sensor.electricity_price_predictions_run`** (`run_status.py`), success or not: state `ok` or `failed`, with `finished_at`, `last_success_at`, `error` (on a failure), `stage` (`workflow` when the run stopped before `predict.py`, at install or tests), `git_sha` and `run_url`. The predictions sensor below is only written by a run that succeeds, so a failed run leaves the previous prediction in place — on purpose: the automation would rather plan on a day-old prediction than on none (it rode out a two-day API outage that way). The Node-RED flow already notices a missing run by waiting for a new predictions state after it dispatches the workflow. This sensor adds why a run failed (`error`, `stage`) and how old the prediction being kept is (`last_success_at`); nothing requires the automation to read it. A run that never reached Python (the dispatch did not arrive, the runner never started) updates nothing. `predict.py` also checks the fetched training data before fitting (`data_checks.py`: wind in km/h, `min ≤ cheap2h ≤ avg ≤ max` on every row, no non-finite value) and fails the run rather than push predictions trained on broken inputs.
 
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
 - `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`, and `cheap2h_risk` — a probability 0–1, not converted)

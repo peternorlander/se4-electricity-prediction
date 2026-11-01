@@ -1,7 +1,7 @@
 """Self-check for forecast-vintage scoring. Run: python ab/check_vintage.py [--snapshot D ...]
 
-There is no pytest in this project; verification is by runnable scripts with asserts
-(see ab/check_verdict.py). Two parts:
+A runnable script with asserts (see ab/check_verdict.py); tests/test_self_checks.py runs
+its offline part in the pytest suite. Two parts:
 
   1. Offline, synthetic -- always runs, seconds. Pins the mechanics a plausible-looking
      wrong answer would hide in: which test row reads which lead, that frozen columns are
@@ -165,7 +165,7 @@ def check_points_and_columns():
     ok(key == "weather_hourly" and set(cols.values()) == set(real.columns) - {"timestamp"},
        "SE4 columns match sources.open_meteo._parse_response")
     orig = om._fetch_location_series
-    om._fetch_location_series = lambda lat, lon, url, extra: pd.DataFrame({
+    om._fetch_location_series = lambda lat, lon, url, extra, models=None: pd.DataFrame({
         "time": pd.to_datetime(["2026-01-01T00:00"], utc=True), "windspeed": [1.0], "radiation": [2.0], "temperature": [3.0]})
     try:
         intl = om._fetch_all_locations("x", {})

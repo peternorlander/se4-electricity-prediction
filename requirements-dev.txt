@@ -1,0 +1,3 @@
+# Test-only dependencies; the workflow installs these next to requirements.txt and
+# runs `python -m pytest` before predict.py.
+pytest==9.2.0

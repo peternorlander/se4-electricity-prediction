@@ -25,7 +25,7 @@ def get_non_workdays(start_date: str, end_date: str) -> set:
 
     for d in dates:
         # Weekends
-        if d.dayofweek >= 5:
+        if d.day_of_week >= 5:
             non_workdays.add(d.date())
         # Public holidays
         elif d in se_holidays:

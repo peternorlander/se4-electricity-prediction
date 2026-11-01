@@ -401,8 +401,8 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df["date"] = pd.to_datetime(df["date"])
     month = df["date"].dt.month
-    day_of_year = df["date"].dt.dayofyear
-    dow = df["date"].dt.dayofweek
+    day_of_year = df["date"].dt.day_of_year
+    dow = df["date"].dt.day_of_week
 
     df["month_sin"] = np.sin(2 * np.pi * month / 12)
     df["month_cos"] = np.cos(2 * np.pi * month / 12)

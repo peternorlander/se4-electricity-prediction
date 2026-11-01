@@ -266,8 +266,11 @@ the slot MAEs reported. Min-of-slots vs `cheap2h` coherence rate (5.3).
 ### 3.4 Compute
 
 Three more regressors per window: +75 % on every walk-forward and A/B run
-from now on. Acceptable; if it becomes a problem, give `run_walk_forward` /
-`run_ab` a targets filter rather than removing the slots from `TARGETS`.
+from now on. Acceptable; if it becomes a problem, use the targets filter
+(`ab_test.py run --targets`, round 31) rather than removing the slots from
+`TARGETS`. Note that the filter always fits `min` and `cheap2h` together
+(`ab.verdict.COHERENCE_PAIR`); if the slots join the coherence step, they join
+that pair too.
 
 ---
 

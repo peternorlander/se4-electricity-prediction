@@ -26,7 +26,9 @@ from features import (
 from model import train, train_band, predict
 from evaluate import get_feature_importance
 from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
+from data_checks import check_training_data
 from ha_client import fetch_addon_value, apply_addon, push_predictions
+from run_status import push_run_status
 
 
 def _extend_prices(history: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame:
@@ -141,6 +143,7 @@ def main():
         **{**training_inputs, "non_workdays": non_workdays}
     )
     print(f"  → {len(training_data)} days of merged data")
+    check_training_data(training_inputs, training_data)
 
     print("Training models...")
     models = train(training_data)
@@ -211,5 +214,16 @@ def main():
                      eur_to_sek_rate=eur_to_sek_rate, predictions_shadow=predictions_shadow)
 
 
+def run():
+    """main(), with its outcome pushed to the run-status sensor (run_status.py) either way."""
+    started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        main()
+    except Exception as exc:
+        push_run_status("failed", started_at=started_at, error=f"{type(exc).__name__}: {exc}")
+        raise
+    push_run_status("ok", started_at=started_at)
+
+
 if __name__ == "__main__":
-    main()
+    run()

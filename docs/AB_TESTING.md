@@ -721,6 +721,17 @@ Follow this whenever testing a feature or model change from the improvement plan
      `_fit_models`. A variant that renames the target key silently drops the
      weighting and measures a model production does not run. Assert the key at
      startup.
+   - `build_fn(inputs) -> frame` — override when the change sits *before* the daily
+     frame: a column computed from the hourly weather (the intraday and residual-load
+     blocks), a grafted weather point, another aggregation. `transform` cannot do these
+     because the hourly inputs are gone by the time it runs. Default `None` =
+     `features.build_training_data`. The harness builds each arm's frame with its own
+     `build_fn` (and its own forecast-vintage lead frames, from the same vintage weather),
+     asserts it has exactly production's rows, and then applies `transform` as usual.
+     It must be a pure function of `inputs` — it is called once per lead on inputs whose
+     weather carries that lead's forecast — and a module-level function for `--workers`.
+     This replaces the per-round frame builders of rounds 25, 27 and 28; it does not cover
+     the AF condition (test rows rebuilt as of the run date), which still needs its own loop.
    - `targets` — a `{name: (target_col, feature_cols)}` dict; override to add a new
      feature column to the models' feature lists (a `transform` that only *creates* a
      column has no effect until the column is added to `feature_cols` here).
@@ -744,6 +755,12 @@ Follow this whenever testing a feature or model change from the improvement plan
    the geometry it used; `--expanding` reverts to the pre-2026-10 geometry, and
    is the only way to run against a production-shaped snapshot. `--grid` runs
    the NOW / −6M / FAR cluster grid instead of `--shifts` and reports per cluster;
+   `--targets cheap2h` (or `min`, `avg`, `max`, a comma list) fits only those targets,
+   with `min` and `cheap2h` always together because the coherence step rewrites one from
+   the other — the targets fitted score bit-identically to a full run (round 31, all six
+   caches), at ~45 % of the cost for the pair and ~25 % for `avg` alone. A `cheap2h`-only
+   fit is *not* offered: without `min` the coherence step is skipped and `cheap2h` reads
+   +0.02 … +0.28 worse than what Home Assistant receives;
    `--workers 4` with `OMP_NUM_THREADS=4` runs the jobs in parallel. Every fit is also
    scored on forecast-vintage weather (first run: fetches `ab_cache/vintages/`, no token;
    `--no-vintage` to skip), so the report carries two labelled numbers, **ARCHIVE** (a
@@ -820,8 +837,9 @@ and MAE by exactly zero, and in round 24 a symmetric band with a perfectly norma
 80 % coverage over the year let half of the autumn's expensive weekdays through. So
 the band has its own instrument, `ab/band.py`, and its own scorecard.
 
-**How it runs.** `python ab_test.py band [--snapshot …] [--workers 4]` builds the
-frame once and, for BASELINE and CANDIDATE, runs `ab.band.band_walk_forward` at one
+**How it runs.** `python ab_test.py band [--snapshot …] [--workers 4]` builds each
+arm's frame (its `build_fn`, else the production frame), applies its `transform`, and,
+for BASELINE and CANDIDATE, runs `ab.band.band_walk_forward` at one
 point per cluster (NOW = shift 0, −6M = 180, FAR = the oldest the rolling geometry
 fits): the same rolling 1088 rows and horizon-honest freeze as `run`, the variant's
 own `min`/`cheap2h` pair after coherence as the point estimate, and the variant's

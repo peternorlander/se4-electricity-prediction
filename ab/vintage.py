@@ -359,10 +359,13 @@ class VintageSet:
     Build with VintageSet.for_snapshot; the harness only needs `.frames`.
     """
 
-    def __init__(self, frames: dict, root, points: list):
+    def __init__(self, frames: dict, root, points: list, vintages: dict = None):
         self.frames = frames
         self.root = root
         self.points = points
+        # The per-point vintage series the frames were built from, so a variant with its
+        # own build_fn can build its lead frames on the same weather (ab.verdict.run_ab).
+        self.vintages = vintages
 
     @property
     def leads(self) -> tuple:
@@ -389,4 +392,4 @@ class VintageSet:
         log(f"  vintage frames: {len(frames)} leads x {len(archive)} rows built in "
             f"{time.time() - t0:.0f}s from {len(vintages)} points; evaluated days "
             f"{min(days)} -> {max(days)} ({len(days)}) all covered")
-        return cls(frames, root, list(vintages))
+        return cls(frames, root, list(vintages), vintages=vintages)

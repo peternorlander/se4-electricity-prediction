@@ -19,6 +19,17 @@ forecast-vintage frames of ab/vintage.py (one per lead), so it must be a pure
 function of the frame it is given -- a column it derives from weather then carries
 the forecast's value on a FORECAST-weather test row, which is the point.
 
+`build_fn` is the step before `transform`: it turns the snapshot's raw inputs
+(hourly weather, hourly prices, the daily sources) into the merged daily frame.
+Override it for a change `transform` cannot reach because the daily frame no
+longer has what it needs -- a column computed from the HOURLY weather (the
+intraday and residual-load blocks), a grafted weather point, a different
+aggregation. Same rules as `transform`, one level up: it must produce the same
+rows as features.build_training_data on the same inputs (asserted), and it is
+called once per forecast-vintage lead on inputs whose weather carries that lead's
+forecast, so it must be a pure function of `inputs`. Module-level functions only
+when running with --workers.
+
 Before running anything, decide whether a column the variant adds has to be
 FROZEN across the forecast horizon -- see the note on `frozen_features` below.
 Getting that wrong is the one mistake here that produces a confident number
@@ -44,6 +55,9 @@ def _identity(data: pd.DataFrame) -> pd.DataFrame:
 class Variant:
     name: str
     transform: Callable[[pd.DataFrame], pd.DataFrame] = _identity
+    # build_fn(inputs) -> merged daily frame. None = features.build_training_data, the
+    # frame production fits on. See the module docstring for when to override it.
+    build_fn: Callable[[dict], pd.DataFrame] = None
     # fit_fn(train_slice, targets) -> {name: fitted model}. The harness passes the
     # variant's `targets`, so overriding `targets` alone is enough for a feature-set
     # change; the default fits and predicts on the same lists.

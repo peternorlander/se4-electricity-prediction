@@ -11,6 +11,7 @@ check whether the code it describes still looks that way.
 
 | Finding | When | Why it still matters |
 |---|---|---|
+| [Windows and Linux fit different models from the same data](#windows-and-linux-fit-different-models-from-the-same-data-round-31) | 2026-10-31 | Same snapshot, same pinned versions, same seed: every test row differs and MAE moves up to ±0.29 on `min`/`cheap2h` (±1.3 on `max`) — a reseed, not jitter. Local numbers and production's are never bit-identical; compare like with like, on one platform |
 | [The 2026-08-17 regime break](#the-2026-08-17-regime-break) | 2026-08 | The clearest evidence of what the model structurally cannot do: a 3-year window cannot output 128 EUR/MWh, and four independent routes to fixing that all failed |
 | [The autumn-2026 coupling regime](#the-autumn-2026-coupling-regime-round-24) | 2026-10-16 | Weekday troughs became "either ~10 or ~120": a point regressor hedges in between, trees cannot extrapolate the dry-reservoir state at the window's edge, and a linear coupling probability fixes both the point (min −0.30 … −0.46) and the warning |
 | [Cross-border capacity and flows](#cross-border-capacity-and-flows-round-21) | 2026-09-12 | Closes the interconnector route for the trough targets, including with leaked data; leaves one open `avg` candidate; documents six cross-border data traps |
@@ -28,6 +29,51 @@ check whether the code it describes still looks that way.
 | [The physical residual load is a high ceiling that the weather reaches little of](#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29) | 2026-10-25 | Handing the models the realised load − wind − solar of the eight zones is −1.19 `cheap2h` / −0.96 `min` / −1.30 `avg` (REAL on all six caches), a net worth twice its parts; a weather-based first stage keeps 11–21 % of it on `cheap2h`, nothing on `min`, and on `avg` loses it on forecast vintages. Eleven noise columns cost +0.33 by themselves. One near-horizon lead (D+2…D+4 −0.36) |
 | [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26). A72 (reservoir) is A03 too but arrives complete — checked 2026-10-14, 0 omitted of 158 weeks |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
+
+## Windows and Linux fit different models from the same data (round 31)
+
+Measured 2026-10-31 for plan 2.12 (pinning the dependencies "so a bit-identity check across
+machines means something"). The six long caches, shift 0, rolling 1088 rows, archive weather,
+`OMP_NUM_THREADS=4`, every target, three environments: Windows with the local versions
+(xgboost 3.3.0, pandas 3.0.3, numpy 2.5.1, scikit-learn 1.9.0, scipy 1.18.0, Python 3.14.4);
+Windows with what an unpinned `pip install` gave the Actions runner that day (xgboost 3.4.1,
+pandas 3.1.0, numpy 2.5.4, scikit-learn 1.9.1); and Linux (WSL Ubuntu) with exactly the local
+versions.
+
+| comparison | rows that differ (of 364 per target) | MAE change per cache |
+|---|---|---|
+| Windows: local versions vs the newer ones | 48–80 (`min`, `cheap2h`), ~170 (`avg`); most only at 1e-14 | ≤ 0.016 on every target; up to 2.9 EUR/MWh on a single row |
+| **Same versions: Windows vs Linux** | **364 of 364, every target** | `min` +0.03 … +0.26, `cheap2h` −0.20 … +0.29, `avg` −0.08 … +0.02, `max` −0.74 … +1.26 |
+
+**It is xgboost, not the data.** The merged frame differs between the platforms only in the
+last bit of three calendar columns (`month_sin`, `day_of_year_sin/cos`, 1e-16, the C library's
+`sin`/`cos`), and that difference is inert: Windows fits the same model from the Linux frame as
+from its own. On one frame, the same regressor with the same `random_state` predicts a different
+week on each platform. The likely mechanism is the row and column sampling (`subsample` /
+`colsample_bytree` 0.8), which goes through the C++ standard library's shuffling and
+distributions, and those are implementation-defined (MSVC vs libstdc++). The size matches a
+reseed: round 27's seed floor on `cheap2h` was 0.13.
+
+**Threads, too, differ by platform.** On Windows `n_jobs=1` fits a different model from
+`n_jobs=4` (4 and 8 agree in this probe). On Linux 1, 4 and 8 gave identical predictions. The
+README's `OMP_NUM_THREADS=4` rule is a Windows rule. On Linux it did not matter in this probe.
+
+**xgboost 3.4.1 fits 3× slower on Windows** (five production fits 31–36 s against 10 s on 3.3.0,
+pandas held fixed) and not at all slower on Linux (8.7 s against 9.2 s), where it also gave the
+same predictions as 3.3.0. It is xgboost alone: pandas 3.1.0 / numpy 2.5.4 / scikit-learn
+1.9.1 / scipy 1.18.1 with xgboost 3.3.0 fit as fast as before and give the same MAE on all
+six caches (rows within 1e-13). So everything is pinned to its newest release except
+xgboost, which stays on 3.3.0.
+
+**What follows.**
+- A paired A/B stays valid: both arms run on one machine. Nothing in the ledgers moves.
+- No number computed on a Windows checkout reproduces production's to the bit, pinned or
+  not. That only matters when re-fitting locally to explain a logged prediction ("why did
+  production send X on that day"): expect a reseed-sized difference (several EUR/MWh on a
+  single day), or run under WSL. Scoring the logged predictions against realised prices
+  (2.2) re-fits nothing and is unaffected.
+- A run that wants production's exact numbers, or thread-count independence, can run under
+  WSL. Every remaining A/B difference is then within one platform.
 
 ## The 2026-08-17 regime break
 

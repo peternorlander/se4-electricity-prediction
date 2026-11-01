@@ -1,8 +1,19 @@
-requests>=2.32
-pandas>=2.2
-numpy>=1.26
-xgboost>=2.0
-scikit-learn>=1.4
-pytz>=2024.1
-yfinance>=0.2
-holidays>=0.40
+# Pinned exactly (plan 2.12, round 31; docs/DECISIONS.md "Engineering hygiene").
+# Change a pin only on purpose, in its own commit, and check the six caches give the same
+# numbers (experiments/run_round31_harness.py points + compare). pandas 3.0.3 -> 3.1.0 /
+# numpy 2.5.1 -> 2.5.4 / scikit-learn 1.9.0 -> 1.9.1 / scipy 1.18.0 -> 1.18.1 changed no MAE
+# on any cache (row differences <= 1e-13). xgboost stays on 3.3.0: 3.4.1 fits 2-3x slower
+# on Windows (where the A/Bs run; not on Linux) and moved MAE by up to 0.016.
+# Production (Linux) and a Windows checkout never agree bit for bit even on these pins:
+# xgboost's row/column sampling is platform-dependent, worth up to ~0.3 EUR/MWh MAE on
+# min/cheap2h -- compare runs on the same platform only.
+pandas==3.1.0
+numpy==2.5.4
+xgboost==3.3.0
+scikit-learn==1.9.1
+scipy==1.18.1
+# Fetch side: the newest versions on 2026-11-01, what the unpinned runner already used.
+requests==2.34.2
+pytz==2026.6
+yfinance==1.7.0
+holidays==0.107

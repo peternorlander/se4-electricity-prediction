@@ -7,7 +7,7 @@ the full design and the agent playbook.
     python ab_test.py list                          # list long snapshots
     python ab_test.py list --root ab_cache          # list production-shaped snapshots
     python ab_test.py run [--snapshot YYYY-MM-DD] [--shifts 0-5 | --grid] [--expanding]
-                          [--no-vintage] [--workers 4]
+                          [--no-vintage] [--workers 4] [--targets cheap2h]
     python ab_test.py vintages [--snapshot YYYY-MM-DD] [--grid]   # warm the vintage cache
     python ab_test.py band [--snapshot YYYY-MM-DD] [--workers 4]   # cheap2h band scorecard
 
@@ -208,8 +208,10 @@ def cmd_run(args):
     # Opting out is explicit, and the report says so.
     vintage_root = None if args.no_vintage else (
         Path(args.vintage_root) if args.vintage_root else default_vintage_root(cache_root))
+    target_names = tuple(t.strip() for t in args.targets.split(",")) if args.targets else None
     run_ab(inputs, shifts, train_window=train_window, clusters=clusters,
-           vintage_root=vintage_root, workers=args.workers, save=args.save_errors)
+           vintage_root=vintage_root, workers=args.workers, save=args.save_errors,
+           **({"target_names": target_names} if target_names else {}))
 
 
 def cmd_vintages(args):
@@ -235,18 +237,19 @@ def cmd_vintages(args):
 def cmd_band(args):
     from ab.band import run_band_ab
     from ab.variants import BASELINE, CANDIDATE
-    from features import build_training_data
+    from ab.verdict import build_arm_frames
     cache_root = Path(args.root) if args.root else LONG_CACHE_ROOT
     inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
     print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
-    data = build_training_data(**inputs)
+    frames = build_arm_frames(inputs, {"base": BASELINE, "cand": CANDIDATE})
+    data = frames["base"]
     # One point per cluster by default (FAR = the oldest the rolling geometry can still
     # fit); the band is scored per cluster, never pooled -- docs/AB_TESTING.md.
     far = len(data) - PRODUCTION_TRAIN_ROWS - EVAL_DAYS
     clusters = ({"NOW": [0], "-6M": [180], "FAR": [far]} if args.shifts is None else
                 {"grid": parse_shift_range(args.shifts)})
     print(f"  {len(data)} rows; clusters {clusters}; BASELINE={BASELINE.name} CANDIDATE={CANDIDATE.name}")
-    run_band_ab(data, clusters, BASELINE, CANDIDATE, recent_days=args.recent_days,
+    run_band_ab(frames, clusters, BASELINE, CANDIDATE, recent_days=args.recent_days,
                 workers=args.workers)
 
 
@@ -308,6 +311,11 @@ def main():
                              help="Processes for the (variant, shift) jobs. Pin "
                                   "OMP_NUM_THREADS yourself (4 for the ledger): XGBoost is "
                                   "not bit-identical across thread counts.")
+    run_parser.add_argument("--targets", default=None, metavar="LIST",
+                             help="Fit and report only these targets, e.g. 'cheap2h' or "
+                                  "'avg'. min and cheap2h are always fitted together (the "
+                                  "coherence step rewrites one from the other), and the "
+                                  "targets fitted score exactly as in a full run.")
     run_parser.add_argument("--save-errors", default=None, metavar="PATH",
                              help="Pickle every point's per-row error arrays (all "
                                   "conditions, all targets) for later analysis.")

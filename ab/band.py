@@ -148,7 +148,7 @@ def band_regressions(base: dict, cand: dict, tolerance: dict = None) -> list:
     return breaches
 
 
-def run_band_ab(data: pd.DataFrame, clusters: dict, baseline, candidate,
+def run_band_ab(data, clusters: dict, baseline, candidate,
                 train_window: int = PRODUCTION_TRAIN_ROWS, recent_days: int = 56,
                 workers: int = 1) -> dict:
     """
@@ -156,11 +156,16 @@ def run_band_ab(data: pd.DataFrame, clusters: dict, baseline, candidate,
     Prints one table per cluster, one for the last `recent_days` of the newest
     point, and the breaches. Returns {"base": df, "cand": df} with a `cluster`
     and `shift` column, for any further question.
+
+    `data` is the merged frame both arms start from, or {"base": frame, "cand": frame}
+    when an arm has its own build_fn (ab.verdict.build_arm_frames builds that). Each
+    arm's `transform` is applied to its frame after the shift, as in `ab_test.py run`.
     """
     jobs = [(name, s, which) for name, shifts in clusters.items() for s in shifts
             for which in ("base", "cand")]
     variants = {"base": baseline, "cand": candidate}
-    args = [(data, j, variants, train_window) for j in jobs]
+    frames = data if isinstance(data, dict) else {"base": data, "cand": data}
+    args = [(frames[j[2]], j, variants, train_window) for j in jobs]
     if workers > 1:
         # Process workers pickle the variants: module-level functions only, no lambdas.
         from concurrent.futures import ProcessPoolExecutor
@@ -193,6 +198,9 @@ def run_band_ab(data: pd.DataFrame, clusters: dict, baseline, candidate,
 
 
 def _band_job(args):
+    from ab.verdict import _apply_variant
     data, (name, s, which), variants, train_window = args
-    df = band_walk_forward(apply_shift(data, s), variants[which], train_window=train_window)
+    variant = variants[which]
+    df = band_walk_forward(_apply_variant(apply_shift(data, s), variant), variant,
+                           train_window=train_window)
     return df.assign(cluster=name, shift=s, arm=which)

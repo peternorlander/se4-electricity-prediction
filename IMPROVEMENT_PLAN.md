@@ -11,7 +11,7 @@ are never started early or in part.
 
 **Item numbers are stable.** They are the September review's, and the docs, ledgers and
 commits refer to items by number ("plan 2.19", "2.1-C"), so a closed item leaves a gap
-(2.1, 2.4, 2.7–2.9 and 2.15–2.17 are closed) and nothing is renumbered; a new item takes the
+(2.1, 2.4, 2.7–2.9, 2.12 and 2.15–2.17 are closed) and nothing is renumbered; a new item takes the
 next free number. "Old item N" — a single number — means an item of the 2026-08 list, as
 it does in older commit messages that say "`IMPROVEMENT_PLAN.md` item N". **A number alone
 says nothing to a reader:** wherever an item is named outside its own heading — section 4, a
@@ -53,8 +53,9 @@ what it still owes and where it stands. The ledgers are the record; this file is
 to-do list. Section 4 is kept current in the same commit as the change that moves an item:
 ready or waiting (with its condition), and the shadow register while an arm runs.
 
-**Status 2026-10-31.** Only 2.12 Engineering hygiene is ready to start; everything else waits on a date, a
-cache or a decision, listed with its condition in [4.2](#42-waiting--not-started-until-the-condition-holds).
+**Status 2026-10-31.** 2.12 Engineering hygiene was done in round 31 (2026-10-31,
+[DECISIONS.md](docs/DECISIONS.md#engineering-hygiene-round-31)); only the section 3 low-priority leads are
+ready, and everything else waits on a date, a cache or a decision, listed with its condition in [4.2](#42-waiting--not-started-until-the-condition-holds).
 One shadow arm runs in production, `blend` for 2.3b Three-model weather blend ([4.3](#43-shadow-arms-in-production)).
 Round 28 (2026-10-23) closed 2.7 (week-ahead documents) and turned up 2.19 (time index for
 `avg`) and 2.20 (nuclear column as production sees it); round 29 (2026-10-25) closed 2.1
@@ -288,36 +289,6 @@ previous last day. Accuracy
 beyond D+7 is unmeasured — the eval uses 7-day windows — so ship it only with
 the interval, and report it separately in 2.2. Whether the automation wants a
 14-day view is Peter's call; the model cost is nil.
-
-### 2.12 Engineering hygiene
-
-- **Tests.** There are none. A small `pytest` suite with the checks that would
-  have caught 1.1: fetched wind speed median in a plausible m/s range,
-  `min ≤ cheap2h ≤ avg ≤ max` on every training row, DST days have 23/25
-  hours and produce no NaN, `_splice_recent`'s two rules, the interval's
-  sort → widen → clamp order, `convert_predictions_to_sek` on a payload with
-  every key production can emit. Run in the Actions workflow before
-  `predict.py`.
-- **Harness.** A `build_fn(inputs) -> frame` hook on `ab.variants.Variant`.
-  `Variant.transform` receives the merged daily frame, after the intraday and residual-load
-  columns were computed from the hourly inputs, so it cannot rebuild them; rounds 25, 27 and 28
-  each worked around it by building their frames (and, for per-window as-of columns, their own
-  loop) in the experiment script (`experiments/run_round25.py`, `run_round28.py`; the
-  pattern is in [AB_TESTING.md](docs/AB_TESTING.md#score-the-test-rows-as-production-could-know-them-the-af-condition-round-28)).
-  2.3 needs the hook too. Also a `--targets` filter on
-  `run_walk_forward` / `run_ab` (the slot plan §3.4 asks for it) so a
-  cheap2h-only screen does not pay for `max`.
-- **Run status to Home Assistant.** The workflow has no failure path; a failed
-  run leaves the sensor silently stale. Push a `last_run_status` attribute (or
-  a separate binary sensor) from a `finally:` block so the automation can fall
-  back to "charge now" when predictions are older than a day.
-- ~~**Does ENTSO-E A72 (Swedish reservoir) omit repeated weeks?**~~ **Closed 2026-10-14:**
-  no — 0 omitted of 158 weeks over three years. Record:
-  [FINDINGS.md](docs/FINDINGS.md#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11).
-  `_fetch_reservoir_chunk` carries a no-op A03 fill + warning as a guard.
-- **Dependencies.** `requirements.txt` is unpinned and the workflow runs
-  Python 3.13 while local runs are 3.14; pin at least `xgboost` and `pandas`
-  majors so a bit-identity check across machines means something.
 
 ### 2.13 Northern wind points — shipped 2026-10-12, replayed 2026-10-22
 
@@ -644,10 +615,7 @@ nothing else.**
 
 ### 4.1 Ready now, in order
 
-1. **2.12 Engineering hygiene** — tests, a `build_fn` hook in the A/B harness, a run-status
-   attribute to Home Assistant, pinned `xgboost` / `pandas` versions. No model risk, nothing to
-   wait for.
-2. **Section 3, low-priority leads** — `ttf_vs_30d` (gas price against its 30-day mean),
+1. **Section 3, low-priority leads** — `ttf_vs_30d` (gas price against its 30-day mean),
    `cpl_gap7` (a coupling-gap lag for `cheap2h`), the q90 charging rule. Only with a stated
    mechanism, and not while a 4.2 run is due within a week (the same staleness rule).
 

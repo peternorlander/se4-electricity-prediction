@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Engineering hygiene](#engineering-hygiene-round-31) | 2026-10-31 | no model change — tests before every production run, a data check that fails the run on broken inputs, a run-status sensor, pinned dependencies; A/B harness: `build_fn` hook and `--targets` (bit-identical on all six caches), and `ab_test.py band` now applies the candidate's `transform` |
 | [Walk-forward out of the production run](#walk-forward-out-of-the-production-run) | 2026-10-24 | pipeline cleanup, no A/B — predictions, band and feature importance unchanged; the `mae_*` / `mae_by_horizon` attributes are no longer sent |
 | [Price anchor on D+1](#price-anchor-on-d1) | 2026-10-22 | correctness fix: `avg` exactly 0 by construction, `min` +0.005 / +0.026 (NOISE); `cheap2h` −0.14 REAL / −0.05 NOISE clmean (the gain is at D+2/D+3); `max` −1.31 / −0.49 |
 | [Whole Swedish days only](#whole-swedish-days-only) | 2026-10-21 | correctness fix, no A/B — D+2…D+7 bit-identical; stops sending a 1–2 hour weather stub as D+8 (on history that day scored cheap2h +4.3 / +6.3 worse than the same day with its whole weather) |
@@ -41,6 +42,79 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Engineering hygiene (round 31)
+
+Adopted 2026-10-31 (plan 2.12). Nothing here changes a prediction; every part was checked
+on the six long caches (`long/2026-08-06` … `long/2026-10-16`).
+
+**Tests, run before `predict.py`.** `tests/` (51 tests, `python -m pytest`). Each test
+was checked by re-introducing the defect it guards against: all nine re-introduced
+defects were caught. They cover the power curve fed km/h as m/s (the 1.1 defect), a fetch
+that asks Open-Meteo for another wind unit, the interval clamping before it widens or
+skipping the sort, `_splice_recent` letting the recent analysis overwrite the archive or
+keeping today's partial day, a broken `cheap2h` aggregation, the risk converted to SEK, and
+complete days assumed to be 24 hours. The snapshot tests run the production data check and
+the DST/gap checks once per cached long snapshot and are skipped on the runner, which has
+no cache. It also runs the offline parts of `ab/check_verdict.py` and `ab/check_vintage.py`. The latter had been failing since the 2.3b blend commit earlier the same day: its stub of `_fetch_location_series` did not take the new `models` argument. The stub is fixed, and the `--snapshot 2026-10-16` bit-identity part passes (153 checks). The suite passes on Windows and on Linux with the pinned versions. The workflow
+installs `requirements-dev.txt` and runs the suite first, so a failing test stops the run
+before anything is pushed.
+
+**A data check that fails the run** (`data_checks.check_training_data`, called after
+`build_training_data`). It checks three things. Every hourly wind column has a median of
+12–45 km/h and the converted power curve reaches rated speed on at most 25 % of hours. The
+order `min ≤ cheap2h ≤ avg ≤ max` holds on every row. No value is non-finite. The thresholds
+were set on the six caches with a wide margin. Every point there has a median of 21–27 km/h
+and is at rated speed on 0.6–7.3 % of hours. Every forecast-vintage point has a median of
+20–26 km/h at every lead. The ordering is violated on 0 rows, and every DST day has 23/25
+hours, is in the frame and is finite. The check reads the three-year frame, not the 8-day
+forecast. The live forecast's median was 15 km/h in a calm week, which overlaps a windy
+week in m/s, so a per-run forecast threshold would not separate the units. The forecast's
+unit is guarded by the fetch-parameter test instead.
+
+**Run status to Home Assistant** (`run_status.py`, stdlib only). It writes
+`sensor.electricity_price_predictions_run` on every run: `ok` or `failed`, plus
+`last_success_at` (carried forward on a failure), `error`, `stage`, `git_sha` and
+`run_url`. `predict.run()` reports its own outcome. The workflow's last step reports a
+failure before `predict.py` (install, tests). It is a separate sensor, because the REST
+API replaces all of an entity's attributes, so writing a status into the predictions
+sensor on a failure would wipe the predictions it still holds, and the automation wants
+the old prediction kept rather than none. The Node-RED flow already detects a missing run
+by a timeout on the predictions sensor; this sensor is for why (`error`, `stage`) and how
+old the kept prediction is (`last_success_at`), not a trigger.
+
+**Pinned dependencies** (`requirements.txt`, exact `==`): pandas 3.1.0, numpy 2.5.4,
+scikit-learn 1.9.1, scipy 1.18.1, xgboost 3.3.0, and the fetch libraries at their newest.
+Everything is on its newest release except xgboost. The upgrade from the versions the
+ledger was measured with (pandas 3.0.3, numpy 2.5.1, scikit-learn 1.9.0, scipy 1.18.0)
+changed no MAE on any of the six caches; per-row differences were ≤ 1e-13. `features.py`
+and `sources/swedish_calendar.py` now call `day_of_year` / `day_of_week`, which pandas 3.1
+keeps, instead of `dayofyear` / `dayofweek`, which it deprecates. The suite passes with that
+warning raised as an error. xgboost stays on 3.3.0. 3.4.1 moved MAE by ≤ 0.016, which is
+too small to matter, but on Windows it fits 2–3× slower: 1.1 s against 0.5 s per regressor,
+and 6.4 s against 2.0 s for the four production models. The A/Bs run on Windows; on Linux
+it is not slower. Before this change the unpinned runner was already on xgboost 3.4.1, so
+production moves back to 3.3.0. The plan's premise does not hold, though: the pins do not
+make Windows and Linux agree. The same versions on the two platforms give a different model
+on every row ([finding](FINDINGS.md#windows-and-linux-fit-different-models-from-the-same-data-round-31)).
+The workflow moves from Python 3.13 to 3.14. That is the version of the local checkout and
+of the WSL run that passed the suite. 3.13 left bugfix support in October 2026.
+
+**A/B harness.**
+- `Variant.build_fn(inputs) -> frame`, for changes that `transform` cannot reach because
+  they sit before the daily frame (hourly-derived columns, grafted points). Each arm is
+  built by its own `build_fn` and gets its own forecast-vintage lead frames from the same
+  vintage weather. Its rows are asserted equal to production's. An explicit identity `build_fn` gave NO_CHANGE with every delta exactly 0 on all six caches, on ARCHIVE and FORECAST weather, for all four targets (shifts 0, 1). A `build_fn` that adds 1 m/s to the hourly SE4 wind changed eight columns, including the hourly-derived `wind_night` / `residual_load_min` / `residual_load_range`, in the archive frame and in the candidate's lead-1/4/7 vintage frames alike.
+- `ab_test.py run --targets` (`run_ab(target_names=…)`). `min` and `cheap2h` are always
+  fitted together. On all six caches the `{min, cheap2h}` and `avg`-only fits reproduced the
+  full run's per-row errors exactly (max difference 0), at ~45 % and ~25 % of its cost. A
+  `cheap2h`-only fit would skip the coherence step and read `cheap2h` +0.02 … +0.28 worse,
+  which is why the filter does not offer one.
+- **Bug fixed: `ab_test.py band` never applied the CANDIDATE's `transform`.** A
+  transform-based candidate was scored as the baseline's band, or failed on a missing
+  column. Measured on `long/2026-10-16`, NOW: a candidate that zeroes the two northern-wind columns by `transform` scored a band identical to the baseline's (point MAE 13.94 = 13.94). After the fix it scores 15.77. Earlier band verdicts are not affected: rounds 24/24b changed
+  `band_fn` / `targets` / `fit_fn` only, and rounds 27/28 called `band_walk_forward` on
+  frames they had built themselves.
 
 ## Walk-forward out of the production run
 

@@ -2,6 +2,8 @@
 Verdict classification and orchestration for the A/B backtest flow.
 See docs/AB_TESTING.md.
 """
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
@@ -15,6 +17,63 @@ DEFAULT_TARGET_NAMES = tuple(model_module.TARGETS.keys())
 PRIORITY_TARGETS = ("cheap2h", "min")
 # Print/report order: priority targets first.
 _REPORT_ORDER = ("cheap2h", "min", "avg", "max")
+
+
+# Pairs the harness fits together whatever the target filter asks for. enforce_coherence
+# rewrites min and cheap2h from each other, so either one fitted without the other is a
+# different model from the one Home Assistant receives (a cheap2h-only fit skips the
+# coherence step altogether).
+COHERENCE_PAIR = ("min", "cheap2h")
+
+
+def fitted_target_names(target_names, available) -> tuple:
+    """The targets a run fits for `target_names`: those, plus the other half of the
+    coherence pair when either half is asked for, in `available`'s order."""
+    wanted = set(target_names)
+    if wanted & set(COHERENCE_PAIR):
+        wanted |= set(COHERENCE_PAIR)
+    unknown = wanted - set(available) - set(COHERENCE_PAIR)
+    if unknown:
+        raise ValueError(f"unknown target(s) {sorted(unknown)}; the variant has {list(available)}")
+    return tuple(name for name in available if name in wanted)
+
+
+def restrict_targets(variant, target_names):
+    """The variant with only the targets a run fits (fitted_target_names). Fitting is
+    per target with fixed seeds, so the targets kept score exactly as in a full run."""
+    keep = fitted_target_names(target_names, variant.targets)
+    if keep == tuple(variant.targets):
+        return variant
+    return replace(variant, targets={name: variant.targets[name] for name in keep})
+
+
+def _vintage_builder(variant):
+    """build_vintage_frames calls build(**inputs); a variant's build_fn takes the dict."""
+    if variant.build_fn is None:
+        return None
+    return lambda **inputs: variant.build_fn(inputs)
+
+
+def build_arm_frames(inputs: dict, arms: dict) -> dict:
+    """
+    {arm: merged frame} for {arm: variant}. Arms without a build_fn share one
+    production frame. Every arm must come out with the production frame's rows --
+    the paired comparison runs both arms through identical slices -- so a build_fn
+    that drops or adds a day raises here instead of shifting every window.
+    """
+    production = build_training_data(**inputs)
+    frames = {}
+    for which, variant in arms.items():
+        if variant.build_fn is None:
+            frames[which] = production
+            continue
+        frame = variant.build_fn(inputs)
+        if list(frame["date"]) != list(production["date"]):
+            raise ValueError(
+                f"Variant '{variant.name}'.build_fn returned {len(frame)} rows, production builds "
+                f"{len(production)} (or the dates differ); a build_fn may change columns, never rows.")
+        frames[which] = frame
+    return frames
 
 
 def _apply_variant(data: pd.DataFrame, variant) -> pd.DataFrame:
@@ -450,17 +509,19 @@ def _init_worker(data, vintage_frames, train_window):
 
 def _worker_job(job):
     which, variant, shift = job
-    return which, shift, _point_errors(_WORKER["data"], variant, shift,
+    return which, shift, _point_errors(_WORKER["data"][which], variant, shift,
                                        train_window=_WORKER["train_window"],
-                                       vintage_frames=_WORKER["vintage_frames"])
+                                       vintage_frames=_WORKER["vintage_frames"][which])
 
 
 def _compute_points(data, jobs, train_window, vintage_frames, workers):
-    """Yield (which, shift, errors) in job order, in-process or on a pool."""
+    """Yield (which, shift, errors) in job order, in-process or on a pool. `data` and
+    `vintage_frames` are keyed by arm ("base" / "cand"): each arm is scored on its own
+    build_fn's frames."""
     if workers <= 1:
         for which, variant, shift in jobs:
-            yield which, shift, _point_errors(data, variant, shift, train_window=train_window,
-                                              vintage_frames=vintage_frames)
+            yield which, shift, _point_errors(data[which], variant, shift, train_window=train_window,
+                                              vintage_frames=vintage_frames[which])
         return
     # Process workers pickle the variants: module-level functions only, no lambdas. Pin
     # OMP_NUM_THREADS before launching -- XGBoost is not bit-identical across thread counts.
@@ -556,7 +617,10 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
     Args:
         inputs:       fetch_training_inputs()-shaped dict (from a snapshot).
         shifts:       List of shift values (see ab.harness.apply_shift).
-        target_names: Which targets to report (default: all of model.TARGETS).
+        target_names: Which targets to fit and report (default: all of model.TARGETS).
+                      min and cheap2h are always fitted together (COHERENCE_PAIR), so
+                      ("cheap2h",) fits both and skips avg/max; the targets that are
+                      fitted score exactly as in a full run.
         train_window: Rows each test week trains on; None = the headline eval's
                       expanding window. ab_test.py passes
                       harness.PRODUCTION_TRAIN_ROWS by default, which needs a
@@ -578,9 +642,21 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
         With vintages each entry also has "forecast": the same keys for the
         production-mapped forecast numbers, plus "penalty_base" / "penalty_cand".
     """
+    arms = {"base": restrict_targets(BASELINE, target_names),
+            "cand": restrict_targets(CANDIDATE, target_names)}
+    target_names = fitted_target_names(target_names, BASELINE.targets)
     print("Building training data from snapshot...")
-    data = build_training_data(**inputs)
+    frames = build_arm_frames(inputs, arms)
+    # The production frame: what the shared vintage frames are aligned to.
+    data = next((frames[w] for w, v in arms.items() if v.build_fn is None), None)
+    if data is None:
+        data = build_training_data(**inputs)
     print(f"  -> {len(data)} days of merged data")
+    for which, variant in arms.items():
+        if variant.build_fn is not None:
+            print(f"  {which} ({variant.name}) is scored on its own build_fn's frame")
+    if target_names != DEFAULT_TARGET_NAMES:
+        print(f"  fitting {', '.join(target_names)} only")
     if train_window:
         print(f"  training geometry: rolling {train_window} rows per test week "
               f"(what production fits on)\n")
@@ -599,8 +675,20 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
         print("Forecast-vintage weather (Open-Meteo Previous Runs, best_match):")
         vintage = VintageSet.for_snapshot(inputs, data, shifts, vintage_root)
         print()
-    vintage_frames = vintage.frames if vintage is not None else None
-    with_vintage = vintage_frames is not None
+    # An arm with its own build_fn gets its own lead frames, built by that build_fn on the
+    # same vintage weather; the rest share the production ones.
+    vintage_frames = {which: None for which in arms}
+    if vintage is not None:
+        for which, variant in arms.items():
+            if variant.build_fn is None:
+                vintage_frames[which] = vintage.frames
+            else:
+                from ab.vintage import build_vintage_frames
+                print(f"  building {which} ({variant.name}) vintage frames with its build_fn")
+                vintage_frames[which] = build_vintage_frames(
+                    inputs, vintage.vintages, frames[which], build=_vintage_builder(variant),
+                    log=lambda *args, **kwargs: None)
+    with_vintage = vintage is not None
     if with_vintage:
         print(f"Reporting {_ARCHIVE_TAG}")
         print(f"     and  {_FORECAST_TAG}")
@@ -609,11 +697,10 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
         print("Reporting ARCHIVE weather only (no forecast-vintage scoring: every weather input is a "
               "perfect forecast, so a weather-derived candidate is optimistic by the forecast error).\n")
 
-    jobs = [(which, variant, shift) for shift in shifts
-            for which, variant in (("base", BASELINE), ("cand", CANDIDATE))]
+    jobs = [(which, arms[which], shift) for shift in shifts for which in ("base", "cand")]
     errors, summ = {}, {}
     pending = {}
-    for which, shift, err in _compute_points(data, jobs, train_window, vintage_frames, workers):
+    for which, shift, err in _compute_points(frames, jobs, train_window, vintage_frames, workers):
         errors[(shift, which)] = err
         summ[(shift, which)] = {name: summarize_errors(err, name) for name in err[ARCHIVE]}
         pending.setdefault(shift, set()).add(which)

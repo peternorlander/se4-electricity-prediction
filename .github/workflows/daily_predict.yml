@@ -12,17 +12,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Set up Python 3.13
+      - name: Set up Python 3.14
         uses: actions/setup-python@v6
         with:
-          python-version: '3.13'
+          python-version: '3.14'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
 
       - name: Run prediction
+        id: predict
         env:
           ENTSO_E_TOKEN: ${{ secrets.ENTSO_E_TOKEN }}
           HA_URL: ${{ secrets.HA_URL }}
           HA_TOKEN: ${{ secrets.HA_TOKEN }}
         run: python predict.py
+
+      # predict.py reports its own outcome to sensor.electricity_price_predictions_run;
+      # this covers a run that stopped before it started (install, tests). Standard
+      # library only, so it works after a failed pip install.
+      - name: Report a run that failed before predict.py
+        if: failure() && steps.predict.conclusion == 'skipped'
+        env:
+          HA_URL: ${{ secrets.HA_URL }}
+          HA_TOKEN: ${{ secrets.HA_TOKEN }}
+        run: python run_status.py failed --stage workflow
