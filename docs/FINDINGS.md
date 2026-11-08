@@ -1188,6 +1188,12 @@ smooth summary of the nine points' forecasts that the raw columns give the model
 25.75 on vintages). It is one of two first-stage variants, picked after the numbers were seen, so it is plan 2.18's hypothesis with a
 bar written beforehand, not a result.
 
+*Scale, so the size is not misread (2026-10-25).* −0.36 is about 2.8 % of the `cheap2h` base error
+over D+2…D+4 (12.7 EUR/MWh) and −0.25 about 2 % of `min`'s (12.4); over all six sent days the lead
+is −0.19 (about 1.3 % of 14.8), and the all-horizon `CALR` was −0.19 archive / −0.16 vintage, inside
+the ~0.13–0.15 noise floor. The 11–21 % above is the share of the oracle's gain that the weather
+reaches, not an improvement of the forecast.
+
 **Data traps found.**
 * ENTSO-E revises A75 for the days just before a fetch: the top-up fetched on 2026-10-24 changed DE_LU wind by up to 2.5 % over 1–11
   October. A cache holds provisional values for its last ~10 days.

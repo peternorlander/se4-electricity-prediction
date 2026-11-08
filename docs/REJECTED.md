@@ -97,6 +97,8 @@ back, and nothing kept has survived a leave-one-out as droppable.
 | `^ICEEUA` (ICE EUA index) | Returns empty via yfinance. Use `CO2.L` instead. |
 | `ECF=F` (NYMEX EUA futures) | Not reliably available on Yahoo Finance. |
 | Svenska Kraftnät hydro API | No public REST API for reservoir data. Use ENTSO-E A72 instead. |
+| News, geopolitical-event and oil/Brent features (daily news indices, a binary crisis dummy), also on top of `ttf_vs_30d` | Not measured; excluded on mechanism (2026-11-08). TTF prices an event in faster and more quantitatively than any hand-built flag; a crisis dummy has 1–2 occurrences in a three-year window, so it is unlearnable; daily news indices at this frequency give XGBoost something to overfit; gas, not oil, sets the European marginal cost. Closed; reopens only with a source TTF does not already carry. |
+| ENTSO-E day-ahead load (A65) and wind/solar generation forecasts (A69) as forecast-day features | Not measured; excluded on reach (2026-11-08). Both are published for D+1 only and D+1 is never predicted ([FINDINGS.md §1.3](FINDINGS.md#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes)), so no sent day can have them. At best calibration data, which the A75 actuals already serve (round 29). Closed. |
 
 ## Model configuration and training window
 

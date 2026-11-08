@@ -88,7 +88,7 @@ The full walkthrough for running an experiment, including what to put in
 | [docs/TESTING.md](docs/TESTING.md) | What the test suite guards, when a test is added, and the rules a test follows | Fixing a defect or adding a contract |
 | [docs/AB_TESTING.md](docs/AB_TESTING.md) | The A/B harness, measurement grids, verdict functions, the adoption bar, the agent playbook | Before measuring anything |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Dated write-ups of what the model structurally cannot do and why | You are about to re-derive something the project already learned |
-| [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open work only: every open item; in section 4 what is ready now (in order), what waits for what, and the register of shadow arms running in production | Looking for what to work on — start here; "the next step" is the first item of its 4.1, and if 4.1 is empty there is nothing to do yet (waiting items are never started early or in part) |
+| [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open work only, including work paused halfway: every open item opens with a State line (where it is, what is done, blocked or not and why); in section 4 what is ready now (in order), what is blocked by what, and the register of shadow arms running in production | Looking for what to work on — start here; "the next step" is the first item of its 4.1, and if 4.1 is empty there is nothing to do yet (blocked items are never started early or in part) |
 | [SLOT_PREDICTION_PLAN.md](SLOT_PREDICTION_PLAN.md) | Spec for the per-slot targets (round 20), planned, not implemented | Working on slot prediction |
 
 ## How changes are documented
@@ -103,7 +103,8 @@ a commit message, a chat transcript, or a script under `experiments/`.
 | Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
 | A defect fixed | A test in `tests/` that fails on the code before the fix ([docs/TESTING.md](docs/TESTING.md)), plus a ledger entry if the fix moves numbers. |
-| Not done yet | The improvement plan only — never a ledger. Ready work in its 4.1, work that waits on a date, a cache or a decision in 4.2 with the condition. |
+| Not done yet | The improvement plan only — never a ledger. Ready work in its 4.1, work that waits on a date, a cache or a decision in 4.2 with the blocker. |
+| Started, then paused (any reason, including the end of a session) | The item's **State** line in the improvement plan: where it stands, what was done and found so far with its date and commit, where to resume, and either *not blocked — can be taken now* or *blocked by what, because why, until when*. Interim numbers stay there until the verdict is in; then the ledger entry takes over and they are cut. Never `experiments/`. |
 | A shadow arm running in production | A row in the plan's [shadow register (4.3)](IMPROVEMENT_PLAN.md#43-shadow-arms-in-production), from the commit that adds it to the one that removes it. Its item stays in the plan until then. |
 
 Five rules that make this work:
@@ -157,7 +158,9 @@ belongs in the ledgers above. Concretely, if you are working in that directory:
   next round, it was never scratch.
 - Do not add a README to `experiments/`, and do not leave "pending run" notes
   there. Open work lives in the improvement plan, which is the one place that is
-  read when deciding what to do next.
+  read when deciding what to do next. If you stop halfway, write the pause into the
+  item's State line there (see "Pausing an item" in [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md)),
+  in words that do not depend on the scripts surviving.
 - Raw result files are expensive to regenerate but are not a substitute for a
   written verdict. Assume they are gone on the next machine.
 

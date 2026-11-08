@@ -1,12 +1,10 @@
 # SE4 Prediction — Improvement Plan
 
-The to-do list for model accuracy: only what is **not yet done**. Since 2026-10-24 this is
-the one plan file — the 2026-08 list (the round-12 → round-19 follow-ups) and the
-September 2026 review (round 21 onwards, written 2026-09-08 as `IMPROVEMENT_PLAN_2026-09.md`)
-were merged here. What is open, in the order it should be done, is
-[section 4](#4-what-to-do-next-2026-10-31): what is ready now, what waits
-for what, and the shadow arms running in production. **"The next step" is the first item of
-[4.1](#41-ready-now-in-order); if 4.1 is empty, there is nothing to do yet** — waiting items
+The to-do list for model accuracy: only what is **not yet done**, which includes work that
+has been started and paused. What is open, in the order it should be done, is
+[section 4](#4-what-to-do-next): what is ready now, what is blocked and by what, and the
+shadow arms running in production. **"The next step" is the first item of
+[4.1](#41-ready-now-in-order); if 4.1 is empty, there is nothing to do yet** — blocked items
 are never started early or in part.
 
 **Item numbers are stable.** They are the September review's, and the docs, ledgers and
@@ -51,38 +49,47 @@ not, plus a section in [FINDINGS.md](docs/FINDINGS.md) when the round explained 
 ([README](README.md#how-changes-are-documented) has the rules). A half-done item keeps only
 what it still owes and where it stands. The ledgers are the record; this file is the
 to-do list. Section 4 is kept current in the same commit as the change that moves an item:
-ready or waiting (with its condition), and the shadow register while an arm runs.
+ready or blocked (with its blocker), and the shadow register while an arm runs.
 
-**Status 2026-10-31.** 2.12 Engineering hygiene was done in round 31 (2026-10-31,
-[DECISIONS.md](docs/DECISIONS.md#engineering-hygiene-round-31)); only the section 3 low-priority leads are
-ready, and everything else waits on a date, a cache or a decision, listed with its condition in [4.2](#42-waiting--not-started-until-the-condition-holds).
-One shadow arm runs in production, `blend` for 2.3b Three-model weather blend ([4.3](#43-shadow-arms-in-production)).
-Round 28 (2026-10-23) closed 2.7 (week-ahead documents) and turned up 2.19 (time index for
-`avg`) and 2.20 (nuclear column as production sees it); round 29 (2026-10-25) closed 2.1
-(rebuilding the residual load)
-([FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29))
-and left one lead, a near-horizon column, in 2.18 (near-horizon model).
+**Pausing an item.** An item may be paused for any reason — a missing cache, a date, a
+decision, or simply the end of a session — and what has been learned so far stays in the
+item, so that a later run can continue it without redoing it. The working material under
+`experiments/` is **not** that record: it is scratch, assumed gone on the next machine, so
+whatever a restart needs (the arms, the grid, the bar, the selection rule, what was already
+measured) is written here, in words. Script names may be given as a courtesy, never as the
+only description.
 
-`SLOT_PREDICTION_PLAN.md` (round 20) is unchanged and still in the queue; 2.6 has its one
-sequencing rule.
+Every item in section 2 opens with a **State** line that answers three questions:
+
+1. *Where is it?* `Not started` · `In progress` · `Paused` · `Running in production` (a
+   shadow arm, [4.3](#43-shadow-arms-in-production)) · `Parked` (nothing to build until
+   something changes).
+2. *Does anything stop the next step?* Exactly one of:
+   **Not blocked — can be taken now**, and for a paused item *resume at* the concrete next
+   action; or **Blocked by** *what* **because** *why*, **until** *when* (a date, a cache, a
+   decision, another item's verdict). A block without a *because* is not allowed: a reader
+   must be able to judge from the line whether the reason still holds. If nothing blocks, the
+   line says so in those words, so that nobody waits for something that is not there.
+3. *What exists already?* For a paused item: what was done and found so far, with the date
+   and the commit it was measured against. Interim numbers are not a verdict and do not
+   enter a ledger; they stay in the item until the verdict is in, then they are cut and the
+   ledger entry takes over ([README](README.md#how-changes-are-documented)). A result
+   measured on a model that has since changed on main is stale — say so, do not delete it.
+
+Section 4 is the index of the State lines: *Not blocked* means 4.1, *Blocked* means 4.2 with
+the blocker in a few words and the earliest date. The full *because* is written once, in the
+item.
 
 ---
 
 ## 1. The findings the items are built on — in docs/FINDINGS.md
 
-The four findings of the September 2026 review that most items below were built on,
-and the source probes and reproduction recipes behind them, are in
-[docs/FINDINGS.md](docs/FINDINGS.md#1-what-this-review-measured-2026-09-08-snapshot-ab_cache2026-09-05):
-
-| | Finding | Drives |
-|---|---|---|
-| §1.1 | [`residual_load` is temperature in disguise, and its wind term is saturated](docs/FINDINGS.md#11-residual_load-is-temperature-in-disguise-and-its-wind-term-is-saturated) | 2.1 (the primary item; closed in round 29); re-opens the intraday block |
-| §1.2 | [The regime the model was tuned on is moving away from it](docs/FINDINGS.md#12-the-regime-the-model-was-tuned-on-is-moving-away-from-it) | 2.5, 2.6 |
-| §1.3 | [Sources verified as reachable, with what they carry](docs/FINDINGS.md#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes) | 2.3, 2.7, 2.14 |
-| §1.4 | [The weather grid has no point under the northern wind fleet](docs/FINDINGS.md#14-the-weather-grid-has-no-point-under-the-northern-wind-fleet) | 2.13 |
-
-Appendix A (source probes, 2026-09-08) and Appendix B (reproduction recipes)
-moved with them.
+The September 2026 review's four findings (`residual_load` is temperature in disguise; the
+regime the model was tuned on is moving away from it; which sources are reachable and what
+they carry; the weather grid has no point under the northern wind fleet), the source probes
+(Appendix A) and the reproduction recipes (Appendix B) are in
+[docs/FINDINGS.md](docs/FINDINGS.md#1-what-this-review-measured-2026-09-08-snapshot-ab_cache2026-09-05).
+Items 2.5, 2.6 and 2.14 lean on §1.2 and §1.3 in particular.
 
 ---
 
@@ -93,6 +100,12 @@ failure would mean. Effort is a rough guess of agent time excluding compute.
 
 ### 2.2 Production prediction log and realised scorecard
 
+**State (2026-11-08):** In progress — the log is built and written by Node-RED on every run
+since 2026-10-18; the scorer is not written. **Blocked by** four weeks of logged rows,
+**because** a read before then covers only ~13 warned days and would say nothing the
+backtest does not, **until 2026-11-15** (later if the node was not writing every run from
+2026-10-18). Nothing else blocks it: on that date the scorer is the first thing to do.
+
 **Mechanism.** Every accuracy number in docs/MODEL.md is a backtest with two known
 optimisms that no backtest can remove: archive weather in place of the forecast
 (measured 2026-10-11 on vintages: +1.63 cheap2h / +1.69 min / +2.81 avg at production's
@@ -102,7 +115,7 @@ the log shows what it is in practice) and the gap1 fit tail (+0.155 / +0.258 /
 received is the record of what was sent, scored against what was realised.
 Until 2026-10-18 there was no such record: `predictions_raw` is overwritten on every push.
 
-**Status 2026-10-18: the log exists; the scorer is open.** The log is not in the repo and
+**What the log holds, for the scorer.** The log is not in the repo and
 not an Actions artefact. It lives in Peter's Home Assistant MariaDB (table
 `electricity_price_predictions_log`), written by a Node-RED function node from the
 sensor's `predictions_raw` right after each run — raw SEK/kWh, without the 5 % markup
@@ -126,14 +139,13 @@ table starts after the 2026-10-12 and 2026-10-16 changes, so the log has **no be
 for `cheap2h`**: production is judged against what the backtest predicted for it, not
 against an earlier production.
 
-**Not before 2026-11-15.** That is four weeks after the log started, the earliest point
-at which it is worth reading, so `score_production.py` and every step that reads the log
-(the 2.3b forward replay, 2.3c, 2.3d, the 2.10 and 2.13 production checks) wait until
-then; it is not written earlier either. What it buys: at ~4 weeks a first, descriptive
-look at MAE per horizon, at the band (it warns on ~46 % of days, so ~13 warned days — thin)
-and at the decision regret; at ~13 weeks the optimism re-derivation below. The clock is
-four weeks of daily rows from the day the Node-RED node is writing every run; if that is
-later than 2026-10-18, the date moves with it.
+**Why 2026-11-15.** That is four weeks after the log started, the earliest point at which
+it is worth reading, so `score_production.py` and every step that reads the log (the 2.3b
+forward replay, 2.3c, 2.3d, the 2.10 and 2.13 production checks) wait until then; the
+scorer is not written earlier either. What it buys: at ~4 weeks a first, descriptive look at
+MAE per horizon, at the band (it warns on ~46 % of days, so ~13 warned days — thin) and at
+the decision regret; at ~13 weeks the optimism re-derivation below. The clock is four weeks
+of daily rows from the day the Node-RED node is writing every run.
 
 **Reading the data (decided 2026-10-18).** The database is the record. The scorer reads
 a CSV export of the whole table (phpMyAdmin, dated file name) from
@@ -202,14 +214,15 @@ expectation.
 
 ### 2.3 The weather axis: price it, then improve it
 
-**2.3a — measured 2026-10-11, no longer an item.** Archive weather flatters the
-eval by +1.63 cheap2h / +1.69 min / +2.81 avg EUR/MWh at production's leads,
-almost all of it from D+5 (+1.0 … +2.1 at L5, +3.0 … +4.7 at L7 on cheap2h):
-[FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b).
-The README and MODEL.md numbers are read with that in mind until the baseline is
-re-measured on vintages.
+2.3a (what the archive weather flatters the eval by) was measured on 2026-10-11 and is
+closed: [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b).
 
-**2.3b Multi-model blend at serve time — measured, missed its strict bar.** The
+**2.3b Multi-model blend at serve time — measured, missed its strict bar.**
+**State (2026-11-08):** Running in production (shadow arm `blend`, [4.3](#43-shadow-arms-in-production)).
+**Blocked by** the production scorer (2.2) and four weeks of logged `blend` rows, **because** a forward
+comparison needs both arms on unchanged code and enough days to judge a −0.2 difference;
+**until** four weeks after the first logged `blend` row, and not before 2026-11-15. The
+item may not leave this plan while the arm is in `predict.py`. The
 hourly mean of ECMWF, ICON and GFS recovers ~25 % of the penalty (cheap2h −0.37,
 min −0.42, avg 0) and is negative in all 15 cache × cluster cells, but the
 pre-registered per-lead bar was met on 0 of 5 ([REJECTED.md](docs/REJECTED.md)).
@@ -222,14 +235,19 @@ lead j + 2): production-mapped cheap2h and min negative in every cluster-equival
 period and the pooled change ≤ −0.2. Cost at serve time: three model requests for
 nine points.
 
-**2.3c Train on what you serve.** The headroom is now a number: +1 … +5 EUR/MWh on
+**2.3c Train on what you serve.** **State:** Not started. **Blocked by** the 2.3b verdict,
+**because** that verdict tells whether the loss is in the forecast (the blend recovers it) or
+in the model (this item); **until** 2.3b has one. The headroom is now a number: +1 … +5 EUR/MWh on
 cheap2h at L5–L7. Mechanism unchanged — the model learns price = f(analysis
 weather) and is served f(forecast weather) — but vintages exist only from 2024-03,
 so far-lead rows would train on ~2.6 years. Per-lead models or a stacked set with
 a lead column; start only after the 2.3b replay shows whether input quality or
 model mismatch carries the penalty. Bar as 2.3b.
 
-**2.3d Ensemble spread as an interval conditioner.** Mechanism: the conformal band
+**2.3d Ensemble spread as an interval conditioner.** **State:** Not started. **Blocked by**
+the production scorer (2.2) and by a written bar plus its own shadow arm
+([README](README.md#adding-a-shadow-arm-to-the-prediction-log)), **because** the ensemble has
+no vintage archive, so it can only be scored live; **until** 2.2 exists. Mechanism: the conformal band
 is one width for the whole forecast set, adjusted by a single correction. Weather
 uncertainty varies day to day and is observable as the 51-member spread of
 `wind_speed_100m`. Condition the conformity quantile on spread bins (or add spread
@@ -241,6 +259,9 @@ prospectively via 2.2.
 
 ### 2.5 The hurdle's label under regime drift — only the slot-specific arm is left
 
+**State (2026-11-08):** Not started. **Blocked by** 2.6 (slot targets), **because** the
+slot-specific hurdle needs the slot targets to exist; **until** 2.6 is built.
+
 H5 (threshold 5 EUR/MWh) and HQ (trailing 10th-percentile label) were measured on
 five caches and are NOISE ([REJECTED.md](docs/REJECTED.md)). What remains is
 **HS**: `P(cheap2h_day < 0)` and `P(cheap2h_night < 0)` as two probabilities, the
@@ -250,7 +271,12 @@ hurdle on `min` (closed twice).
 
 ### 2.6 Slot targets (round 20)
 
-Unchanged: `SLOT_PREDICTION_PLAN.md` is the spec. It used to wait for the residual-load
+**State (2026-11-08):** Not started. **Blocked by** the November run (2.19, 2.20, 2.18),
+**because** slot targets go into `model.TARGETS`, which `ab.variants.BASELINE` mirrors, and a
+baseline must not move while another candidate is being measured; **until** that run's
+verdicts are in. Nothing else blocks it.
+
+`SLOT_PREDICTION_PLAN.md` is the spec. It used to wait for the residual-load
 rebuild (old 2.1), which would have given the model a feature that tells a night-wind trough
 from a midday-solar one; that item closed in round 29 (the weather reaches 11–21 % of what a
 physical residual is worth, [FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29)),
@@ -261,6 +287,10 @@ Do not wire them in mid-A/B. `ab.variants.BASELINE` mirrors `model.TARGETS`
 being measured, and vice versa.
 
 ### 2.10 `min ≤ cheap2h` coherence — shipped 2026-10-12, re-check in ~3 months
+
+**State (2026-11-08):** Shipped; the re-check is not started. **Blocked by** a long cache
+from mid-January 2027, **because** the question is whether the freshest year still pays and
+only a cache with new NOW windows can answer it; **until 2027-01-15**.
 
 Record and arms: [DECISIONS.md](docs/DECISIONS.md#min--cheap2h-coherence-round-25). Every
 number there is a full evaluation year (52 weekly windows) and the three clusters are three
@@ -277,6 +307,10 @@ same question.
 
 ### 2.11 Longer horizon for the automation (product decision, cheap)
 
+**State (2026-11-08):** Not started. **Blocked by** Peter's decision, **because** the model
+cost is nil and the only question is whether the automation wants a 14-day view; **until**
+he says so. Nothing technical blocks it.
+
 Open-Meteo serves `forecast_days=16`; the pipeline requests 8 and sends **six**
 predicted days (D+2..D+7): today and tomorrow have published prices, and the last
 Swedish date of a UTC request is a 1–2 hour stub that `predict.py` drops (until
@@ -291,6 +325,10 @@ the interval, and report it separately in 2.2. Whether the automation wants a
 14-day view is Peter's call; the model cost is nil.
 
 ### 2.13 Northern wind points — shipped 2026-10-12, replayed 2026-10-22
+
+**State (2026-11-08):** Shipped and replayed; only the production check is open. **Blocked
+by** the production log (2.2), **because** the check scores served `cheap2h` against the
+backtest's expectation and needs four weeks of rows; **until 2026-11-15**.
 
 Record: [DECISIONS.md](docs/DECISIONS.md#northern-wind-points-round-25). Hydro
 precipitation and a fourth site (Sundsvall) were measured and rejected
@@ -309,6 +347,11 @@ each single site gave ~half the three-site gain, so the regional average is the
 signal and three points seem to saturate it.
 
 ### 2.14 Nord Pool UMM as the outage source
+
+**State (2026-11-08):** Parked, nothing built. **Blocked by** a missing consumer,
+**because** every use UMM had (the nuclear features of 2.7, the interconnector columns) has
+been closed on its merits, so a source with no column to feed is cost without a question;
+**until** a new per-day column from a revisioned document is proposed.
 
 **Mechanism.** The open question in old item 0 / 2.4 was whether ENTSO-E A78
 is usable as a *forward-looking* feature, because the API returns the current
@@ -368,6 +411,13 @@ builder shared with 2.3a.
 
 ### 2.18 A near-horizon model that reads the price (added 2026-10-22)
 
+**State (2026-11-08):** Not started; the design and three pre-registered bars are written
+below. **Blocked by** a long cache fetched at least four weeks after `long/2026-10-16`,
+**because** two of its three candidates (the `avg` `_mw` split and `CALRn`) were chosen after
+their numbers were seen on the six existing caches, which share most of their NOW window, so
+only a cache with genuinely new NOW windows can confirm them; **until 2026-11-13**. It is
+evaluated in the same pass as 2.19 and 2.20 and is Peter's to take up.
+
 **Idea (Peter's).** A frozen price lag is information about tomorrow's price and noise
 about next week's. Today one model serves every day, so it either reads the price on
 every day or on none. The price/market family was pruned from `min`, `cheap2h` and `avg`
@@ -420,12 +470,12 @@ reads the price today.
 eight-zone load − wind − solar (A75 + A65, GW) from the day's weather and calendar by an
 XGBoost first stage (200 trees, depth 3, no time index, out-of-fold on the training rows),
 for D+2…D+4 on `cheap2h` and `min`. Round 29, forecast vintages at production's map:
-`cheap2h` D+2…D+4 **−0.36** (NOW −0.37 / −6M −0.36 / FAR −0.34, every cache), `min` −0.25,
-and −0.03 / −0.11 at D+5…D+7; on archive weather only −0.13 on `cheap2h` (REAL on the primary,
-NOISE on four caches), so it is a gain that exists on a forecast and not on the archive,
-chosen after the numbers were seen as the better of two first-stage variants
-([FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29)).
-Neutral in the newest four weeks. **Bar, written 2026-10-25 before any replication exists:** on a
+`cheap2h` D+2…D+4 **−0.36** (every cache and cluster), `min` −0.25, and ~0 at D+5…D+7; a gain
+that exists on a forecast and not on the archive, chosen after the numbers were seen as the
+better of two first-stage variants, and neutral in the newest four weeks. The table, the
+size of the effect in percent of the base error and the traps are in
+[FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29).
+**Bar, written 2026-10-25 before any replication exists:** on a
 long cache fetched mid-November 2026 or later (with its own vintage fetch and the A75/A65
 top-up, `experiments/fetch_round29_entsoe.py --since 2026-10-01`), the production-mapped
 D+2…D+4 delta is negative in every cluster on `cheap2h` and not positive on `min`, the
@@ -435,12 +485,6 @@ base,CALRn` in the same pass as the price family. Cost if it holds: A75 + A65 fo
 fetched on every run (about five minutes with the token production already uses) and a first
 stage refit per run; it would be a column of the near model, never of the all-horizon lists.
 The `avg` version fails on vintages (NOW +0.62) and is not part of this.
-
-*Scale, so the size is not misread (Peter's question, 2026-10-25):* −0.36 is about 2.8 % of the
-`cheap2h` base error over D+2…D+4 (12.7 EUR/MWh), −0.25 about 2 % of `min`'s (12.4); over all six
-sent days the lead is −0.19 (about 1.3 % of 14.8), and the all-horizon `CALR` was −0.19 archive /
-−0.16 vintage, inside the ~0.13–0.15 noise floor. The 11–21 % in FINDINGS is the share of the
-oracle's gain that the weather reaches, not an improvement of the forecast.
 
 **It is part of the horizon-split evaluation, not a separate run.** The near/far split N (the
 "Measurement geometry" paragraph below) is chosen per horizon, and `CALRn` is scored in that
@@ -478,14 +522,25 @@ the quantity most exposed to that.
 
 ### 2.19 A time index for `avg` (added 2026-10-23, found as a control in round 28)
 
+**State (2026-11-08):** Paused — prepared, not run. **Blocked by** a long cache fetched at
+least four weeks after `long/2026-10-16`, **because** the six existing caches share most of
+their NOW window and the gain there is partly the recent coupled weeks, and because the
+six-cache half was once started alone (2026-10-31) and went stale when main changed; it is
+therefore run together with the replication cache; **until 2026-11-13** (the fetch script
+refuses earlier). *Done so far:* the arms below and the rule that picks the candidate arm are
+scripted (`experiments/run_round30.py`, scratch), and its selfcheck reproduces round 28's `base`
+and `TI` to the digit; the fetch (`experiments/fetch_round30.ps1`, with `-WithTopUps` for 2.20 and
+2.18, `-Run` for the replication grid) is written. *Resume at:* fetch, then `run_round30.py run`
+and `analyze` on the six old caches and the new one in one pass. If the scripts are gone, the
+arms and the bar below are the whole specification.
+
 **What was found.** Adding `t_index` (days since 2021-10-21 / 365) to the `avg` model is REAL on all
-six long caches — six-cache mean **−0.28** (−0.18 … −0.43), negative in NOW, −6M and FAR on every cache,
-per-window std ×0.96 – 1.00 — on top of the half-life-500 weights `avg` already has. The date is known for every
+six long caches — six-cache mean **−0.28** (−0.18 … −0.43), negative in every cluster, per-window std
+×0.96 – 1.00 — on top of the half-life-500 weights `avg` already has. The date is known for every
 forecast day and nothing in the column is weather, so neither the forecast-vintage trap nor the AF condition
-applies. On `cheap2h` (+0.23) and `min` (+0.16) the same column is REAL-harmful on five caches
-([REJECTED.md](docs/REJECTED.md), [FINDINGS.md](docs/FINDINGS.md#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28)).
-It is a control that turned out to be a result, found after the main round was read, and measured only on
-the six overlapping caches — a lead, not a change.
+applies. On `cheap2h` and `min` the same column is REAL-harmful
+([REJECTED.md](docs/REJECTED.md)). It is a control that turned out to be a result, found after the main round
+was read and measured only on the six overlapping caches — a lead, not a change.
 
 **Mechanism to test, not assume.** `avg` is the one target that wants recency. Half-life weights give recent
 rows more weight; a time index lets the trees give the newest regime its own leaf, and every forecast row
@@ -508,15 +563,15 @@ feeds no band.
 **Effort.** Half a day; about one hour of compute (one target, 12 points per cache). No new fetch except the
 replication cache.
 
-**Prepared 2026-10-31 (round 30), not run.** `experiments/run_round30.py` holds the arms above (plus `max`
-with and without the index) and a pre-registered rule for which arm becomes the candidate; its selfcheck
-reproduces round 28's `base` and `TI` to the digit. The six old caches are run **together with** the
-replication cache, not ahead of it: about two hours of compute that any change to main before then would
-make stale. `experiments/fetch_round30.ps1` fetches the cache (refuses before 2026-11-13) and the vintages;
-`-WithTopUps` adds the A77 and A75/A65 top-ups of 2.20 / 2.18, `-Run` runs the replication grid. Then
-`run_round30.py run` and `analyze` for the six caches.
+The script also runs `max` with and without the index. The six old caches cost about two hours of
+compute, which is why they are not run ahead of the replication cache.
 
 ### 2.20 The decomposed nuclear column, replayed as production sees it (added 2026-10-24, run with 2.19)
+
+**State (2026-11-08):** Not started; scripts exist (`experiments/run_round28.py`). **Blocked
+by** the same replication cache as 2.19, **because** both arms are leads picked as the best of
+seven on caches that share their windows, and a parser change on a lead inside the noise floor
+is not worth its risk; **until 2026-11-13**, in the same pass as 2.19.
 
 **What is open.** Round 28 closed the nuclear column on its pre-registered bar (scored with every record
 visible, HS). Scored as production actually serves it (AF: planned outages visible, forced ones only once
@@ -546,6 +601,10 @@ passes.
 
 ### 2.21 Dependency updates through Dependabot (added 2026-11-08)
 
+**State (2026-11-08):** Not started. **Not blocked — can be taken now** (it is 4.1 item 2).
+One timing rule: not on the day of a 4.2 run, since a version change on main makes a waiting
+result stale.
+
 **What and why.** `requirements.txt` has been pinned exactly since round 31. Nothing changes
 without a commit, but nobody notices when a new release comes out either. Running unpinned
 would not fix that: the runner would change versions on a random morning without anyone
@@ -562,8 +621,9 @@ whatever the schedule.
    `github-actions` (checkout, setup-python), on the same schedule.
 2. `tests.yml` already runs the suite on every pull request, so a Dependabot PR shows green
    or red before it is merged.
-3. A committed version check, built from `experiments/run_round31_harness.py` (`points` +
-   `compare`, which will disappear with `experiments/`). It runs the six long caches in the
+3. A committed version check. A draft exists in `experiments/run_round31_harness.py`
+   (`points` + `compare`), but that directory is scratch: the deliverable is a script under
+   version control, and the draft is only where to start. It runs the six long caches in the
    current environment and in one with the PR's pins. It reports, per target and cache, the
    MAE change, the largest row change and the fit time.
 4. A README paragraph, "Updating dependencies". It covers what to do with each group's PR,
@@ -581,9 +641,15 @@ fetch-library PR merges on green tests.
 **Effort.** About two hours: config, script, README. Afterwards, one PR per group per
 quarter, and about 15 minutes for the version check on a numeric PR.
 
-## 3. Carried at low priority, and what stays closed
+## 3. Carried at low priority
+
+Leads with a stated mechanism and a low prior. They are not blocked by anything, but they are
+taken only when 4.1 has nothing before them, and not while a 4.2 run is due within a week.
+What stays closed is in [REJECTED.md](docs/REJECTED.md), not here.
 
 ### `ttf_vs_30d` — a regime-abnormality ratio, low expected yield
+
+**State (2026-11-08):** Not started. **Not blocked — can be taken now.**
 
 **Mechanism.** World events do not hit SE4 prices directly; they transmit through fuel
 markets (`ttf_price_lag1`, `ttf_rolling_7d`, `co2_price_lag1`, `gas_marginal_cost`),
@@ -604,27 +670,12 @@ is the stronger route to the same problem.
 
 ### The rest
 
-**Also low priority, carried:** `cpl_gap7` on cheap2h and the q90 decision rule at H=7
-(round 19 follow-ups); `B6_fuel_co2` on min, pending post-crisis training windows
-(~2026-10, per the rejected table).
-
-**Not re-opened, no new mechanism:** price-level features for the trough targets
-(round 18), the SE3 / system price lag among them — its physical route, the northern wind
-points (2.13), shipped instead; anchored targets (19b); window length (15); per-target
-hyperparameters (13.1); `reg:absoluteerror`; seed ensembling; the avg-anchored clamp. The
-solar-capacity index was superseded by 2.1-C, which closed in round 29 ([REJECTED.md](docs/REJECTED.md)); not re-opened.
-
-**News, geopolitical-event and oil features stay out**, also on top of `ttf_vs_30d`. TTF
-prices an event in faster and more quantitatively than any hand-built flag, a binary
-crisis dummy has only 1–2 occurrences in a three-year window (unlearnable), and daily news
-indices at this frequency mostly give XGBoost something to overfit. Oil/Brent is not worth
-adding either: gas, not oil, sets the European marginal cost, and gas is covered.
-
-**Not a feature source:** ENTSO-E day-ahead load (A65) and wind/solar generation
-forecasts (A69) reach D+1 only, and D+1 is never predicted (the horizon column of
-[FINDINGS.md §1.3](docs/FINDINGS.md#13-sources-verified-as-reachable-with-what-they-carry-appendix-a-has-the-probes)),
-so they cannot be forecast features. They would be calibration data at best, which A75
-actuals already serve (2.1-C, closed in round 29).
+**Also low priority, carried** (each **Not started, not blocked** unless stated):
+`cpl_gap7` on cheap2h and the q90 decision rule at H=7 (round 19 follow-ups); and
+`B6_fuel_co2` on `min`, **blocked by** far periods that train on post-crisis windows,
+**because** its gain tracked how much fuel-price turbulence the training window held
+([REJECTED.md](docs/REJECTED.md), the `min` add-back row); **until** the mid-November cache,
+which is read with the time-index run.
 
 **Structural note, not an item.** Nordic flow-based market coupling went live
 2024-10-30, inside the training window. If a later analysis finds a step
@@ -634,20 +685,24 @@ index.
 
 ---
 
-## 4. What to do next (2026-10-31)
+## 4. What to do next
 
-Three lists. **A request for "the next step" of this plan means the first item of 4.1, and
-nothing else.**
+Three lists, built from the State lines of section 2. **A request for "the next step" of this
+plan means the first item of 4.1, and nothing else.**
 
-- Nothing in 4.2 is started — not partly, not early, not "the half that can run now", not a
-  fetch script or a prepared run for it — until its condition holds. A result measured on
-  today's model goes stale with the next change to main (round 30, 2026-10-31: the six-cache half
-  of 2.19 was started early and stopped for that reason).
-- Before taking the first item of 4.1, check 4.2: an item whose condition now holds (its date
+- 4.1 holds every item whose State says *Not blocked*, in priority order — a paused item whose
+  blocker has cleared is continued from its *resume at*, not restarted.
+- 4.2 holds every item whose State says *Blocked*. Nothing in it is started — not partly, not
+  early, not "the half that can run now", not a fetch script or a prepared run for it — until
+  the blocker clears. A result measured on today's model goes stale with the next change to
+  main (round 30, 2026-10-31: the six-cache half of 2.19 was started early and stopped for that
+  reason). Pausing is different: stopping an item and writing down where it stands is always
+  allowed, and it is what the State line is for.
+- Before taking the first item of 4.1, check 4.2: an item whose blocker has cleared (its date
   has passed, its cache exists, its decision is made) moves into 4.1 at its place in the priority
-  order, in the same commit that starts it.
+  order, in the same commit that starts it, and its State line is rewritten to *Not blocked*.
 - **If 4.1 is empty, the answer is that nothing is ready**: say so, list what 4.2 waits for and
-  the earliest date, and stop. Do not pick a waiting item instead.
+  the earliest date, and stop. Do not pick a blocked item instead.
 - 4.3 is the register of shadow arms running in production.
 
 ### 4.1 Ready now, in order
@@ -659,20 +714,23 @@ nothing else.**
    version check and a merge bar. Engineering, no model change; it can be done at any time,
    but not on the day of a 4.2 run.
 
-### 4.2 Waiting — not started until the condition holds
+### 4.2 Blocked — not started until the blocker clears
 
-| Item | Waits for | Earliest | Then |
-|---|---|---|---|
-| **2.19 Time index for `avg`** — does a "days since start" column (or a shorter half-life) help the `avg` model? · **2.20 Nuclear column as production sees it** — two rebuilt outage columns for `avg` · **2.18 Near-horizon model** — a second model for the first sent days that reads recent prices and a calibrated residual load | A long cache fetched four weeks after `long/2026-10-16` | 2026-11-13 | One fetch day: `experiments/fetch_round30.ps1 -WithTopUps` (cache, vintages, A77 and A75/A65 top-ups). Then the time index (`run_round30.py`, six old caches + the new one in one go), the nuclear column (`run_round28.py`, new cache only), the near-horizon model (Peter takes it up separately, 2026-10-22). Run `TI` and a residual arm next to any `avg` result and a permuted null next to any block of more than a few columns. All bars are written down. |
-| **2.2 Production scorecard** — score what was sent to Home Assistant against realised prices · **2.13 Northern wind, production check** — does the shipped wind feature pay off live? | Four weeks of the prediction log (Peter, 2026-10-18) | 2026-11-15 | Export the table to `ab_cache/prediction_log/`; write `score_production.py`; score the northern wind against the forecast-weather expectation in DECISIONS.md. |
-| **2.3b Three-model weather blend, forward test** — is the blend shadow (4.3) better than the served forecast? | The production scorecard, and four weeks of logged `blend` rows | four weeks after the first blend row | Score `served` against `blend` on the same days with the bar in 2.3b; then end the arm (4.3). |
-| **2.3c Train on forecast weather** — train on the weather production is served, not the archive | The blend test's verdict (is the loss in the forecast, or in the model?) | after 2.3b | As 2.3c. |
-| **2.3d Weather-uncertainty band** — widen the `cheap2h` band on days the weather ensemble disagrees | The production scorecard; scorable only live, so it needs its own shadow arm and a written bar first (README, "Adding a shadow arm") | after 2.2 | As 2.3d. |
-| **2.6 Slot targets** — predict the cheap price per part of day (00–08 / 08–16 / 16–24) · then **2.5-HS** — a negative-price probability per slot | The feature set settling: the verdicts of the November run above | after that run | `SLOT_PREDICTION_PLAN.md`; not wired in while another candidate is being measured. |
-| **2.10 `min ≤ cheap2h` coherence, re-check** — is the shipped rule still worth it on the freshest year? | A long cache from mid-January 2027 | 2027-01-15 | On/off on NOW and −6M, bar in 2.10. |
-| **2.11 Longer horizon** — send 14 days instead of 6 | Peter's product decision: does the automation want a 14-day view? | — | Parameter change + band; reported separately in the scorecard. |
-| **2.14 Nord Pool outage messages (UMM)** — a versioned outage source | A consumer: a new per-day column from a revisioned document | — | Parked; nothing uses it. |
-| **`B6_fuel_co2` on `min`** — fuel and carbon prices back into the `min` model (section 3) | Far periods that train on post-crisis windows | the mid-November cache, with the time-index run | Re-read as the rejected-table row says. |
+The index of the *Blocked* State lines. Only a few words of the blocker are repeated here;
+the *because*, what is done so far and where to resume are in the item.
+
+| Item | Blocked by | Earliest |
+|---|---|---|
+| **2.19 Time index for `avg`** (paused, prepared) · **2.20 Nuclear column as production sees it** · **2.18 Near-horizon model** | A long cache fetched four weeks after `long/2026-10-16`; one fetch day (`experiments/fetch_round30.ps1 -WithTopUps`), then one pass over all three | 2026-11-13 |
+| **2.2 Production scorecard** · **2.13 Northern wind, production check** | Four weeks of the prediction log | 2026-11-15 |
+| **2.3b Three-model weather blend** (shadow arm running, 4.3) | The scorecard (2.2) and four weeks of logged `blend` rows | four weeks after the first `blend` row, not before 2026-11-15 |
+| **2.3c Train on forecast weather** | The 2.3b verdict | after 2.3b |
+| **2.3d Weather-uncertainty band** | The scorecard (2.2), a written bar and its own shadow arm | after 2.2 |
+| **2.6 Slot targets** · then **2.5 Hurdle label, slot-specific arm** | The November run above (a baseline must not move mid-measurement); 2.5 also needs 2.6 | after that run |
+| **2.10 `min ≤ cheap2h` coherence, re-check** | A long cache from mid-January 2027 | 2027-01-15 |
+| **2.11 Longer horizon** | Peter's product decision | — |
+| **2.14 Nord Pool outage messages (UMM)** (parked) | A consumer: a new per-day column from a revisioned document | — |
+| **`B6_fuel_co2` on `min`** (section 3) | Far periods that train on post-crisis windows | the mid-November cache |
 
 ### 4.3 Shadow arms in production
 
