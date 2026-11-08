@@ -59,7 +59,7 @@ pip install -r requirements.txt
 | List cached snapshots | `python ab_test.py list` | Lists `ab_cache/long/`; `--root ab_cache` for the production-shaped ones. Reports each snapshot's **weather tail**; snapshots with different tails must not share one measurement grid. |
 | Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters); `--targets cheap2h` (or `avg`, …) fits only what the screen needs — `min` and `cheap2h` always together. Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
 | Fetch / check the forecast vintages | `python ab_test.py vintages` | Warms `ab_cache/vintages/` for a snapshot's evaluated days and fails if any hour lacks a vintage. `run` does this itself; use it to fetch ahead of a long run. |
-| Run the tests | `python -m pytest` | `pip install -r requirements-dev.txt` first. Offline; the snapshot checks run once per cache under `ab_cache/long/` and are skipped where there is none (the Actions runner). The workflow runs the suite before `predict.py`, so a failing test stops the production run. |
+| Run the tests | `python -m pytest` | `pip install -r requirements-dev.txt` first. Offline; the snapshot checks run once per cache under `ab_cache/long/` and are skipped where there is none (the Actions runner). Runs on every push and pull request (`tests.yml`). How to add one: [docs/TESTING.md](docs/TESTING.md). |
 | Self-check the verdict rules | `python ab/check_verdict.py` | |
 | Self-check forecast-vintage scoring | `python ab/check_vintage.py` | Offline mechanics; add `--snapshot YYYY-MM-DD` for the bit-identity check against the pre-vintage harness. |
 
@@ -85,6 +85,7 @@ The full walkthrough for running an experiment, including what to put in
 | [docs/FEATURES.md](docs/FEATURES.md) | Every data source and every engineered column, with its formula and purpose | You need to know what a column means |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Ledger of **adopted** changes: when, the evidence, the mechanism | You are wondering why something is built this way |
 | [docs/REJECTED.md](docs/REJECTED.md) | Ledger of **rejected** changes, grouped by what they touched | Before trying anything — it is probably in here |
+| [docs/TESTING.md](docs/TESTING.md) | What the test suite guards, when a test is added, and the rules a test follows | Fixing a defect or adding a contract |
 | [docs/AB_TESTING.md](docs/AB_TESTING.md) | The A/B harness, measurement grids, verdict functions, the adoption bar, the agent playbook | Before measuring anything |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Dated write-ups of what the model structurally cannot do and why | You are about to re-derive something the project already learned |
 | [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md) | Open work only: every open item; in section 4 what is ready now (in order), what waits for what, and the register of shadow arms running in production | Looking for what to work on — start here; "the next step" is the first item of its 4.1, and if 4.1 is empty there is nothing to do yet (waiting items are never started early or in part) |
@@ -101,6 +102,7 @@ a commit message, a chat transcript, or a script under `experiments/`.
 | A/B rejected | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round. Delete the item from the improvement plan. |
 | Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
+| A defect fixed | A test in `tests/` that fails on the code before the fix ([docs/TESTING.md](docs/TESTING.md)), plus a ledger entry if the fix moves numbers. |
 | Not done yet | The improvement plan only — never a ledger. Ready work in its 4.1, work that waits on a date, a cache or a decision in 4.2 with the condition. |
 | A shadow arm running in production | A row in the plan's [shadow register (4.3)](IMPROVEMENT_PLAN.md#43-shadow-arms-in-production), from the commit that adds it to the one that removes it. Its item stays in the plan until then. |
 
@@ -191,7 +193,7 @@ For the tests: `pip install -r requirements-dev.txt`, then `python -m pytest`.
 
 ### GitHub Actions
 
-The pipeline is defined in `.github/workflows/daily_predict.yml` (install the pinned requirements → `pytest` → `predict.py`; a failure before `predict.py` is reported to the run-status sensor by its last step) and runs on `workflow_dispatch` — triggered via the GitHub API from a Node-RED flow in Home Assistant (no fixed schedule). Secrets are configured in the repository settings matching the environment variables above.
+The pipeline is defined in `.github/workflows/daily_predict.yml` (install the pinned requirements → `predict.py`; a failure before `predict.py` is reported to the run-status sensor by its last step) and runs on `workflow_dispatch` — triggered via the GitHub API from a Node-RED flow in Home Assistant (no fixed schedule). Secrets are configured in the repository settings matching the environment variables above. The test suite has its own workflow, `.github/workflows/tests.yml`, on every push and pull request; it needs no secrets.
 
 ## Home Assistant Integration
 

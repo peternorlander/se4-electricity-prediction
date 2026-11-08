@@ -17,11 +17,10 @@ jobs:
         with:
           python-version: '3.14'
 
+      # The test suite runs on every push instead (tests.yml); the code a run uses is the
+      # code that was tested there.
       - name: Install dependencies
-        run: pip install -r requirements.txt -r requirements-dev.txt
-
-      - name: Run tests
-        run: python -m pytest -q
+        run: pip install -r requirements.txt
 
       - name: Run prediction
         id: predict
@@ -32,7 +31,7 @@ jobs:
         run: python predict.py
 
       # predict.py reports its own outcome to sensor.electricity_price_predictions_run;
-      # this covers a run that stopped before it started (install, tests). Standard
+      # this covers a run that stopped before it started (install). Standard
       # library only, so it works after a failed pip install.
       - name: Report a run that failed before predict.py
         if: failure() && steps.predict.conclusion == 'skipped'

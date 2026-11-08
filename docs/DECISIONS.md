@@ -56,8 +56,11 @@ skipping the sort, `_splice_recent` letting the recent analysis overwrite the ar
 keeping today's partial day, a broken `cheap2h` aggregation, the risk converted to SEK, and
 complete days assumed to be 24 hours. The snapshot tests run the production data check and
 the DST/gap checks once per cached long snapshot and are skipped on the runner, which has
-no cache. It also runs the offline parts of `ab/check_verdict.py` and `ab/check_vintage.py`. The latter had been failing since the 2.3b blend commit earlier the same day: its stub of `_fetch_location_series` did not take the new `models` argument. The stub is fixed, and the `--snapshot 2026-10-16` bit-identity part passes (153 checks). The suite passes on Windows and on Linux with the pinned versions. The workflow
-installs `requirements-dev.txt` and runs the suite first, so a failing test stops the run
+no cache. It also runs the offline parts of `ab/check_verdict.py` and `ab/check_vintage.py`. The latter had been failing since the 2.3b blend commit earlier the same day: its stub of `_fetch_location_series` did not take the new `models` argument. The stub is fixed, and the `--snapshot 2026-10-16` bit-identity part passes (153 checks). The suite passes on Windows and on Linux with the pinned versions. (2026-11-08: the suite moved out of the daily workflow into `tests.yml`, on every push and
+pull request; with pinned packages the code a production run uses is the code tested at its
+push, and a test failing for its own reasons should not block a prediction. How to add a
+test: [TESTING.md](TESTING.md).) At first the workflow
+installed `requirements-dev.txt` and ran the suite first, so a failing test stopped the run
 before anything is pushed.
 
 **A data check that fails the run** (`data_checks.check_training_data`, called after

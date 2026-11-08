@@ -1,0 +1,28 @@
+name: Tests
+
+# The suite checks the code, and the code only changes with a commit, so it runs on every
+# push and pull request (Dependabot's included), not before each daily prediction. The
+# per-run guard on the fetched data is data_checks.py inside predict.py.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q

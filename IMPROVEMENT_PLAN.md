@@ -544,6 +544,43 @@ is ahead by more than 0.05. If neither passes, 2.20 is closed for good and the c
 **Effort.** No extra compute beyond 2.19's run (one target, two arms); the parser change about two hours if it
 passes.
 
+### 2.21 Dependency updates through Dependabot (added 2026-11-08)
+
+**What and why.** `requirements.txt` has been pinned exactly since round 31. Nothing changes
+without a commit, but nobody notices when a new release comes out either. Running unpinned
+would not fix that: the runner would change versions on a random morning without anyone
+seeing it, as it did with xgboost 3.4.1. Dependabot is GitHub's own update bot. It checks on a
+schedule and opens a pull request with the new pins, and the owner is notified. Security
+alerts for a pinned version with a known vulnerability come separately and at once,
+whatever the schedule.
+
+**How.**
+1. `.github/dependabot.yml`: ecosystem `pip` on `/`, `schedule.interval: quarterly`, two
+   groups. The *numeric stack* (pandas, numpy, xgboost, scikit-learn, scipy) moves numbers.
+   The *fetch libraries* (yfinance, holidays, requests, pytz) talk to APIs that change:
+   yfinance breaks when Yahoo changes, and a new release is usually the fix. Also ecosystem
+   `github-actions` (checkout, setup-python), on the same schedule.
+2. `tests.yml` already runs the suite on every pull request, so a Dependabot PR shows green
+   or red before it is merged.
+3. A committed version check, built from `experiments/run_round31_harness.py` (`points` +
+   `compare`, which will disappear with `experiments/`). It runs the six long caches in the
+   current environment and in one with the PR's pins. It reports, per target and cache, the
+   MAE change, the largest row change and the fit time.
+4. A README paragraph, "Updating dependencies". It covers what to do with each group's PR,
+   and that a numeric-stack bump is merged in its own commit, never in the middle of a
+   planned A/B series. Under rule 4.2, a version change on main makes a waiting result as
+   stale as a model change does.
+
+**Bar for merging a numeric-stack PR (written 2026-11-08).** Tests green. On the version
+check, no target's MAE moves more than 0.05 on any cache. That is well inside the seed
+floor (`cheap2h` 0.13), so a version change is never mistaken for a model change. Fit time
+on Windows is no more than 1.5× today's. A PR that fails only the time bar stays open, with
+the reason noted in it. That is xgboost 3.4.1's case today (2–3× slower on Windows). A
+fetch-library PR merges on green tests.
+
+**Effort.** About two hours: config, script, README. Afterwards, one PR per group per
+quarter, and about 15 minutes for the version check on a numeric PR.
+
 ## 3. Carried at low priority, and what stays closed
 
 ### `ttf_vs_30d` — a regime-abnormality ratio, low expected yield
@@ -618,6 +655,9 @@ nothing else.**
 1. **Section 3, low-priority leads** — `ttf_vs_30d` (gas price against its 30-day mean),
    `cpl_gap7` (a coupling-gap lag for `cheap2h`), the q90 charging rule. Only with a stated
    mechanism, and not while a 4.2 run is due within a week (the same staleness rule).
+2. **2.21 Dependency updates through Dependabot** — quarterly update PRs, a committed
+   version check and a merge bar. Engineering, no model change; it can be done at any time,
+   but not on the day of a 4.2 run.
 
 ### 4.2 Waiting — not started until the condition holds
 
