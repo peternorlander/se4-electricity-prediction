@@ -46,3 +46,13 @@ def test_exception_and_empty_are_retried(monkeypatch):
     flaky.n = 0
     monkeypatch.setattr(yf_src.yf, "download", flaky)
     assert len(yf_src.download_daily_close("TTF=F", START, END, "ttf_close", "TTF gas")) == len(full)
+
+
+def test_failed_attempt_log_says_what_yahoo_answered(monkeypatch, caplog):
+    """2026-11-06..08: the log named the missing rows but not what Yahoo had sent."""
+    monkeypatch.setitem(yf_src.yf_shared._ERRORS, "TTF=F", "YFRateLimitError('Too Many Requests')")
+    _patch(monkeypatch, [_frame(["2026-11-06"])] * yf_src.DOWNLOAD_ATTEMPTS)
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        yf_src.download_daily_close("TTF=F", START, END, "ttf_close", "TTF gas")
+    assert "1 row(s)" in caplog.text and "2026-11-06" in caplog.text
+    assert "Too Many Requests" in caplog.text

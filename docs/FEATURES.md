@@ -19,6 +19,11 @@ Where a column was added, changed or removed and why, see
 | [NVE](https://biapi.nve.no/magasinstatistikk) | Norwegian hydro reservoir fill levels + 20-year min/max/median by week | None |
 | [Nordpool](https://www.nordpoolgroup.com) | Published SE4 prices (used to exclude already-known days from predictions) | None |
 
+In production the historical part of every source above except Nord Pool and the forecast
+fetches is kept between runs and only the new days are fetched
+([DATA_CACHE.md](DATA_CACHE.md)). Anything that changes what a source's frame contains
+needs that cache's version bumped.
+
 ## Features (51 engineered + 1 cheap2h-specific)
 
 The catalogue below is the full engineered set (`FEATURE_COLUMNS`), used in its

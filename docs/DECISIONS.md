@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Source cache](#source-cache) | 2026-11-08 | no model change — production keeps its historical fetches between runs and asks each source only for what is new; a failed Yahoo / Open-Meteo / reservoir tail serves a recent-enough cache instead of failing the run; every external-API failure now logs what the API said |
 | [Engineering hygiene](#engineering-hygiene-round-31) | 2026-10-31 | no model change — tests before every production run, a data check that fails the run on broken inputs, a run-status sensor, pinned dependencies; A/B harness: `build_fn` hook and `--targets` (bit-identical on all six caches), and `ab_test.py band` now applies the candidate's `transform` |
 | [Walk-forward out of the production run](#walk-forward-out-of-the-production-run) | 2026-10-24 | pipeline cleanup, no A/B — predictions, band and feature importance unchanged; the `mae_*` / `mae_by_horizon` attributes are no longer sent |
 | [Price anchor on D+1](#price-anchor-on-d1) | 2026-10-22 | correctness fix: `avg` exactly 0 by construction, `min` +0.005 / +0.026 (NOISE); `cheap2h` −0.14 REAL / −0.05 NOISE clmean (the gain is at D+2/D+3); `max` −1.31 / −0.49 |
@@ -42,6 +43,49 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Source cache
+
+Adopted 2026-11-08. Nothing here changes a prediction; the full description, the version
+rule and the limits are in [DATA_CACHE.md](DATA_CACHE.md).
+
+**The failure.** On 2026-11-06, -07 and -08 the production run stopped on
+`TTF gas (TTF=F) from Yahoo Finance never covered 2023-11-09 -> 2026-11-08`: Yahoo answered
+the 3-year request with 1–3 rows (first row 2026-10-15 or 2026-11-06) in all four attempts,
+which take about a minute together, and the Node-RED retry an hour later got the same.
+Waiting a few hours fixed it. The guard that refused to train on that was right (a one-row
+series NaN-ed every earlier day and emptied the frame, 2026-11-01); the weakness was that
+each run re-downloaded three years of data that does not change.
+
+**The change.** `source_cache.cached_fetch` wraps every historical fetch in
+`fetch_training_inputs`. With `SOURCE_CACHE_DIR` set (the production workflow; kept between
+runs by `actions/cache`) it fetches from the last cached day minus a per-source overlap
+(21 days; 60 for nuclear outages and the weekly reservoirs) and merges, the fetched rows
+winning wherever both hold one. A fetch that fails, comes back empty, leaves a hole or stops
+short of today is served from the cache instead, loudly, for sources that declare
+`max_stale_days` (Yahoo 5, weather archive 3, reservoirs 14–21); prices and nuclear outages
+still fail the run, so the previous prediction stays in Home Assistant. Each source has its
+own version, bumped when the code that decides what it stores changes meaning; a unit test
+fingerprints that code so the change cannot pass unnoticed.
+
+**Logging.** `http_client.get_with_retry` now logs the status and the API's own explanation
+for every answer ≥ 400, retries 408/429 as well as 5xx, redacts tokens from error text and
+says when it gives up. Open-Meteo answers that carry no `hourly` raise an error quoting the
+reason instead of a bare `KeyError`. The Yahoo failure line reports the rows and dates Yahoo
+actually returned and any reason yfinance recorded. yfinance's pandas `inplace` deprecation
+warnings (about 20 log lines per download) are filtered.
+
+**Cold start.** Probed 2026-11-08: Yahoo returned one TTF row for every request shape (1, 2, 3
+years, `period=max`, `Ticker.history`) and a full 758 rows for EUA — a Yahoo-side fault on
+that ticker, so a first run with an empty cache during such an outage still fails. With a warm
+cache one row is enough. Live-checked on EUA and the Open-Meteo archive (SE4 weather and DE/DK
+wind): the second call fetched 16 / 528 / 528 rows instead of 758 / 26184 / 26184 and returned
+an identical frame.
+
+**Not measured.** Nothing is validated against a real production run yet: the first run after
+this commit is a full fetch that fills the cache, and the saving shows from the second.
+`tests/test_source_cache.py`, `test_fetch_data_cache.py` (with-cache frames equal without),
+`test_http_client.py` and `test_source_cache_versions.py` cover the behaviour offline.
 
 ## Engineering hygiene (round 31)
 

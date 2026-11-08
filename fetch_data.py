@@ -13,6 +13,7 @@ from sources.open_meteo import (
 from sources.yahoo_finance import fetch_ttf_prices
 from sources.eua_carbon import fetch_eua_prices
 from features import complete_swedish_dates
+from source_cache import SOURCES, cached_fetch, cached_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,10 @@ def _drop_partial_last_day(frame: pd.DataFrame) -> pd.DataFrame:
     return frame[(days != newest).values].reset_index(drop=True)
 
 
+def _ymd(day: date) -> str:
+    return day.strftime("%Y%m%d")
+
+
 def _fetch_recent_or_none(fetch_fn, label: str):
     """
     Call a recent-analysis fetch, returning None instead of raising.
@@ -162,29 +167,31 @@ def fetch_training_inputs(today: date) -> dict:
     historical_start = today - timedelta(days=TRAINING_DAYS)
     weather_hist_end = today - timedelta(days=WEATHER_ARCHIVE_LAG_DAYS)
 
+    # Every historical fetch below goes through source_cache.cached_fetch. With
+    # SOURCE_CACHE_DIR unset (local runs, the tests, the A/B snapshot fetch) that is a plain
+    # call of the lambda; in the production workflow it asks the source only for what is new.
+    # Each source has its own cache version in source_cache.SOURCES -- see docs/DATA_CACHE.md.
     print(f"Fetching ENTSO-E prices {historical_start} -> {today}...")
-    prices_hourly = fetch_prices(
-        historical_start.strftime("%Y%m%d"),
-        today.strftime("%Y%m%d")
-    )
+    prices_hourly = cached_fetch(
+        SOURCES["entsoe_prices_se4"], historical_start, today,
+        lambda s, e: fetch_prices(_ymd(s), _ymd(e)))
     print(f"  -> {len(prices_hourly)} records")
 
     print(f"Fetching historical weather {historical_start} -> {weather_hist_end}...")
-    weather_hourly = fetch_historical(
-        str(historical_start),
-        str(weather_hist_end)
-    )
+    weather_hourly = cached_fetch(
+        SOURCES["weather_archive_se4"], historical_start, weather_hist_end,
+        lambda s, e: fetch_historical(str(s), str(e)))
     print(f"  -> {len(weather_hourly)} records")
 
     print(f"Fetching historical wind data DE/DK {historical_start} -> {weather_hist_end}...")
-    wind_intl_hourly = fetch_international_wind_historical(
-        str(historical_start),
-        str(weather_hist_end)
-    )
+    wind_intl_hourly = cached_fetch(
+        SOURCES["wind_archive_intl"], historical_start, weather_hist_end,
+        lambda s, e: fetch_international_wind_historical(str(s), str(e)))
     print(f"  -> {len(wind_intl_hourly)} records")
 
     # Top the archive up to yesterday from the forecast endpoint's recent
     # analysis -- see _splice_recent for why this is worth ~0.4-2.2 EUR/MWh.
+    # (Not cached: it is the freshest 8 days, re-fetched every run by design.)
     print(f"Topping weather up to {today - timedelta(days=1)} "
           f"(archive lags {WEATHER_ARCHIVE_LAG_DAYS} days)...")
     weather_hourly = _splice_recent(
@@ -205,46 +212,44 @@ def fetch_training_inputs(today: date) -> dict:
           f"wind {len(wind_intl_hourly)} records")
 
     print(f"Fetching DE/DK2 market prices {historical_start} -> {today}...")
-    market_prices_hourly = fetch_market_prices(
-        historical_start.strftime("%Y%m%d"),
-        today.strftime("%Y%m%d")
-    )
+    market_prices_hourly = cached_fetch(
+        SOURCES["entsoe_prices_de_dk2"], historical_start, today,
+        lambda s, e: fetch_market_prices(_ymd(s), _ymd(e)))
     print(f"  -> {len(market_prices_hourly)} records")
 
     print(f"Fetching TTF gas prices {historical_start} -> {today}...")
-    ttf_daily = fetch_ttf_prices(
-        str(historical_start),
-        str(today)
-    )
+    ttf_daily = cached_fetch(
+        SOURCES["yahoo_ttf"], historical_start, today,
+        lambda s, e: fetch_ttf_prices(str(s), str(e)))
     print(f"  -> {len(ttf_daily)} TTF price records")
 
     print(f"Fetching EU ETS carbon prices {historical_start} -> {today}...")
-    eua_daily = fetch_eua_prices(
-        str(historical_start),
-        str(today)
-    )
+    eua_daily = cached_fetch(
+        SOURCES["yahoo_eua"], historical_start, today,
+        lambda s, e: fetch_eua_prices(str(s), str(e)))
     print(f"  -> {len(eua_daily)} EUA price records")
 
     print(f"Fetching SE3 nuclear outages {historical_start} -> {today}...")
-    nuclear_daily = fetch_nuclear_outages_se3(
-        historical_start.strftime("%Y%m%d"),
-        today.strftime("%Y%m%d")
-    )
+    nuclear_daily = cached_fetch(
+        SOURCES["entsoe_nuclear_se3"], historical_start, today,
+        lambda s, e: fetch_nuclear_outages_se3(_ymd(s), _ymd(e)))
     print(f"  -> {nuclear_daily['nuclear_outage_se3'].sum()} outage-days found")
 
     print(f"Fetching NVE reservoir data {historical_start} -> {today}...")
-    norway_reservoir_weekly = fetch_reservoir_norway(str(historical_start), str(today))
+    norway_reservoir_weekly = cached_fetch(
+        SOURCES["nve_reservoir_norway"], historical_start, today,
+        lambda s, e: fetch_reservoir_norway(str(s), str(e)))
     print(f"  -> {len(norway_reservoir_weekly)} weekly records")
 
     print("Fetching NVE 20-year reservoir median...")
-    norway_reservoir_median = fetch_reservoir_norway_median()
+    norway_reservoir_median = cached_snapshot(
+        SOURCES["nve_reservoir_median"], fetch_reservoir_norway_median)
     print(f"  -> {len(norway_reservoir_median)} week entries")
 
     print(f"Fetching Sweden reservoir data {historical_start} -> {today}...")
-    sweden_reservoir_weekly = fetch_reservoir_sweden(
-        historical_start.strftime("%Y%m%d"),
-        today.strftime("%Y%m%d")
-    )
+    sweden_reservoir_weekly = cached_fetch(
+        SOURCES["entsoe_reservoir_sweden"], historical_start, today,
+        lambda s, e: fetch_reservoir_sweden(_ymd(s), _ymd(e)))
     print(f"  -> {len(sweden_reservoir_weekly)} weekly records")
 
     print("Building Swedish workday calendar...")

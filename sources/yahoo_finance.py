@@ -1,10 +1,17 @@
 import logging
 import time
+import warnings
 
 import pandas as pd
 import yfinance as yf
+from yfinance import shared as yf_shared
 
 logger = logging.getLogger(__name__)
+
+# yfinance 1.7.0 calls pandas methods with `inplace=`, which pandas 3.1 deprecates: four
+# warnings per download, ~20 lines per call in the Actions log, burying the one line that
+# says why a fetch failed. They are yfinance's to fix; silence them there and nowhere else.
+warnings.filterwarnings("ignore", message=r"The inplace keyword", module=r"yfinance(\..*)?")
 
 TTF_TICKER = "TTF=F"
 
@@ -36,6 +43,34 @@ def _coverage_problem(df: pd.DataFrame, start_date: str, end_date: str):
     return None
 
 
+def _to_frame(raw: pd.DataFrame, column: str) -> pd.DataFrame:
+    """yfinance's answer as a (date, <column>) frame of daily closes."""
+    df = raw[["Close"]].copy()
+    df.columns = [column]
+    df.index.name = "date"
+    df = df.reset_index()
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df[column] = df[column].astype(float)
+    return df
+
+
+def _describe_answer(raw: pd.DataFrame, ticker: str) -> str:
+    """
+    What Yahoo actually answered, for the log line of a failed attempt.
+
+    yfinance does not raise on a rate limit or a truncated reply -- it returns what it got and
+    keeps the reason in `yfinance.shared._ERRORS`. Without this the log says only that rows
+    are missing, never what Yahoo said, which is what 2026-11-06..08 needed.
+    """
+    parts = [f"{len(raw)} row(s)"]
+    if len(raw):
+        parts.append(f"{pd.Timestamp(raw.index.min()).date()} -> {pd.Timestamp(raw.index.max()).date()}")
+    reason = getattr(yf_shared, "_ERRORS", {}) or {}
+    if reason.get(ticker):
+        parts.append(f"yfinance reported: {str(reason[ticker])[:300]}")
+    return ", ".join(parts)
+
+
 def download_daily_close(ticker: str, start_date: str, end_date: str,
                          column: str, label: str) -> pd.DataFrame:
     """
@@ -59,17 +94,13 @@ def download_daily_close(ticker: str, start_date: str, end_date: str,
             problem = None
 
         if not raw.empty:
-            df = raw[["Close"]].copy()
-            df.columns = [column]
-            df.index.name = "date"
-            df = df.reset_index()
-            df["date"] = pd.to_datetime(df["date"]).dt.date
-            df[column] = df[column].astype(float)
+            df = _to_frame(raw, column)
             problem = _coverage_problem(df, start_date, end_date)
             if problem is None:
                 return df
+            problem = f"{problem} (answer: {_describe_answer(raw, ticker)})"
         elif problem is None:
-            problem = "no rows returned"
+            problem = f"no rows returned ({_describe_answer(raw, ticker)})"
 
         logger.warning(f"{label} ({ticker}) fetch attempt {attempt}/{DOWNLOAD_ATTEMPTS} "
                        f"unusable: {problem}")

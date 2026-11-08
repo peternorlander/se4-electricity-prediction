@@ -25,6 +25,9 @@ root. The whole suite takes under a minute.
 - **A harness hook gets one.** An identity case shows the new path is bit-identical to the
   old one, and a non-trivial case shows it actually reaches what it claims to (see
   `test_harness.py`).
+- **A change to how a source is requested, parsed or reduced** trips
+  `test_source_cache_versions.py`. That is intended: decide whether the production cache
+  version must be bumped, then update the test's table ([DATA_CACHE.md](DATA_CACHE.md)).
 - A change validated by an A/B does **not** need a test for its effect. Its evidence is the
   ledger entry. It does need a test for any new contract it introduces.
 

@@ -85,6 +85,7 @@ The full walkthrough for running an experiment, including what to put in
 | [docs/FEATURES.md](docs/FEATURES.md) | Every data source and every engineered column, with its formula and purpose | You need to know what a column means |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | Ledger of **adopted** changes: when, the evidence, the mechanism | You are wondering why something is built this way |
 | [docs/REJECTED.md](docs/REJECTED.md) | Ledger of **rejected** changes, grouped by what they touched | Before trying anything — it is probably in here |
+| [docs/DATA_CACHE.md](docs/DATA_CACHE.md) | The production source cache: what is kept between runs, what happens when a source fails, and the **version rule** | Changing how any source is requested, parsed or reduced; adding a source |
 | [docs/TESTING.md](docs/TESTING.md) | What the test suite guards, when a test is added, and the rules a test follows | Fixing a defect or adding a contract |
 | [docs/AB_TESTING.md](docs/AB_TESTING.md) | The A/B harness, measurement grids, verdict functions, the adoption bar, the agent playbook | Before measuring anything |
 | [docs/FINDINGS.md](docs/FINDINGS.md) | Dated write-ups of what the model structurally cannot do and why | You are about to re-derive something the project already learned |
@@ -102,6 +103,7 @@ a commit message, a chat transcript, or a script under `experiments/`.
 | A/B rejected | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round. Delete the item from the improvement plan. |
 | Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
+| A source's request, parsing or reduction changed (so the same API response would give different rows) | **Bump that source's `version` in `source_cache.SOURCES` in the same commit**, then update `RECORDED` in `tests/test_source_cache_versions.py` (`python source_cache.py` prints it). The test fails until you have looked. [docs/DATA_CACHE.md](docs/DATA_CACHE.md#when-you-change-a-source-the-version-rule). |
 | A defect fixed | A test in `tests/` that fails on the code before the fix ([docs/TESTING.md](docs/TESTING.md)), plus a ledger entry if the fix moves numbers. |
 | Not done yet | The improvement plan only — never a ledger. Ready work in its 4.1, work that waits on a date, a cache or a decision in 4.2 with the blocker. |
 | Started, then paused (any reason, including the end of a session) | The item's **State** line in the improvement plan: where it stands, what was done and found so far with its date and commit, where to resume, and either *not blocked — can be taken now* or *blocked by what, because why, until when*. Interim numbers stay there until the verdict is in; then the ledger entry takes over and they are cut. Never `experiments/`. |

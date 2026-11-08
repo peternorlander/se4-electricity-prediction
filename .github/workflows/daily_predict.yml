@@ -22,13 +22,36 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # The historical fetches (prices, weather archive, gas, carbon, nuclear, reservoirs) are
+      # kept between runs, so a run asks each source only for what is new -- a bad Yahoo or
+      # Open-Meteo hour no longer costs the run its three years of history. Entries are
+      # immutable, so every run saves a new one (the run id in the key) and restores the
+      # newest (the prefix). Each source is versioned inside source_cache.py; to throw
+      # everything away at once, bump the `v1` in both places below. docs/DATA_CACHE.md.
+      - name: Restore source cache
+        uses: actions/cache/restore@v4
+        with:
+          path: source_cache
+          key: source-cache-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: source-cache-v1-
+
       - name: Run prediction
         id: predict
         env:
           ENTSO_E_TOKEN: ${{ secrets.ENTSO_E_TOKEN }}
           HA_URL: ${{ secrets.HA_URL }}
           HA_TOKEN: ${{ secrets.HA_TOKEN }}
+          SOURCE_CACHE_DIR: source_cache
         run: python predict.py
+
+      # Saved even when predict.py failed after some fetches succeeded: each source writes
+      # its file as soon as it has been fetched, and those are worth keeping.
+      - name: Save source cache
+        if: always() && hashFiles('source_cache/*.pkl') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: source_cache
+          key: source-cache-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       # predict.py reports its own outcome to sensor.electricity_price_predictions_run;
       # this covers a run that stopped before it started (install). Standard

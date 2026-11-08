@@ -26,3 +26,6 @@ ab_cache/
 # Deliberately untracked -- the condensed verdicts live in docs/ (see README
 # "Working with experiments/"). Never the record.
 experiments/
+
+# Production source cache (restored/saved by the Actions workflow; see docs/DATA_CACHE.md)
+source_cache/

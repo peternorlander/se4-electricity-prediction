@@ -1,6 +1,6 @@
 import pandas as pd
 
-from http_client import get_with_retry
+from http_client import get_with_retry, describe_body
 
 
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
@@ -43,6 +43,24 @@ WIND_LOCATIONS = {
 # next to it as a shadow, so the prediction log can score both on the same days. These
 # are the models the backtest blended (docs/FINDINGS.md "Archive weather flatters the eval").
 BLEND_MODELS = ("ecmwf_ifs025", "icon_global", "gfs_global")
+
+
+def _json_with_hourly(response, label: str) -> dict:
+    """
+    The response's JSON, or an error that says what Open-Meteo answered.
+
+    Open-Meteo reports a refusal (rate limit, bad range, outage) as {"error": true, "reason":
+    "..."} and sometimes as a 200 without "hourly". Reading `["hourly"]` blind turned both
+    into a bare KeyError that told the Actions log nothing.
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if response.status_code != 200 or not isinstance(data, dict) or "hourly" not in data:
+        raise RuntimeError(f"Open-Meteo {label}: HTTP {response.status_code}, "
+                           f"no hourly data: {describe_body(response)}")
+    return data
 
 
 def _hourly_values(hourly: dict, variable: str, models=None) -> list:
@@ -96,7 +114,7 @@ def fetch_historical(start_date: str, end_date: str) -> pd.DataFrame:
     }
 
     response = get_with_retry(OPEN_METEO_ARCHIVE_URL, params)
-    return _parse_response(response.json())
+    return _parse_response(_json_with_hourly(response, f"archive {start_date}..{end_date}"))
 
 
 def fetch_recent(past_days: int) -> pd.DataFrame:
@@ -133,7 +151,7 @@ def fetch_recent(past_days: int) -> pd.DataFrame:
     }
 
     response = get_with_retry(OPEN_METEO_FORECAST_URL, params)
-    return _parse_response(response.json())
+    return _parse_response(_json_with_hourly(response, f"recent {past_days} days"))
 
 
 def fetch_forecast(models=None) -> pd.DataFrame:
@@ -158,7 +176,7 @@ def fetch_forecast(models=None) -> pd.DataFrame:
     }
 
     response = get_with_retry(OPEN_METEO_FORECAST_URL, params)
-    return _parse_response(response.json(), models)
+    return _parse_response(_json_with_hourly(response, "forecast"), models)
 
 
 def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict, models=None) -> pd.DataFrame:
@@ -172,7 +190,7 @@ def _fetch_location_series(lat: float, lon: float, url: str, extra_params: dict,
         **_model_params(models),
     }
     response = get_with_retry(url, params)
-    hourly = response.json()["hourly"]
+    hourly = _json_with_hourly(response, f"{url.rsplit('/', 1)[-1]} ({lat}, {lon})")["hourly"]
     return pd.DataFrame({
         # UTC-aware timestamps — consistent with main SE4 weather fetch
         "time": pd.to_datetime(hourly["time"], utc=True),
