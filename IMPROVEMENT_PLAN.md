@@ -641,6 +641,55 @@ fetch-library PR merges on green tests.
 **Effort.** About two hours: config, script, README. Afterwards, one PR per group per
 quarter, and about 15 minutes for the version check on a numeric PR.
 
+### 2.22 Warm-up days before the training window (added 2026-11-10)
+
+**State (2026-11-10):** Not started. **Blocked by** the November pass over 2.19 / 2.20 / 2.18,
+**because** it changes the rows production trains on and so moves the baseline those results
+are measured against (the round 30 rule, section 4); **until** that pass is done, earliest
+2026-11-13. Then take it at the first place in 4.1.
+
+**Mechanism.** The window is fetched as exactly `TRAINING_DAYS = 1095` days, and every source
+starts on its first day. The lagged features need days *before* it: `price_se4_avg_lag7` is NaN
+for the window's first seven days, `ttf_rolling_7d` / `co2_rolling_7d` for the first three to
+five (more after a weekend start: TTF and EUA have no kurs on weekends), the weather
+variabilities and `price_volatility_7d` for the first two or three. `build_training_data`'s
+`dropna()` removes every such row, which is why production fits on **1088 rows, not 1095**
+(measured on the `2026-10-16` snapshot, 2026-11-10: all seven dropped rows are explained by
+`price_se4_avg_lag7`; the fuel columns add none). A fetch that starts about ten days earlier
+would have every lag defined from the window's first day, so the frame keeps all 1095 days.
+
+**What it buys, honestly.** Seven more rows (0.6 %) at the oldest end of the window, and no
+more TTF/EUA coverage than before: the fuel gap was already inside the seven dropped days, so
+the "does not cover 3 of 1095 days" warnings are noise, not lost data. The expected effect on
+MAE is far below the seed floor (`cheap2h` 0.13), so an A/B cannot show a gain; the case for it
+is *data integrity* (production trains on the window it says it does), not accuracy.
+
+**How.**
+1. `fetch_training_inputs`: fetch every historical source from
+   `today − TRAINING_DAYS − WARMUP_DAYS` (`WARMUP_DAYS = 10`: seven for the lag plus a weekend
+   and a holiday of margin), and have `build_training_data` return the last `TRAINING_DAYS` rows
+   after `dropna()` rather than whatever the window leaves. The production source cache
+   ([DATA_CACHE.md](docs/DATA_CACHE.md)) sees a window that reaches further back than its files
+   and fetches everything once; no version bump, because the request's meaning is unchanged.
+2. `ab/harness.py` `PRODUCTION_TRAIN_ROWS = 1088` becomes 1095 in the same commit, and
+   `docs/AB_TESTING.md` ("Production trains on 1088 rows") with it; otherwise the harness no
+   longer trains on production's length.
+3. The A/B snapshots start at their own window start, so none of the six long caches can test it:
+   it needs one snapshot fetched with the extra days (`ab_test.py fetch`, 10 days earlier).
+
+**Arms and bar (to pre-register before running).** A harm check in the A03 forward-fill's
+design ([DECISIONS.md](docs/DECISIONS.md#a03-forward-fill-of-entso-e-price-curves)): the frame
+with warm-up must equal today's frame **bit for bit on the 1088 rows both have**, and carry
+seven extra leading rows with no NaN; then one walk-forward pass of both on the new snapshot
+with no target REAL-harmful. Ship on that. A measured gain is not required, and not expected.
+
+**Prior and what a failure means.** If an extra-row arm came out harmful on one target, the
+seven oldest rows would be an outlier regime, not a defect of the change: the answer is to leave
+the window as it is and close this as REJECTED with the number. Nothing else depends on it.
+
+**Effort.** About an hour of code and tests (a frame-equality test on synthetic data, with the
+warm-up days present and absent), plus one snapshot fetch and one pass.
+
 ## 3. Carried at low priority
 
 Leads with a stated mechanism and a low prior. They are not blocked by anything, but they are
@@ -722,6 +771,7 @@ the *because*, what is done so far and where to resume are in the item.
 | Item | Blocked by | Earliest |
 |---|---|---|
 | **2.19 Time index for `avg`** (paused, prepared) · **2.20 Nuclear column as production sees it** · **2.18 Near-horizon model** | A long cache fetched four weeks after `long/2026-10-16`; one fetch day (`experiments/fetch_round30.ps1 -WithTopUps`), then one pass over all three | 2026-11-13 |
+| **2.22 Warm-up days before the training window** | The November pass above: a change to production's training rows moves the baseline it measures against | after that pass, not before 2026-11-13 |
 | **2.2 Production scorecard** · **2.13 Northern wind, production check** | Four weeks of the prediction log | 2026-11-15 |
 | **2.3b Three-model weather blend** (shadow arm running, 4.3) | The scorecard (2.2) and four weeks of logged `blend` rows | four weeks after the first `blend` row, not before 2026-11-15 |
 | **2.3c Train on forecast weather** | The 2.3b verdict | after 2.3b |
