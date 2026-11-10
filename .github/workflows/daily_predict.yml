@@ -29,7 +29,7 @@ jobs:
       # newest (the prefix). Each source is versioned inside source_cache.py; to throw
       # everything away at once, bump the `v1` in both places below. docs/DATA_CACHE.md.
       - name: Restore source cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: source_cache
           key: source-cache-v1-${{ github.run_id }}-${{ github.run_attempt }}
@@ -48,7 +48,7 @@ jobs:
       # its file as soon as it has been fetched, and those are worth keeping.
       - name: Save source cache
         if: always() && hashFiles('source_cache/*.pkl') != ''
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: source_cache
           key: source-cache-v1-${{ github.run_id }}-${{ github.run_attempt }}
