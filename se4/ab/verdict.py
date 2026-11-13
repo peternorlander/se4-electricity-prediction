@@ -7,11 +7,11 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-import model as model_module
-from features import build_training_data
-from ab.harness import (run_walk_forward, run_walk_forward_errors, summarize_errors, apply_shift,
+from se4 import model as model_module
+from se4.features import build_training_data
+from se4.ab.harness import (run_walk_forward, run_walk_forward_errors, summarize_errors, apply_shift,
                         ARCHIVE, LEADS)
-from ab.variants import BASELINE, CANDIDATE
+from se4.ab.variants import BASELINE, CANDIDATE
 
 DEFAULT_TARGET_NAMES = tuple(model_module.TARGETS.keys())
 PRIORITY_TARGETS = ("cheap2h", "min")
@@ -671,7 +671,7 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
     shifts = [s for ss in clusters.values() for s in ss]
 
     if vintage is None and vintage_root is not None:
-        from ab.vintage import VintageSet
+        from se4.ab.vintage import VintageSet
         print("Forecast-vintage weather (Open-Meteo Previous Runs, best_match):")
         vintage = VintageSet.for_snapshot(inputs, data, shifts, vintage_root)
         print()
@@ -683,7 +683,7 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
             if variant.build_fn is None:
                 vintage_frames[which] = vintage.frames
             else:
-                from ab.vintage import build_vintage_frames
+                from se4.ab.vintage import build_vintage_frames
                 print(f"  building {which} ({variant.name}) vintage frames with its build_fn")
                 vintage_frames[which] = build_vintage_frames(
                     inputs, vintage.vintages, frames[which], build=_vintage_builder(variant),

@@ -51,11 +51,11 @@ import sys
 from datetime import datetime, UTC
 from pathlib import Path
 
-from ab.snapshot import (save_snapshot, list_snapshots, load_snapshot, read_meta,
+from se4.ab.snapshot import (save_snapshot, list_snapshots, load_snapshot, read_meta,
                          DEFAULT_CACHE_ROOT, LONG_CACHE_ROOT)
-from ab.harness import parse_shift_range, PRODUCTION_TRAIN_ROWS, LAG_WARMUP_ROWS
-from ab.verdict import run_ab
-from ab.vintage import default_root as default_vintage_root
+from se4.ab.harness import parse_shift_range, PRODUCTION_TRAIN_ROWS, LAG_WARMUP_ROWS
+from se4.ab.verdict import run_ab
+from se4.ab.vintage import default_root as default_vintage_root
 
 # Default fetch length. 1825 days (~5 years) is the right number and asking for
 # more buys nothing: the frame cannot start before EUA carbon data does
@@ -80,7 +80,7 @@ def _check_date_continuity(inputs: dict) -> tuple:
     on. Cheap (local pandas, no network) relative to the fetch it follows.
     """
     import pandas as pd
-    import features as feat
+    from se4 import features as feat
 
     data = feat.build_training_data(**inputs)
     dates = pd.to_datetime(data["date"]).reset_index(drop=True)
@@ -93,7 +93,7 @@ def _check_date_continuity(inputs: dict) -> tuple:
 
 
 def cmd_fetch(args):
-    import fetch_data
+    from se4 import fetch_data
 
     # PRODUCTION_TRAIN_ROWS is what every rolling grid trains on, and it is only
     # correct as long as production still fetches TRAINING_DAYS and loses the
@@ -184,8 +184,8 @@ def cmd_list(args):
 
 def _grid(inputs, train_window):
     """The per-snapshot NOW / -6M / FAR cluster grid (ab.verdict.default_clusters)."""
-    import features as feat
-    from ab.verdict import default_clusters
+    from se4 import features as feat
+    from se4.ab.verdict import default_clusters
     if train_window is None:
         sys.exit("--grid needs the rolling geometry (it places FAR from the training window); "
                  "drop --expanding or pass --shifts.")
@@ -216,8 +216,8 @@ def cmd_run(args):
 
 def cmd_vintages(args):
     """Fetch/extend the vintage cache for a snapshot's evaluated days and check coverage."""
-    import features as feat
-    from ab.vintage import ensure_vintages, check_coverage, evaluated_dates
+    from se4 import features as feat
+    from se4.ab.vintage import ensure_vintages, check_coverage, evaluated_dates
     cache_root = Path(args.root) if args.root else LONG_CACHE_ROOT
     inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
     print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
@@ -235,9 +235,9 @@ def cmd_vintages(args):
 
 
 def cmd_band(args):
-    from ab.band import run_band_ab
-    from ab.variants import BASELINE, CANDIDATE
-    from ab.verdict import build_arm_frames
+    from se4.ab.band import run_band_ab
+    from se4.ab.variants import BASELINE, CANDIDATE
+    from se4.ab.verdict import build_arm_frames
     cache_root = Path(args.root) if args.root else LONG_CACHE_ROOT
     inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
     print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")

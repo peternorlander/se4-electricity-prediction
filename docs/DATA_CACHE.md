@@ -2,7 +2,7 @@
 
 Production does not re-download three years of every source on each run. It keeps what it
 has fetched and asks each source only for what is new. The code is
-[`source_cache.py`](../source_cache.py); the wiring is `fetch_data.fetch_training_inputs`.
+[`se4/source_cache.py`](../se4/source_cache.py); the wiring is `fetch_data.fetch_training_inputs`.
 
 **Why it exists.** A run used to be as reliable as the least reliable API on its worst day.
 On 2026-11-06, -07 and -08 Yahoo answered the 3-year TTF request with 1–3 rows
@@ -16,7 +16,7 @@ three years.
 
 | | |
 |---|---|
-| **Off by default.** | Only a run with `SOURCE_CACHE_DIR` set uses it. The production workflow sets it. Local runs, the tests and the A/B snapshot fetch (`ab/snapshot.py`) are unchanged, so an A/B snapshot is always a fresh fetch. |
+| **Off by default.** | Only a run with `SOURCE_CACHE_DIR` set uses it. The production workflow sets it. Local runs, the tests and the A/B snapshot fetch (`se4/ab/snapshot.py`) are unchanged, so an A/B snapshot is always a fresh fetch. |
 | **What is cached** | Everything `fetch_training_inputs` fetches over the 3-year window: SE4 prices, DE/DK2 prices, the Open-Meteo **archive** (SE4 weather and the DE/DK wind points), TTF, EUA, SE3 nuclear outages, the NVE and Swedish reservoirs. The NVE 20-year median is kept only as a fallback copy. |
 | **What is not** | Anything that has to be fresh: the 8-day weather and wind forecast, the recent-analysis top-up that fills the archive's lag, the tomorrow-price anchor, the planned-outage forecast, Nord Pool's published-date check. |
 | **Each run** | Fetch from `last cached day − overlap_days` to today and merge. **Where cache and fetch both hold a row, the fetched row wins**; the log says how many overlapping rows differ. The result is trimmed to the window and equals a full fetch (`tests/test_fetch_data_cache.py` checks it). The new total is saved. |
@@ -55,13 +55,13 @@ Bump when you change:
 - how it is **reduced** before it is returned: the nuclear day-count, a unit conversion.
 
 Do not bump for a log line, a comment, a refactor with identical output, or a change in how
-`features.py` *uses* the frame afterwards (the cache holds the fetch result, not features).
+`se4/features.py` *uses* the frame afterwards (the cache holds the fetch result, not features).
 
 Two things enforce it:
 
 1. `tests/test_source_cache_versions.py` fingerprints the functions and constants each source
    lists in `Source.code`. If one changes, the test fails and prints what to do: decide
-   whether the version needs bumping, then run `python source_cache.py` and paste the new
+   whether the version needs bumping, then run `python -m se4.source_cache` and paste the new
    line into the test's `RECORDED` table. Version and fingerprint are recorded separately so
    a fingerprint updated without a bump is visible in the diff. The test cannot decide for
    you; it only makes sure somebody did.

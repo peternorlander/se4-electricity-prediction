@@ -28,8 +28,8 @@ operations as the loop it replaced, so its numbers are bit-identical
 import numpy as np
 import pandas as pd
 
-from features import apply_forecast_freeze, FORECAST_FROZEN_FEATURES
-from model import enforce_coherence
+from se4.features import apply_forecast_freeze, FORECAST_FROZEN_FEATURES
+from se4.model import enforce_coherence
 
 
 # Production's own training-set size, in merged rows. predict.py fetches

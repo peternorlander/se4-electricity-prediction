@@ -44,8 +44,8 @@ exploration (section 6):
   regret. The classifier wins on label accuracy (77 % vs 72 %) but accuracy
   weights a 0.5 EUR miss the same as a 40 EUR miss; ~⅓ of days have the
   runner-up slot within 5 EUR/MWh, so most "misses" are free.
-- **Regression plugs into the existing gate.** `model.TARGETS` → `evaluate.py`,
-  `ab/` and the verdict rules all work in EUR/MWh MAE. A classifier would need
+- **Regression plugs into the existing gate.** `model.TARGETS` → `se4/evaluate.py`,
+  `se4/ab/` and the verdict rules all work in EUR/MWh MAE. A classifier would need
   its own evaluation path, its own verdict rule, and a new noise floor
   (52 weeks give ±2.3 pp standard error on accuracy).
 - **Ambiguity becomes a number, not a class.** Days where night and day troughs
@@ -117,7 +117,7 @@ Checks:
   step-3 experiment (section 3), not a default.
 - No slot-specific price lags (`price_se4_cheap2h_night_lag1` etc.) in this
   step. The trough targets' own frozen lags were measured harmful on
-  `min`/`cheap2h` (see `features.py` comments around `MIN_FEATURE_COLUMNS`);
+  `min`/`cheap2h` (see `se4/features.py` comments around `MIN_FEATURE_COLUMNS`);
   for days 2–8 a lag is frozen anyway. Adding one is a step-3 experiment with
   a stated mechanism, not a default.
 
@@ -128,7 +128,7 @@ Check: **untouched targets must reproduce bit-identically.** Run
 regressor with a fixed `random_state`, so adding keys to the dict must not
 move them. If they move, something else changed — stop and find it.
 
-### 2.3 `evaluate.py`
+### 2.3 `se4/evaluate.py`
 
 - The per-iteration print line hard-codes the four names; generalise it to
   iterate `TARGETS` (or print the slots on a second line). `mae_by_horizon`
@@ -137,7 +137,7 @@ move them. If they move, something else changed — stop and find it.
 - `_IMPORTANCE_TARGETS` stays `("min", "avg", "cheap2h")` — do not push three
   more importance dicts to the HA sensor.
 
-### 2.4 `predict.py`, `currency.py`, `ha_client.py`
+### 2.4 `predict.py`, `se4/currency.py`, `se4/ha_client.py`
 
 `model.predict` iterates `TARGETS`, and `convert_predictions_to_sek` /
 `apply_addon` iterate every key of every day, so the three numbers flow to

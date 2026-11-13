@@ -3,17 +3,17 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3, fetch_reservoir_sweden
-from sources.nve import fetch_reservoir_norway, fetch_reservoir_norway_median
-from sources.swedish_calendar import get_non_workdays
-from sources.open_meteo import (
+from se4.sources.entso_e import fetch_prices, fetch_market_prices, fetch_nuclear_outages_se3, fetch_reservoir_sweden
+from se4.sources.nve import fetch_reservoir_norway, fetch_reservoir_norway_median
+from se4.sources.swedish_calendar import get_non_workdays
+from se4.sources.open_meteo import (
     fetch_historical, fetch_international_wind_historical,
     fetch_recent, fetch_international_wind_recent,
 )
-from sources.yahoo_finance import fetch_ttf_prices
-from sources.eua_carbon import fetch_eua_prices
-from features import complete_swedish_dates
-from source_cache import SOURCES, cached_fetch, cached_snapshot
+from se4.sources.yahoo_finance import fetch_ttf_prices
+from se4.sources.eua_carbon import fetch_eua_prices
+from se4.features import complete_swedish_dates
+from se4.source_cache import SOURCES, cached_fetch, cached_snapshot
 
 logger = logging.getLogger(__name__)
 

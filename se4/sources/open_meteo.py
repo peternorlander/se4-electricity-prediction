@@ -1,6 +1,6 @@
 import pandas as pd
 
-from http_client import get_with_retry, describe_body
+from se4.http_client import get_with_retry, describe_body
 
 
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"

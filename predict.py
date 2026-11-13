@@ -11,23 +11,23 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 
-from sources.open_meteo import fetch_forecast, fetch_international_wind_forecast, BLEND_MODELS
-from sources.entso_e import fetch_nuclear_outages_se3
-from sources.swedish_calendar import get_non_workdays
-from sources.nordpool import get_dates_with_known_prices
-from fetch_data import fetch_training_inputs, fetch_tomorrow_prices, TRAINING_DAYS
-from features import (
+from se4.sources.open_meteo import fetch_forecast, fetch_international_wind_forecast, BLEND_MODELS
+from se4.sources.entso_e import fetch_nuclear_outages_se3
+from se4.sources.swedish_calendar import get_non_workdays
+from se4.sources.nordpool import get_dates_with_known_prices
+from se4.fetch_data import fetch_training_inputs, fetch_tomorrow_prices, TRAINING_DAYS
+from se4.features import (
     build_training_data,
     build_forecast_features,
     complete_swedish_dates,
     aggregate_market_prices_daily,
     aggregate_prices_daily,
 )
-from model import train, train_band, predict
-from evaluate import get_feature_importance
-from currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
-from data_checks import check_training_data
-from ha_client import fetch_addon_value, apply_addon, push_predictions
+from se4.model import train, train_band, predict
+from se4.evaluate import get_feature_importance
+from se4.currency import calculate_eur_to_sek_rate, convert_predictions_to_sek
+from se4.data_checks import check_training_data
+from se4.ha_client import fetch_addon_value, apply_addon, push_predictions
 from run_status import push_run_status
 
 

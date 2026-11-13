@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-import sources.yahoo_finance as yf_src
+import se4.sources.yahoo_finance as yf_src
 
 START, END = "2023-11-02", "2026-11-01"
 

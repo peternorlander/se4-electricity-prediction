@@ -2,9 +2,9 @@
 import pandas as pd
 import pytest
 
-import sources.open_meteo as om
-from features import _wind_power_curve
-from data_checks import wind_unit_problems
+import se4.sources.open_meteo as om
+from se4.features import _wind_power_curve
+from se4.data_checks import wind_unit_problems
 
 
 def test_power_curve_reads_km_per_hour():

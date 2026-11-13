@@ -17,9 +17,9 @@ the band is a product decision -- but it must be written down and decided on.
 import numpy as np
 import pandas as pd
 
-import model as model_module
-from features import apply_forecast_freeze
-from ab.harness import apply_shift, PRODUCTION_TRAIN_ROWS
+from se4 import model as model_module
+from se4.features import apply_forecast_freeze
+from se4.ab.harness import apply_shift, PRODUCTION_TRAIN_ROWS
 
 TARGET = model_module.INTERVAL_TARGET
 POINT_TARGETS = ("min", TARGET)     # coherence needs both; avg/max never touch the band
@@ -198,7 +198,7 @@ def run_band_ab(data, clusters: dict, baseline, candidate,
 
 
 def _band_job(args):
-    from ab.verdict import _apply_variant
+    from se4.ab.verdict import _apply_variant
     data, (name, s, which), variants, train_window = args
     variant = variants[which]
     df = band_walk_forward(_apply_variant(apply_shift(data, s), variant), variant,

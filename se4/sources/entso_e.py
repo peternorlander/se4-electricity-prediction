@@ -8,7 +8,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
-from http_client import get_with_retry
+from se4.http_client import get_with_retry
 
 logger = logging.getLogger(__name__)
 

@@ -382,7 +382,7 @@ the SE2→SE3 and FI→SE3 cuts that set the import price.
 
 **What to build.**
 
-- `sources/umm.py`: fetch messages by `eventStartDate`/`eventStopDate` window
+- `se4/sources/umm.py`: fetch messages by `eventStartDate`/`eventStopDate` window
   (paginate with `skip`; `messageTypes=1` is production, `2` consumption,
   `3` transmission — not the order the names suggest; `areas=<SE4 EIC>`
   filters all three, 176 SE4 transmission messages for Jun–Dec 2026), keep
@@ -591,7 +591,7 @@ were the best of seven, so it is a lead picked after the fact, not a result
 
 **Bar (written 2026-10-24, before the run).** For `Rac` and `Rall` separately, delta against `base` under AF on
 the new cache: negative in each of NOW, −6M and FAR, cluster mean ≤ −0.05, and the HS delta not REAL-harmful.
-If one arm passes, it is a parser change in `sources/entso_e.py` (keep unit, `psrType` and document status —
+If one arm passes, it is a parser change in `se4/sources/entso_e.py` (keep unit, `psrType` and document status —
 the guard in `experiments/results/nuclear_parser_fix.patch` is the starting point) and needs `max` reported and
 the local integration check before it ships. If both pass, `Rac` (two columns, less to maintain) unless `Rall`
 is ahead by more than 0.05. If neither passes, 2.20 is closed for good and the column stays.
@@ -671,7 +671,7 @@ is *data integrity* (production trains on the window it says it does), not accur
    after `dropna()` rather than whatever the window leaves. The production source cache
    ([DATA_CACHE.md](docs/DATA_CACHE.md)) sees a window that reaches further back than its files
    and fetches everything once; no version bump, because the request's meaning is unchanged.
-2. `ab/harness.py` `PRODUCTION_TRAIN_ROWS = 1088` becomes 1095 in the same commit, and
+2. `se4/ab/harness.py` `PRODUCTION_TRAIN_ROWS = 1088` becomes 1095 in the same commit, and
    `docs/AB_TESTING.md` ("Production trains on 1088 rows") with it; otherwise the harness no
    longer trains on production's length.
 3. The A/B snapshots start at their own window start, so none of the six long caches can test it:

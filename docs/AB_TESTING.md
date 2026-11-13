@@ -188,7 +188,7 @@ is replaced, not dropped:
   surface — **watch it, but don't block the change on it.**
 
 **For *ablations* (testing whether to remove an existing feature) use
-`ab/verdict.py::classify_ablation` instead of `classify`.** This is the
+`se4/ab/verdict.py::classify_ablation` instead of `classify`.** This is the
 exception, not the everyday path — day-to-day A/B work is almost always testing
 an *addition* (a new feature, a new source, a model change), where `classify`'s
 "unproven → keep the status quo" is exactly right, because rejecting an unproven
@@ -480,10 +480,10 @@ signals, the price lags. Production holds those at values from before the run, a
 forecast-derived "yesterday". Nothing else changes between conditions (fits, freeze,
 `min ≤ cheap2h` coherence), so the two numbers differ in weather and nothing more.
 
-**The points are derived, not listed.** `ab/vintage.py` reads the SE4 point and every
-`WIND_LOCATIONS` entry from `sources/open_meteo.py`; a point added to production is fetched
+**The points are derived, not listed.** `se4/ab/vintage.py` reads the SE4 point and every
+`WIND_LOCATIONS` entry from `se4/sources/open_meteo.py`; a point added to production is fetched
 and swapped with no change here, and a cached point whose coordinates changed is refetched.
-`ab/check_vintage.py` pins the column naming to what production's fetch actually produces.
+`se4/ab/check_vintage.py` pins the column naming to what production's fetch actually produces.
 
 **The cache** is `ab_cache/vintages/best_match/<point>.pkl` — one directory beside the
 snapshots, never inside one, shared by every snapshot (a vintage is a forecast issued
@@ -527,14 +527,14 @@ interacts with weather and that is worth a sentence in the ledger entry.
 
 **What it cannot do.** A CANDIDATE is a `transform` of the merged *daily* frame, and that
 is all the harness can rebuild on a vintage. A candidate whose columns are computed from the
-*hourly* weather inside `features.py` (the northern power curves were) has to exist in
+*hourly* weather inside `se4/features.py` (the northern power curves were) has to exist in
 production code first, or be scored by a script that builds both frame sets with its own
 builder and calls the two public pieces, `ab.vintage.build_vintage_frames(..., build=...)`
 and `ab.harness.run_walk_forward_errors(..., vintage_frames=...)`. `python ab_test.py band`
 still scores the band on archive weather only. Vintages are one model (`best_match`) from
 2024-03-01 (ECMWF IFS from 2024-04); a candidate cannot be scored before that.
 
-**Checked against the scripts it replaces (2026-10-25).** `python ab/check_vintage.py
+**Checked against the scripts it replaces (2026-10-25).** `python se4/ab/check_vintage.py
 --snapshot YYYY-MM-DD` (pin `OMP_NUM_THREADS=4`) is the standing check: ARCHIVE numbers
 bit-identical to the harness as it was before vintages existed (an embedded copy of the old
 loop), unchanged by scoring vintages in the same call; a vintage that is the archive itself
@@ -647,13 +647,13 @@ them against window-level descriptors (price level, volatility, wind, etc.)
 instead of comparing across shifts.
 
 **The pieces:**
-- `fetch_data.py::fetch_training_inputs(today)` — the training-side fetch, shared
+- `se4/fetch_data.py::fetch_training_inputs(today)` — the training-side fetch, shared
   with `predict.py`. `ab_test.py fetch` calls it and caches the result.
-- `ab/snapshot.py` — saves/loads a fetched-inputs snapshot under `ab_cache/<date>/`
+- `se4/ab/snapshot.py` — saves/loads a fetched-inputs snapshot under `ab_cache/<date>/`
   (pickled, gitignored, local-only; pickle rather than parquet because pyarrow is
   not a dependency). Snapshots accumulate — one directory per `fetch` day, a few MB
   each; nothing prunes them automatically.
-- `ab/harness.py` — `run_walk_forward()`, a copy of the `evaluate.py` loop (both apply
+- `se4/ab/harness.py` — `run_walk_forward()`, a copy of the `se4/evaluate.py` loop (both apply
   `model.enforce_coherence` to the predicted `min`/`cheap2h` pair since 2026-10-12, so they still agree
   and still describe what Home Assistant receives)
   parameterized by a variant, plus `apply_shift()` (tail truncation). It deliberately
@@ -663,12 +663,12 @@ instead of comparing across shifts.
   per-window MAE exactly). The loop is `run_walk_forward_errors()`, which keeps every
   test row's error and can score the same fits on forecast-vintage weather;
   `run_walk_forward()` is a wrapper over its archive condition and is bit-identical to the
-  loop it replaced (`ab/check_vintage.py --snapshot …` asserts it).
-- `ab/vintage.py` — the forecast-vintage data layer: fetches and caches Open-Meteo Previous
+  loop it replaced (`se4/ab/check_vintage.py --snapshot …` asserts it).
+- `se4/ab/vintage.py` — the forecast-vintage data layer: fetches and caches Open-Meteo Previous
   Runs for every production weather point under `ab_cache/vintages/`, checks that every
   evaluated hour is covered, and builds the per-lead frames the harness swaps into the test
   rows ([above](#archive-weather-is-a-perfect-forecast-every-run-scores-forecast-vintages-too)).
-- `ab/variants.py` — a `Variant` dataclass and the two instances the harness runs:
+- `se4/ab/variants.py` — a `Variant` dataclass and the two instances the harness runs:
   `BASELINE` (mirrors production) and `CANDIDATE` (the only thing you edit per
   experiment).
   **`BASELINE` reads `model.TARGETS` directly**, so never wire a validated change
@@ -677,11 +677,11 @@ instead of comparing across shifts.
   measures nothing. Finish the measurements, then ship. (Corollary: after
   shipping, comparing against the *old* configuration needs an explicit `targets`
   override, not `BASELINE`.)
-- `ab/verdict.py` — runs both variants across the shifts (or the `--grid` clusters),
+- `se4/ab/verdict.py` — runs both variants across the shifts (or the `--grid` clusters),
   classifies each target on ARCHIVE weather and, with vintages, on FORECAST weather too, and
   prints the report.
 
-**The verdict rule** (`ab/verdict.py::classify`), applied per target on the list of
+**The verdict rule** (`se4/ab/verdict.py::classify`), applied per target on the list of
 per-shift deltas (`candidate_MAE − baseline_MAE`, negative = candidate better):
 - **`NO_CHANGE`** — every delta is exactly 0 (candidate ≡ baseline).
 - **`NOISE`** — the delta's sign flips across shifts. The effect is smaller than the
@@ -708,7 +708,7 @@ Follow this whenever testing a feature or model change from the improvement plan
    grid. The fetch prints which clusters its rows reach. `--days 1095` caches a
    production-shaped snapshot in `ab_cache/` instead — for the integration check
    in step 5, not for measuring.
-2. **Express the change as `CANDIDATE`** in `ab/variants.py`. This is the only file
+2. **Express the change as `CANDIDATE`** in `se4/ab/variants.py`. This is the only file
    you edit, usually a handful of lines. A `Variant` has:
    - `transform(data) -> data` — adds or modifies **columns** on the merged daily
      frame (e.g. scale a feature, add a derived feature). **Must not add, drop, or
@@ -835,7 +835,7 @@ automation uses as a warning ([MODEL.md](MODEL.md#the-cheap2h-band)), and MAE sa
 nothing about them: the round-19c conformal calibration moved coverage 0.59 → 0.81
 and MAE by exactly zero, and in round 24 a symmetric band with a perfectly normal
 80 % coverage over the year let half of the autumn's expensive weekdays through. So
-the band has its own instrument, `ab/band.py`, and its own scorecard.
+the band has its own instrument, `se4/ab/band.py`, and its own scorecard.
 
 **How it runs.** `python ab_test.py band [--snapshot …] [--workers 4]` builds each
 arm's frame (its `build_fn`, else the production frame), applies its `transform`, and,
@@ -1174,7 +1174,7 @@ across NOW / −6M / −12M (…) with one unweighted vote each, since the point
 *within* a cluster overlap ~97% and would otherwise win on count alone.
 `MIN_CLUSTER_EFFECT = 0.10` is **provisional** — the historical ledger cannot
 discriminate 0.10 from 0.20; the only hard constraint is that it must stay
-below ~0.29 so the hurdle keeps passing. Self-check: `python ab/check_verdict.py`.
+below ~0.29 so the hurdle keeps passing. Self-check: `python se4/ab/check_verdict.py`.
 
 **Always check `corr(delta, min_train)` before reading a cluster table.** A real
 effect should not care about training-set size; if it does, the grid is telling

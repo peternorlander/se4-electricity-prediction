@@ -1,6 +1,6 @@
 from datetime import date
 
-from http_client import get_with_retry
+from se4.http_client import get_with_retry
 
 
 NORDPOOL_API_URL = "https://dataportal-api.nordpoolgroup.com/api/DayAheadPrices"

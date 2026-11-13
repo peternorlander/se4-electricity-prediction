@@ -2,8 +2,8 @@
 import numpy as np
 import pandas as pd
 
-from features import aggregate_prices_daily, aggregate_weather_daily, complete_swedish_dates
-from data_checks import price_order_problems
+from se4.features import aggregate_prices_daily, aggregate_weather_daily, complete_swedish_dates
+from se4.data_checks import price_order_problems
 
 
 def _hourly(start_local: str, end_local: str, freq="1h", seed=0) -> pd.DataFrame:

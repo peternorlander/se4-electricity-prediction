@@ -63,7 +63,7 @@ class Source:
 
 # Everything the entso_e price parsers depend on (shared by SE4 and DE/DK2 on purpose: a
 # change there changes both caches).
-_ENTSOE_PRICE_CODE = tuple(f"sources.entso_e:{n}" for n in (
+_ENTSOE_PRICE_CODE = tuple(f"se4.sources.entso_e:{n}" for n in (
     "_MAX_RANGE_DAYS", "_VARIABLE_BLOCK_CURVE", "_RESOLUTION_STEPS", "_DAY_AHEAD_CONTRACT",
     "_SDAC_SEQUENCE", "_SEQUENCE_PARAM", "_SEQUENCE_PINNED_AREAS", "_get_offset_for_position",
     "_parse_point", "_period_positions", "_fill_variable_blocks", "_parse_period",
@@ -73,54 +73,54 @@ _ENTSOE_PRICE_CODE = tuple(f"sources.entso_e:{n}" for n in (
 SOURCES = {s.name: s for s in (
     Source("entsoe_prices_se4", version=1, key="timestamp", overlap_days=21,
            max_join_gap_days=2,
-           code=_ENTSOE_PRICE_CODE + ("sources.entso_e:SE4_AREA_CODE",
-                                      "sources.entso_e:fetch_prices")),
+           code=_ENTSOE_PRICE_CODE + ("se4.sources.entso_e:SE4_AREA_CODE",
+                                      "se4.sources.entso_e:fetch_prices")),
     Source("entsoe_prices_de_dk2", version=1, key="timestamp", overlap_days=21,
            max_join_gap_days=2,
-           code=_ENTSOE_PRICE_CODE + ("sources.entso_e:DE_LU_AREA_CODE",
-                                      "sources.entso_e:DK2_AREA_CODE",
-                                      "sources.entso_e:fetch_market_prices")),
+           code=_ENTSOE_PRICE_CODE + ("se4.sources.entso_e:DE_LU_AREA_CODE",
+                                      "se4.sources.entso_e:DK2_AREA_CODE",
+                                      "se4.sources.entso_e:fetch_market_prices")),
     # The archive publishes with a 5-day lag and fetch_data tops it up 8 days from the
     # forecast endpoint, so a cache up to 3 days behind still leaves no hole after the splice.
     Source("weather_archive_se4", version=1, key="timestamp", overlap_days=21,
            max_stale_days=3, max_join_gap_days=2,
-           code=tuple(f"sources.open_meteo:{n}" for n in (
+           code=tuple(f"se4.sources.open_meteo:{n}" for n in (
                "LOCATION_LAT", "LOCATION_LON", "HOURLY_VARIABLES", "TIMEZONE",
                "OPEN_METEO_ARCHIVE_URL", "_hourly_values", "_model_params",
                "_parse_response", "fetch_historical"))),
     Source("wind_archive_intl", version=1, key="timestamp", overlap_days=21,
            max_stale_days=3, max_join_gap_days=2,
-           code=tuple(f"sources.open_meteo:{n}" for n in (
+           code=tuple(f"se4.sources.open_meteo:{n}" for n in (
                "WIND_LOCATIONS", "INTL_VARIABLES", "TIMEZONE", "OPEN_METEO_ARCHIVE_URL",
                "_hourly_values", "_model_params", "_fetch_location_series",
                "_fetch_all_locations", "fetch_international_wind_historical"))),
     Source("yahoo_ttf", version=1, key="date", overlap_days=21, max_stale_days=5,
            max_join_gap_days=6,
-           code=("sources.yahoo_finance:TTF_TICKER", "sources.yahoo_finance:_to_frame",
-                 "sources.yahoo_finance:fetch_ttf_prices")),
+           code=("se4.sources.yahoo_finance:TTF_TICKER", "se4.sources.yahoo_finance:_to_frame",
+                 "se4.sources.yahoo_finance:fetch_ttf_prices")),
     Source("yahoo_eua", version=1, key="date", overlap_days=21, max_stale_days=5,
            max_join_gap_days=6,
-           code=("sources.eua_carbon:EUA_TICKER", "sources.yahoo_finance:_to_frame",
-                 "sources.eua_carbon:fetch_eua_prices")),
+           code=("se4.sources.eua_carbon:EUA_TICKER", "se4.sources.yahoo_finance:_to_frame",
+                 "se4.sources.eua_carbon:fetch_eua_prices")),
     # Outage announcements keep arriving after the fact, so look back further.
     Source("entsoe_nuclear_se3", version=1, key="date", overlap_days=60,
            max_join_gap_days=2,
-           code=tuple(f"sources.entso_e:{n}" for n in (
+           code=tuple(f"se4.sources.entso_e:{n}" for n in (
                "SE3_AREA_CODE", "_parse_outage_timeseries", "_fetch_outages_chunk",
                "fetch_nuclear_outages_se3"))),
     # Weekly series: published with a lag of up to ~11 days, so "stale" is measured in weeks.
     Source("nve_reservoir_norway", version=1, key="date", overlap_days=60,
            max_stale_days=14, max_join_gap_days=10,
-           code=("sources.nve:NVE_API_BASE", "sources.nve:fetch_reservoir_norway")),
+           code=("se4.sources.nve:NVE_API_BASE", "se4.sources.nve:fetch_reservoir_norway")),
     Source("entsoe_reservoir_sweden", version=1, key="date", overlap_days=60,
            max_stale_days=21, max_join_gap_days=10,
-           code=tuple(f"sources.entso_e:{n}" for n in (
+           code=tuple(f"se4.sources.entso_e:{n}" for n in (
                "SWEDEN_AREA_CODE", "_parse_reservoir_point", "_RESERVOIR_STEPS",
                "_fill_reservoir_positions", "_fetch_reservoir_chunk",
                "fetch_reservoir_sweden"))),
     # Not a time series: one small frame, kept only as a fallback for a failed fetch.
     Source("nve_reservoir_median", version=1, key=None, max_stale_days=400,
-           code=("sources.nve:NVE_API_BASE", "sources.nve:fetch_reservoir_norway_median")),
+           code=("se4.sources.nve:NVE_API_BASE", "se4.sources.nve:fetch_reservoir_norway_median")),
 )}
 
 

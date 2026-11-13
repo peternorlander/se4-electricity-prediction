@@ -3,7 +3,7 @@ from datetime import date
 
 import pandas as pd
 
-from fetch_data import _splice_recent, _drop_partial_last_day
+from se4.fetch_data import _splice_recent, _drop_partial_last_day
 
 
 def _frame(start_utc: str, end_utc: str, value: float) -> pd.DataFrame:

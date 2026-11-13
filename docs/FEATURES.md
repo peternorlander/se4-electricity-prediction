@@ -1,7 +1,7 @@
 # Features and Data Sources
 
 The catalogue of every input the pipeline fetches and every column
-`features.py` engineers from them. **Which model uses which columns** is a
+`se4/features.py` engineers from them. **Which model uses which columns** is a
 separate question, answered in [MODEL.md](MODEL.md#per-target-feature-sets) —
 the lists are deliberately different per target.
 
@@ -40,7 +40,7 @@ feature** — see [Per-Target Feature Sets](MODEL.md#per-target-feature-sets):
 (cheap2h's model also gets a `neg_price_proba` input computed at fit/serve time by
 the negative-price hurdle classifier — see [Negative-Price Hurdle](MODEL.md#negative-price-hurdle-cheap2h-only).
 It's not a column in `FEATURE_COLUMNS` below, since it's model-internal rather
-than fetched/engineered by `features.py`.)
+than fetched/engineered by `se4/features.py`.)
 
 Note that **36 of the 51 columns below are not used by the two priority targets**
 (37 for `min`), and 9 of them are also not used by `avg`. They are not dead code —
@@ -51,7 +51,7 @@ cheap-price or average-price forecast, the lists in
 ### Local Weather (SE4/Malmö)
 - `mean_temp`, `min_temp`, `max_temp` — daily temperature aggregates
 - `mean_wind`, `max_wind` — daily mean / max of the hourly 100 m (hub-height) wind speed, in **km/h** —
-  Open-Meteo's default unit; `sources/open_meteo.py` passes no `wind_speed_unit`. Every `mean_wind_<site>`
+  Open-Meteo's default unit; `se4/sources/open_meteo.py` passes no `wind_speed_unit`. Every `mean_wind_<site>`
   column below is the same quantity. Only the power curve inside `residual_load` / `residual_load_min` /
   `residual_load_range` / `wind_night` converts to m/s (÷ 3.6, [DECISIONS.md](DECISIONS.md#residual-load-wind-curve-unit-fix-round-23)).
 - `mean_radiation`, `max_radiation` — global horizontal irradiance (GHI W/m²)

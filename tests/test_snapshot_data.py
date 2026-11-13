@@ -7,9 +7,9 @@ import functools
 import numpy as np
 import pandas as pd
 
-from ab.snapshot import load_snapshot, LONG_CACHE_ROOT
-from data_checks import check_training_data
-from features import build_training_data
+from se4.ab.snapshot import load_snapshot, LONG_CACHE_ROOT
+from se4.data_checks import check_training_data
+from se4.features import build_training_data
 
 from conftest import ROOT
 

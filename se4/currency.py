@@ -1,9 +1,9 @@
 import pandas as pd
 from datetime import date, timedelta
 
-from model import UNITLESS_KEYS
+from se4.model import UNITLESS_KEYS
 
-from sources.nordpool import fetch_mean_sek_for_date
+from se4.sources.nordpool import fetch_mean_sek_for_date
 
 
 # How many days back from `today` to look for a delivery day present in both

@@ -13,25 +13,25 @@ WHAT TO DO WHEN IT FAILS (docs/DATA_CACHE.md "When you change a source"):
   1. Decide: would the SAME API response now produce different rows/columns/values?
        yes -> bump that source's `version` in source_cache.SOURCES
        no  -> (a log line, a comment, a refactor) leave it
-  2. Run `python source_cache.py`, copy the line(s) for the changed source(s) into RECORDED.
+  2. Run `python -m se4.source_cache`, copy the line(s) for the changed source(s) into RECORDED.
   Both versions and fingerprints are recorded here on purpose: changing only one of them is
   visible in the diff.
 """
 import pytest
 
-from source_cache import SOURCES, fingerprint
+from se4.source_cache import SOURCES, fingerprint
 
 RECORDED = {
-    "entsoe_prices_se4": (1, "9d8bc2f651f8"),
-    "entsoe_prices_de_dk2": (1, "bd560228a776"),
-    "weather_archive_se4": (1, "11d01961d61b"),
-    "wind_archive_intl": (1, "4e8061113803"),
-    "yahoo_ttf": (1, "31142558c933"),
-    "yahoo_eua": (1, "4745f76f2051"),
-    "entsoe_nuclear_se3": (1, "6d62fd434778"),
-    "nve_reservoir_norway": (1, "b117aa718f4d"),
-    "entsoe_reservoir_sweden": (1, "149811bc12e8"),
-    "nve_reservoir_median": (1, "6793e47b4de6"),
+    "entsoe_prices_se4": (1, "a4408c09d59e"),
+    "entsoe_prices_de_dk2": (1, "7799f4527557"),
+    "weather_archive_se4": (1, "d5f8774fc137"),
+    "wind_archive_intl": (1, "314b6718497f"),
+    "yahoo_ttf": (1, "b4ce85157f95"),
+    "yahoo_eua": (1, "f4a3e74148db"),
+    "entsoe_nuclear_se3": (1, "fb9af971e7d3"),
+    "nve_reservoir_norway": (1, "ea9f5ba1d195"),
+    "entsoe_reservoir_sweden": (1, "439e341bf5ff"),
+    "nve_reservoir_median": (1, "203bd478a5d2"),
 }
 
 
@@ -52,7 +52,7 @@ def test_source_code_change_is_acknowledged(name):
         f"  now:      version {source.version}, fingerprint {live}\n"
         "If the same API response would now give different rows, columns or values, bump "
         "`version` in source_cache.SOURCES so the next run fetches this source in full. "
-        "Then run `python source_cache.py` and update RECORDED here. See docs/DATA_CACHE.md.")
+        "Then run `python -m se4.source_cache` and update RECORDED here. See docs/DATA_CACHE.md.")
 
 
 def test_listed_code_exists():

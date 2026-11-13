@@ -8,8 +8,8 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-import fetch_data
-import source_cache
+from se4 import fetch_data
+from se4 import source_cache
 
 TODAY = date(2026, 11, 8)
 

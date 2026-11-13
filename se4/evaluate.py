@@ -1,8 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from features import apply_forecast_freeze
-from model import _fit_models, TARGETS, HURDLE_TARGETS, HURDLE_PROBA_FEATURE_NAME, enforce_coherence
+from se4.features import apply_forecast_freeze
+from se4.model import _fit_models, TARGETS, HURDLE_TARGETS, HURDLE_PROBA_FEATURE_NAME, enforce_coherence
 
 
 # Target number of walk-forward iterations for evaluation. 52 weekly windows

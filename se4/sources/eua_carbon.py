@@ -2,7 +2,7 @@ import logging
 
 import pandas as pd
 
-from sources.yahoo_finance import download_daily_close
+from se4.sources.yahoo_finance import download_daily_close
 
 logger = logging.getLogger(__name__)
 

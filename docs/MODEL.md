@@ -19,7 +19,7 @@ The SDAC day-ahead auction switched from hourly to 15-minute MTU on **delivery d
 - `price_cheap2h` — mean of the day's **two cheapest hours, not necessarily adjacent**. This is the decision-relevant target for EV charging: a ~2h charging session picks the cheapest points of the day wherever they are. It is also statistically smoother than the pointwise min (average of 2 values instead of an extremum).
 
 All four are computed on the **complete** curve: ENTSO-E sends a point only when
-the price changes (curve type A03), and `sources/entso_e.py` expands every
+the price changes (curve type A03), and `se4/sources/entso_e.py` expands every
 omitted position to the previous price before anything is aggregated. Before
 2026-10 it did not, so a repeated price dropped out of the day
 ([FINDINGS.md](FINDINGS.md#entso-e-omits-a-price-point-when-the-price-repeats-2026-10-10)).

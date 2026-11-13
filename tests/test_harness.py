@@ -3,8 +3,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import ab.verdict as verdict
-from ab.variants import BASELINE, Variant
+import se4.ab.verdict as verdict
+from se4.ab.variants import BASELINE, Variant
 
 
 def test_target_filter_keeps_the_coherence_pair():
@@ -58,7 +58,7 @@ def _double_x(data):
 
 
 def test_band_job_applies_the_variants_transform(monkeypatch):
-    import ab.band as band
+    import se4.ab.band as band
     seen = {}
 
     def fake_walk_forward(data, variant, train_window):

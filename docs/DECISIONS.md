@@ -100,7 +100,7 @@ skipping the sort, `_splice_recent` letting the recent analysis overwrite the ar
 keeping today's partial day, a broken `cheap2h` aggregation, the risk converted to SEK, and
 complete days assumed to be 24 hours. The snapshot tests run the production data check and
 the DST/gap checks once per cached long snapshot and are skipped on the runner, which has
-no cache. It also runs the offline parts of `ab/check_verdict.py` and `ab/check_vintage.py`. The latter had been failing since the 2.3b blend commit earlier the same day: its stub of `_fetch_location_series` did not take the new `models` argument. The stub is fixed, and the `--snapshot 2026-10-16` bit-identity part passes (153 checks). The suite passes on Windows and on Linux with the pinned versions. (2026-11-08: the suite moved out of the daily workflow into `tests.yml`, on every push and
+no cache. It also runs the offline parts of `se4/ab/check_verdict.py` and `se4/ab/check_vintage.py`. The latter had been failing since the 2.3b blend commit earlier the same day: its stub of `_fetch_location_series` did not take the new `models` argument. The stub is fixed, and the `--snapshot 2026-10-16` bit-identity part passes (153 checks). The suite passes on Windows and on Linux with the pinned versions. (2026-11-08: the suite moved out of the daily workflow into `tests.yml`, on every push and
 pull request; with pinned packages the code a production run uses is the code tested at its
 push, and a test failing for its own reasons should not block a prediction. How to add a
 test: [TESTING.md](TESTING.md).) At first the workflow
@@ -134,8 +134,8 @@ old the kept prediction is (`last_success_at`), not a trigger.
 scikit-learn 1.9.1, scipy 1.18.1, xgboost 3.3.0, and the fetch libraries at their newest.
 Everything is on its newest release except xgboost. The upgrade from the versions the
 ledger was measured with (pandas 3.0.3, numpy 2.5.1, scikit-learn 1.9.0, scipy 1.18.0)
-changed no MAE on any of the six caches; per-row differences were ≤ 1e-13. `features.py`
-and `sources/swedish_calendar.py` now call `day_of_year` / `day_of_week`, which pandas 3.1
+changed no MAE on any of the six caches; per-row differences were ≤ 1e-13. `se4/features.py`
+and `se4/sources/swedish_calendar.py` now call `day_of_year` / `day_of_week`, which pandas 3.1
 keeps, instead of `dayofyear` / `dayofweek`, which it deprecates. The suite passes with that
 warning raised as an error. xgboost stays on 3.3.0. 3.4.1 moved MAE by ≤ 0.016, which is
 too small to matter, but on Windows it fits 2–3× slower: 1.1 s against 0.5 s per regressor,
@@ -178,7 +178,7 @@ NaN, the D+8 stub, the D+0 price anchor). It cost 52 full model fits per run aga
 for the forecast. Evidence for a change comes from the A/B grid, and the headline table
 from a deliberate snapshot measurement. Neither depends on production running the eval.
 
-**What stays.** `evaluate.py` itself: the headline table in
+**What stays.** `se4/evaluate.py` itself: the headline table in
 [MODEL.md](MODEL.md#current-mae-baseline) is measured with it, and `ab.harness` is
 pinned to it at shift 0. `cheap2h_interval` (the band's calibration) is still sent.
 Monitoring what Home Assistant actually received is the job of the prediction log and its
@@ -236,7 +236,7 @@ forecast and `long/2026-10-16`, fetches stubbed):
 - `fetch_tomorrow_prices` keeps a complete tomorrow (96 quarter-hours), drops one that
   is three hours short, and returns empty frames on an exception.
 
-**What it changes for the eval.** Nothing in `evaluate.py`. `apply_forecast_freeze`
+**What it changes for the eval.** Nothing in `se4/evaluate.py`. `apply_forecast_freeze`
 freezes the lags at the first test row, so that row's lags are one day old, and that is
 now exactly D+2. Eval rows 1…6 (1-based) are the six sent days, D+2…D+7, by price
 staleness and by weather lead. Row 7 is D+8, which is not sent. Before this change the
@@ -326,7 +326,7 @@ classifier fitted on the rows before the holdout. A bin with fewer than 30 holdo
 falls back to the pooled correction. Pre-registered before the run, with the bar: lower
 `above_high` in every cluster, and the calm-day `high` not above the old band's.
 
-**`ab/band.py`, `long/2026-10-16`, one point per cluster plus the last 56 days, against
+**`se4/ab/band.py`, `long/2026-10-16`, one point per cluster plus the last 56 days, against
 the round-24 band (and the old symmetric band for reference).** Unwarned days by risk:
 
 | risk | days | above `high` | `high` = `cheap2h` | mean `high` |
@@ -409,7 +409,7 @@ measured as well or better on every cache ([REJECTED.md](REJECTED.md)). Producti
 reproduces the measured arm **bit-identically** (`min`, `cheap2h` and `avg` predictions
 equal to the last digit on all 364 days at `2026-10-16` shift 0).
 
-**The band — `ab/band.py` on `2026-10-16`, one point per cluster plus the last 56 days,
+**The band — `se4/ab/band.py` on `2026-10-16`, one point per cluster plus the last 56 days,
 old production (no hurdle, symmetric conformal band) against the shipped version
 (threshold 0.3).** Rates are fractions of days:
 
@@ -530,7 +530,7 @@ and was not re-measured. A slot target set (round 20) would need the sibling ide
 
 ## Northern wind points (round 25)
 
-Adopted 2026-10-12, in `sources/open_meteo.py` and `features.py`. Measured with local
+Adopted 2026-10-12, in `se4/sources/open_meteo.py` and `se4/features.py`. Measured with local
 experiment scripts under `experiments/` (not committed); the numbers below are the
 record. The explanation and the full audit are in
 [FINDINGS.md](FINDINGS.md#the-northern-wind-belt-is-worth-1-eurmwh-on-cheap2h-about-half-of-it-on-a-real-forecast-round-25).
@@ -627,7 +627,7 @@ forecast — too few days to read either way. `max` still does not read the colu
 
 ## A03 forward-fill of ENTSO-E price curves
 
-Adopted 2026-10-10, in `sources/entso_e.py`. A correctness fix that changes the
+Adopted 2026-10-10, in `se4/sources/entso_e.py`. A correctness fix that changes the
 **targets themselves**, so it was evaluated differently from a feature and
 gated by a harm check rather than by an improvement bar.
 
@@ -802,7 +802,7 @@ being able to do anything else.
 
 ## One day-ahead price per hour, chosen deterministically
 
-Adopted 2026-10-10, in `sources/entso_e.py`, in two steps the same day: a
+Adopted 2026-10-10, in `se4/sources/entso_e.py`, in two steps the same day: a
 deterministic rule in the morning, then — once the curves were identified — the
 SDAC curve by sequence (item 2.15a, below). A data-integrity fix that affects
 production as much as the backtest, so it is recorded here even though it has no
@@ -900,7 +900,7 @@ Adopted 2026-09-17. Measured with local experiment scripts under
 `experiments/`, which is **not committed** — the numbers below are the record.
 
 `features._wind_power_curve` clips at `rated_speed=13.0` believing its input is
-m/s (its own docstring said so). `sources/open_meteo.py` never requests
+m/s (its own docstring said so). `se4/sources/open_meteo.py` never requests
 `wind_speed_unit`, so `windspeed_100m` arrives in Open-Meteo's default **km/h**.
 13 km/h is 3.6 m/s — an ordinary breeze — so the curve was pinned at its rated
 maximum on **~88% of hours**
@@ -970,7 +970,7 @@ Adopted 2026-09-05. **Since 2026-10-16 only its low half is served**; `cheap2h_h
 each day's own `cheap2h` prediction**, from two `reg:quantileerror` regressors
 (α = 0.10 / 0.90) on the same feature list and hyperparameters as the point
 model. This is an addition: `model.predict()` without an `interval` argument
-returns exactly what it always did, so `evaluate.py` and the A/B harness are
+returns exactly what it always did, so `se4/evaluate.py` and the A/B harness are
 untouched.
 
 Why it exists: a point estimate cannot say "I don't know". On 2026-08-18 the

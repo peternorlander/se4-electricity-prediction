@@ -47,8 +47,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from ab.harness import LEADS, column_equal
-from ab.snapshot import DEFAULT_CACHE_ROOT
+from se4.ab.harness import LEADS, column_equal
+from se4.ab.snapshot import DEFAULT_CACHE_ROOT
 
 PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 MODEL = "best_match"
@@ -89,7 +89,7 @@ class VintageCoverageError(RuntimeError):
 # =====================================================================================
 def weather_points() -> dict:
     """{point: (lat, lon)} -- the SE4 point and every WIND_LOCATIONS entry."""
-    from sources.open_meteo import LOCATION_LAT, LOCATION_LON, WIND_LOCATIONS
+    from se4.sources.open_meteo import LOCATION_LAT, LOCATION_LON, WIND_LOCATIONS
     assert SE4_POINT not in WIND_LOCATIONS, f"WIND_LOCATIONS now has a '{SE4_POINT}' key"
     return {SE4_POINT: (LOCATION_LAT, LOCATION_LON), **WIND_LOCATIONS}
 
@@ -125,7 +125,7 @@ def default_root(cache_root) -> Path:
 # =====================================================================================
 def _fetch_range(lat: float, lon: float, start: date, end: date) -> pd.DataFrame:
     """One point, all variables x all leads, hourly UTC, `start`..`end` inclusive."""
-    from http_client import get_with_retry
+    from se4.http_client import get_with_retry
     hourly = ",".join(col for api, _ in _API_VARIABLES for col in vintage_columns(api))
     params = {"latitude": lat, "longitude": lon, "hourly": hourly, "models": MODEL,
               "start_date": start.isoformat(), "end_date": end.isoformat(), "timezone": "UTC"}
@@ -336,7 +336,7 @@ def build_vintage_frames(inputs: dict, vintages: dict, archive: pd.DataFrame,
     carbon / reservoir / nuclear column moved (see NON_WEATHER_PREFIXES).
     """
     if build is None:
-        from features import build_training_data as build
+        from se4.features import build_training_data as build
     frames = {}
     for lead in leads:
         frame = build(**hybrid_inputs(inputs, vintages, lead, log=log))

@@ -26,13 +26,13 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import numpy as np
 import pandas as pd
 
-import ab.harness as H
-import ab.vintage as V
+import se4.ab.harness as H
+import se4.ab.vintage as V
 
 checks = 0
 
@@ -119,8 +119,8 @@ def check_synthetic():
 
     # a CANDIDATE's transform runs on every lead frame, and shifts truncate them in step:
     # a column derived from the weather column carries the FORECAST's value on a forecast row
-    from ab.variants import Variant
-    from ab.verdict import _point_errors
+    from se4.ab.variants import Variant
+    from se4.ab.verdict import _point_errors
 
     def derive(frame):
         out = frame.copy()
@@ -151,7 +151,7 @@ def check_synthetic():
 
 
 def check_points_and_columns():
-    from sources import open_meteo as om
+    from se4.sources import open_meteo as om
     pts = V.weather_points()
     ok(list(pts) == [V.SE4_POINT, *om.WIND_LOCATIONS], "points = the SE4 point + every WIND_LOCATIONS entry, in order")
     ok(pts[V.SE4_POINT] == (om.LOCATION_LAT, om.LOCATION_LON), "SE4 coordinates come from the source")
@@ -248,8 +248,8 @@ def run_offline():
 def _reference_run_walk_forward(data, fit_fn, targets, step, iterations, frozen_features, frozen_rolling,
                                 train_window):
     """The loop exactly as ab.harness.run_walk_forward had it before vintages existed."""
-    from features import apply_forecast_freeze
-    from model import enforce_coherence
+    from se4.features import apply_forecast_freeze
+    from se4.model import enforce_coherence
     data = data.reset_index(drop=True)
     n = len(data)
     min_train = n - iterations * step
@@ -273,9 +273,9 @@ def _reference_run_walk_forward(data, fit_fn, targets, step, iterations, frozen_
 
 
 def run_snapshot(args):
-    import features as feat
-    from ab.snapshot import load_snapshot
-    from ab.variants import BASELINE
+    from se4 import features as feat
+    from se4.ab.snapshot import load_snapshot
+    from se4.ab.variants import BASELINE
 
     root = Path(args.root)
     inputs, meta = load_snapshot(args.snapshot, cache_root=root)

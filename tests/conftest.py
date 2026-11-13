@@ -7,7 +7,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ab.snapshot import LONG_CACHE_ROOT, list_snapshots  # noqa: E402
+from se4.ab.snapshot import LONG_CACHE_ROOT, list_snapshots  # noqa: E402
 
 SNAPSHOTS = list_snapshots(ROOT / LONG_CACHE_ROOT)
 

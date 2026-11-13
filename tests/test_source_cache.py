@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import pandas as pd
 import pytest
 
-import source_cache as sc
+from se4 import source_cache as sc
 
 DAILY = sc.Source("t_daily", version=1, key="date", overlap_days=10, max_stale_days=4,
                   max_join_gap_days=5)

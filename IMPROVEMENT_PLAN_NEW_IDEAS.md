@@ -25,7 +25,7 @@ it is not a verdict: nothing below may enter a ledger from this file.
 
 ## 1. How the prediction is made today
 
-Per day, from `model.py` and `predict.py`:
+Per day, from `se4/model.py` and `predict.py`:
 
 1. **Coupling probability.** A linear logistic regression predicts `p_couple`, the probability
    that the day's trough prices at continental level (`cheap2h / gas_marginal_cost > 0.6`),

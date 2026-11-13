@@ -353,7 +353,7 @@ for caches fetched before that.
   undiagnosable. `--into YYYY-MM-DD` re-fetches one document type into an
   existing cache directory without clobbering the others. That request layer —
   retry, 4xx `Reason` logging, the per-document-type limit table
-  (`DOCUMENT_MAX_RANGE_DAYS`) and the splitting — lives in `sources/entso_e.py`,
+  (`DOCUMENT_MAX_RANGE_DAYS`) and the splitting — lives in `se4/sources/entso_e.py`,
   not in the scratch fetcher, so the next exploratory ENTSO-E fetch (plan 2.7's
   week-ahead documents) inherits it instead of rediscovering this. Production's
   own ENTSO-E fetchers (prices, A77 outages, reservoir) now log the same
@@ -426,7 +426,7 @@ the recipes in Appendix B.
 
 Two independent defects:
 
-1. **Unit mismatch.** `sources/open_meteo.py` never passes `wind_speed_unit`, so
+1. **Unit mismatch.** `se4/sources/open_meteo.py` never passes `wind_speed_unit`, so
    Open-Meteo returns `windspeed_100m` in its default **km/h** (median 26.6 at
    Malmö, i.e. 7.4 m/s — a normal 100 m wind). `features._wind_power_curve`
    documents its input as m/s with `rated_speed = 13`. 13 km/h is 3.6 m/s, cut-in
@@ -765,7 +765,7 @@ pushed to Home Assistant on a run that picked such a day was scaled by that
 error — the same class of bug as
 [the NaN rate](#the-nan-exchange-rate-that-blanked-the-payload-2026-07-22), and
 just as invisible to a backtest. The parser fix corrects it with no change to
-`currency.py`.
+`se4/currency.py`.
 
 What was decided, and the A/B that scored old and new pipelines against the
 corrected targets:

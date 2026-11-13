@@ -6,8 +6,8 @@ limit is retried like an outage.
 import pytest
 import requests
 
-import http_client
-from sources import open_meteo
+from se4 import http_client
+from se4.sources import open_meteo
 
 
 class FakeResponse:

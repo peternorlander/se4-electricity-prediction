@@ -21,11 +21,11 @@ Data sources (API)
     └── Nordpool     → Published prices (to skip days already known)
          │
          ▼
-Feature engineering (features.py)
+Feature engineering (se4/features.py)
     → 51 engineered features (+2 northern-wind columns for min/avg/cheap2h), daily resolution, 3-year training window
          │
          ▼
-Model training (model.py)
+Model training (se4/model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
     → per-target feature sets: `max` uses all 51, `avg` runs a validated
       44-column list (AVG_FEATURE_COLUMNS: a 42-column subset + 2 northern-wind
@@ -43,8 +43,25 @@ Model training (model.py)
       cheap2h_risk (that probability)
          │
          ▼
-Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (ha_client.py)
+Inference → EUR/MWh → SEK/kWh → Home Assistant sensor (se4/ha_client.py)
 ```
+
+### Repository layout
+
+```
+predict.py       daily production run (what the Actions workflow calls)
+ab_test.py       A/B backtest CLI
+run_status.py    run-status sensor; stays in the root because the workflow calls it
+                 after a failed pip install, so it uses the standard library only
+se4/             the library: features, model, evaluate, fetch_data, source_cache,
+                 http_client, currency, data_checks, ha_client
+  sources/       one module per external API
+  ab/            the A/B harness behind ab_test.py
+tests/  docs/  experiments/ (untracked scratch)  ab_cache/  source_cache/ (local data)
+```
+
+Everything imports as `from se4.model import …` or `from se4 import model`; run
+scripts from the repository root.
 
 ## Running it
 
@@ -57,11 +74,11 @@ pip install -r requirements.txt
 | Production run (fetch → train → predict → push to HA) | `python predict.py` | Needs `ENTSO_E_TOKEN`, `HA_URL`, `HA_TOKEN`. This is what GitHub Actions runs. |
 | Cache a data snapshot for experiments | `python ab_test.py fetch` | Needs `ENTSO_E_TOKEN`. Caches ~5 years under `ab_cache/long/` — the only shape that can train every test week on production's own 1088 rows. `--days 1095` caches a production-shaped one under `ab_cache/` for the integration check. |
 | List cached snapshots | `python ab_test.py list` | Lists `ab_cache/long/`; `--root ab_cache` for the production-shaped ones. Reports each snapshot's **weather tail**; snapshots with different tails must not share one measurement grid. |
-| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters); `--targets cheap2h` (or `avg`, …) fits only what the screen needs — `min` and `cheap2h` always together. Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
+| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters); `--targets cheap2h` (or `avg`, …) fits only what the screen needs — `min` and `cheap2h` always together. Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `se4/ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
 | Fetch / check the forecast vintages | `python ab_test.py vintages` | Warms `ab_cache/vintages/` for a snapshot's evaluated days and fails if any hour lacks a vintage. `run` does this itself; use it to fetch ahead of a long run. |
 | Run the tests | `python -m pytest` | `pip install -r requirements-dev.txt` first. Offline; the snapshot checks run once per cache under `ab_cache/long/` and are skipped where there is none (the Actions runner). Runs on every push and pull request (`tests.yml`). How to add one: [docs/TESTING.md](docs/TESTING.md). |
-| Self-check the verdict rules | `python ab/check_verdict.py` | |
-| Self-check forecast-vintage scoring | `python ab/check_vintage.py` | Offline mechanics; add `--snapshot YYYY-MM-DD` for the bit-identity check against the pre-vintage harness. |
+| Self-check the verdict rules | `python se4/ab/check_verdict.py` | |
+| Self-check forecast-vintage scoring | `python se4/ab/check_vintage.py` | Offline mechanics; add `--snapshot YYYY-MM-DD` for the bit-identity check against the pre-vintage harness. |
 
 **Pin `OMP_NUM_THREADS=4` before comparing any two MAE numbers.** XGBoost's
 floating-point reduction order depends on the thread count, so the same
@@ -103,7 +120,7 @@ a commit message, a chat transcript, or a script under `experiments/`.
 | A/B rejected | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round. Delete the item from the improvement plan. |
 | Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
-| A source's request, parsing or reduction changed (so the same API response would give different rows) | **Bump that source's `version` in `source_cache.SOURCES` in the same commit**, then update `RECORDED` in `tests/test_source_cache_versions.py` (`python source_cache.py` prints it). The test fails until you have looked. [docs/DATA_CACHE.md](docs/DATA_CACHE.md#when-you-change-a-source-the-version-rule). |
+| A source's request, parsing or reduction changed (so the same API response would give different rows) | **Bump that source's `version` in `source_cache.SOURCES` in the same commit**, then update `RECORDED` in `tests/test_source_cache_versions.py` (`python -m se4.source_cache` prints it). The test fails until you have looked. [docs/DATA_CACHE.md](docs/DATA_CACHE.md#when-you-change-a-source-the-version-rule). |
 | A defect fixed | A test in `tests/` that fails on the code before the fix ([docs/TESTING.md](docs/TESTING.md)), plus a ledger entry if the fix moves numbers. |
 | Not done yet | The improvement plan only — never a ledger. Ready work in its 4.1, work that waits on a date, a cache or a decision in 4.2 with the blocker. |
 | Started, then paused (any reason, including the end of a session) | The item's **State** line in the improvement plan: where it stands, what was done and found so far with its date and commit, where to resume, and either *not blocked — can be taken now* or *blocked by what, because why, until when*. Interim numbers stay there until the verdict is in; then the ledger entry takes over and they are cut. Never `experiments/`. |
@@ -175,7 +192,7 @@ belongs in the ledgers above. Concretely, if you are working in that directory:
 - **The headline eval trains on less than production does.** `walk_forward_validate` expands: its 52 test weeks have to come out of the same 1088-row frame production fits on, so the first trains on 724 rows and the last on 1081 — ~900 on average against production's 1088. Measured on the current feature set, production-length training scores **~0.36 better** on `min` in the most recent period, so the headline is mildly pessimistic there, though the sign is period-dependent. Production cannot avoid this (three years of fetch is exactly one evaluation year short), so the A/B grid was fixed instead and the headline was not — see [Production-length training in the A/B grid](docs/DECISIONS.md#production-length-training-in-the-ab-grid).
 - **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](docs/DECISIONS.md#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual is measured at **+0.155 (cheap2h) / +0.258 (min) / +0.591 (avg)** (the `gap1` arm), and the recent-analysis product's own error against the archive is on top of that and still unmeasured.
 - **Max prediction accuracy** (the highest MAE of the four targets by a wide margin — see [MODEL.md](docs/MODEL.md#current-mae-baseline)): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.
-- **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale. A NaN rate once blanked the entire Home Assistant payload — [FINDINGS.md](docs/FINDINGS.md#the-nan-exchange-rate-that-blanked-the-payload-2026-07-22) has the postmortem and the constraint to respect if `currency.py` is ever touched again.
+- **EUR/SEK rate**: Derived daily from Nordpool vs ENTSO-E prices. If data is unavailable, the rate may be stale. A NaN rate once blanked the entire Home Assistant payload — [FINDINGS.md](docs/FINDINGS.md#the-nan-exchange-rate-that-blanked-the-payload-2026-07-22) has the postmortem and the constraint to respect if `se4/currency.py` is ever touched again.
 
 ## Setup
 
@@ -202,7 +219,7 @@ The pipeline is defined in `.github/workflows/daily_predict.yml` (install the pi
 
 ## Home Assistant Integration
 
-Every run also writes **`sensor.electricity_price_predictions_run`** (`run_status.py`), success or not: state `ok` or `failed`, with `finished_at`, `last_success_at`, `error` (on a failure), `stage` (`workflow` when the run stopped before `predict.py`, at install or tests), `git_sha` and `run_url`. The predictions sensor below is only written by a run that succeeds, so a failed run leaves the previous prediction in place — on purpose: the automation would rather plan on a day-old prediction than on none (it rode out a two-day API outage that way). The Node-RED flow already notices a missing run by waiting for a new predictions state after it dispatches the workflow. This sensor adds why a run failed (`error`, `stage`) and how old the prediction being kept is (`last_success_at`); nothing requires the automation to read it. A run that never reached Python (the dispatch did not arrive, the runner never started) updates nothing. `predict.py` also checks the fetched training data before fitting (`data_checks.py`: wind in km/h, `min ≤ cheap2h ≤ avg ≤ max` on every row, no non-finite value) and fails the run rather than push predictions trained on broken inputs.
+Every run also writes **`sensor.electricity_price_predictions_run`** (`run_status.py`), success or not: state `ok` or `failed`, with `finished_at`, `last_success_at`, `error` (on a failure), `stage` (`workflow` when the run stopped before `predict.py`, at install or tests), `git_sha` and `run_url`. The predictions sensor below is only written by a run that succeeds, so a failed run leaves the previous prediction in place — on purpose: the automation would rather plan on a day-old prediction than on none (it rode out a two-day API outage that way). The Node-RED flow already notices a missing run by waiting for a new predictions state after it dispatches the workflow. This sensor adds why a run failed (`error`, `stage`) and how old the prediction being kept is (`last_success_at`); nothing requires the automation to read it. A run that never reached Python (the dispatch did not arrive, the runner never started) updates nothing. `predict.py` also checks the fetched training data before fitting (`se4/data_checks.py`: wind in km/h, `min ≤ cheap2h ≤ avg ≤ max` on every row, no non-finite value) and fails the run rather than push predictions trained on broken inputs.
 
 The pipeline creates/updates `sensor.electricity_price_predictions` with attributes:
 - `predictions_raw` — EUR-to-SEK converted prices, indexed by date (min/avg/max/cheap2h per day, plus `cheap2h_low` / `cheap2h_high`, and `cheap2h_risk` — a probability 0–1, not converted)

@@ -44,7 +44,7 @@ from typing import Callable
 
 import pandas as pd
 
-import model as model_module
+from se4 import model as model_module
 
 
 def _identity(data: pd.DataFrame) -> pd.DataFrame:

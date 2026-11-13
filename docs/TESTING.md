@@ -3,12 +3,12 @@
 `tests/` guards **contracts and invariants**: rules about the code that a defect broke once,
 or would break silently. It does not judge whether the model is good. Model quality is
 measured by the A/B harness ([AB_TESTING.md](AB_TESTING.md)). Production data is guarded by
-`data_checks.py` inside `predict.py`. The three never stand in for each other:
+`se4/data_checks.py` inside `predict.py`. The three never stand in for each other:
 
 | Guard | Asks | Runs |
 |---|---|---|
 | `tests/` | Does the code still do what it promises? | Every push and pull request (`.github/workflows/tests.yml`), and locally before a commit |
-| `data_checks.py` | Is today's fetched data sane (wind unit, price order, finite)? | Every production run, before fitting |
+| `se4/data_checks.py` | Is today's fetched data sane (wind unit, price order, finite)? | Every production run, before fitting |
 | A/B harness | Is a change better? | When a change is proposed |
 
 Run it with `pip install -r requirements-dev.txt`, then `python -m pytest` from the repository

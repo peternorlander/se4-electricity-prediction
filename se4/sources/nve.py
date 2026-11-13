@@ -1,7 +1,7 @@
 import logging
 import pandas as pd
 
-from http_client import get_with_retry
+from se4.http_client import get_with_retry
 
 logger = logging.getLogger(__name__)
 

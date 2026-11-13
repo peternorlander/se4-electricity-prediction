@@ -4,9 +4,9 @@ import json
 import numpy as np
 import pandas as pd
 
-import model
-import ha_client
-from currency import convert_predictions_to_sek
+from se4 import model
+from se4 import ha_client
+from se4.currency import convert_predictions_to_sek
 
 
 class _Const:

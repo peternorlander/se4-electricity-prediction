@@ -4,7 +4,7 @@ import re
 import requests
 from datetime import datetime, timezone
 
-from model import UNITLESS_KEYS
+from se4.model import UNITLESS_KEYS
 
 
 SENSOR_ENTITY_ID = "sensor.electricity_price_predictions"

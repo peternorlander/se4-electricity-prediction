@@ -17,9 +17,9 @@ Both are locked down below. Neither would have been caught by reading the code.
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from ab.verdict import (classify, classify_clustered,
+from se4.ab.verdict import (classify, classify_clustered,
                         classify_ablation_clustered)
 
 BASE_MAE = 16.0          # -> dead_threshold 0.24, swing_threshold 0.56
