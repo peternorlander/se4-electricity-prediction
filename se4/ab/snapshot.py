@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from se4.ab.seed import source_versions
+
 DEFAULT_CACHE_ROOT = Path("ab_cache")
 
 # Long-window snapshots (ab_test.py fetch --days N, N > fetch_data.TRAINING_DAYS)
@@ -98,7 +100,8 @@ def read_meta(date_str: str, cache_root=DEFAULT_CACHE_ROOT) -> dict:
     return {**meta, **derived, "weather_tail_derived": True} if derived else meta
 
 
-def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT) -> Path:
+def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT,
+                  extra_meta: dict = None) -> Path:
     """
     Persist a fetch_training_inputs(today) result to disk.
 
@@ -107,6 +110,7 @@ def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT) -> P
         today:      The "as of" date the inputs were fetched for; also the
                     snapshot's directory name (YYYY-MM-DD).
         cache_root: Root directory for all snapshots.
+        extra_meta: Extra meta.json fields (e.g. what an incremental fetch was built from).
 
     Returns:
         Path to the snapshot directory.
@@ -123,6 +127,10 @@ def save_snapshot(inputs: dict, today: date, cache_root=DEFAULT_CACHE_ROOT) -> P
         "today": today.isoformat(),
         "fetched_at": datetime.now().isoformat(),
         **describe_weather_tail(inputs, today),
+        # What each source's cache version was when this was fetched, so a later incremental
+        # fetch (ab/seed.py) can refuse to build on rows the current code would read differently.
+        "source_versions": source_versions(),
+        **(extra_meta or {}),
     }
     with open(snapshot_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)

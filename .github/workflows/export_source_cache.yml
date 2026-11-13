@@ -1,0 +1,30 @@
+name: Export source cache
+
+# GitHub offers no way to download an Actions cache, only to restore one inside a workflow.
+# This restores the newest production source cache and hands it over as an artifact, so a local
+# `ab_test.py fetch --incremental --overlay <dir>` can take its newest rows when a source's API
+# is unreachable from the local machine (Yahoo TTF=F, 2026-11-13). Run it by hand:
+#   gh workflow run export_source_cache.yml   (or the Actions tab -> Run workflow)
+#   gh run download <run id> -n source-cache -D ab_cache/prod_source_cache
+# The files are market and weather data only -- no secrets. docs/AB_TESTING.md.
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore the newest source cache
+        uses: actions/cache/restore@v6
+        with:
+          path: source_cache
+          key: source-cache-export-${{ github.run_id }}     # never exists: only the prefix matches
+          restore-keys: source-cache-v1-
+
+      - name: Hand it over
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-cache
+          path: source_cache/*.pkl
+          if-no-files-found: error
+          retention-days: 1

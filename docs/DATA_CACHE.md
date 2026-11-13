@@ -94,5 +94,7 @@ To throw the whole cache away: bump `v1` to `v2` in both `source-cache-v1-` keys
   saved. The existing guards still apply on every run (`data_checks.check_training_data`,
   the coverage checks inside the fetchers), and the overlap logging shows when a source starts
   revising rows.
-- **Production only.** The A/B harness fetches its own snapshots; a cached production frame
-  is never an A/B input.
+- **A/B snapshots never read the production cache.** `ab_test.py fetch` is uncached by default;
+  `fetch --incremental` seeds a *temporary* cache from the newest A/B snapshot with the same
+  merge rules (`se4/ab/seed.py`, [AB_TESTING.md](AB_TESTING.md#fetching-a-new-snapshot-when-a-source-is-unreliable---incremental)).
+  A cached production frame is never an A/B input.

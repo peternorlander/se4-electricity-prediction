@@ -30,6 +30,40 @@ shipping, not measurement. `run` loads from `ab_cache/long/` and trains each
 test week on a rolling `PRODUCTION_TRAIN_ROWS`-row window; it refuses, with the
 numbers, on a frame too short to do that.
 
+## Fetching a new snapshot when a source is unreliable: `--incremental`
+
+A full `ab_test.py fetch` downloads five years of every source, so it is only as obtainable
+as the least reliable API on the day (2026-11-13: Yahoo answered `TTF=F` with 0 rows, even
+for a six-week window). `python ab_test.py fetch --incremental [SNAPSHOT]` builds on the newest
+`ab_cache/long/` snapshot (or the named one): it seeds a throw-away copy of production's
+[source cache](DATA_CACHE.md) from that snapshot (`se4/ab/seed.py`) and runs the normal
+fetch against it, so each source is asked only for its last `overlap_days` and everything
+after, with production's merge rule (fetched rows win) and its per-run log line
+`N of M overlapping rows differ from the cache`. The result is saved as an ordinary new
+snapshot; `meta.json` records `incremental_from` and `source_versions`.
+
+- **History is shared with the base, not independently re-fetched.** That costs nothing
+  measurable (SE4 prices, weather, nuclear and TTF were byte-identical across 12 independent
+  fetches, [FINDINGS.md](FINDINGS.md#cached-history-is-stable-except-for-one-column-2026-09-17)),
+  but a replication that is *about* fetch-to-fetch variation wants a full `fetch`.
+- **Versions.** A source whose recorded cache version differs from `source_cache.SOURCES` is
+  fetched in full. Snapshots from before 2026-11-13 record no versions; they are trusted
+  with a printed note, which is right unless a source's request/parse/reduction changed since
+  (the version rule in [DATA_CACHE.md](DATA_CACHE.md)).
+- **When this machine cannot reach a source but production can** (Yahoo `TTF=F` answered the
+  runner and nobody else, 2026-11-13), take production's rows: run the manual workflow
+  `.github/workflows/export_source_cache.yml` (GitHub offers no cache download, only a restore
+  inside a workflow), download its `source-cache` artifact, and pass the folder as
+  `--overlay DIR`. Production's cache is 3 years long, so it only *extends* the snapshot (its
+  rows win where both have one; a file with another version, or one that would leave a hole,
+  is skipped) and the stale limits below still apply. Check its `yahoo_ttf` line in the
+  daily run's log first: the cache can be no newer than the last day Yahoo answered there.
+- **A source that cannot be refreshed fails the fetch**, exactly as in production: Yahoo
+  is served from the base only up to its `max_stale_days` (5). `--max-stale-days N` raises
+  that limit for the run. The days after the last real row are then forward-filled, the
+  shortfall is printed, and `meta.json` gets `stale_sources` -- check it before reading a
+  NOW-cluster verdict that touches gas or carbon features.
+
 ## Snapshot generations — check the weather tail before building a grid
 
 `python ab_test.py list` reports a **weather tail** per snapshot: how many days

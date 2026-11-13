@@ -4,6 +4,8 @@ the full design and the agent playbook.
 
     python ab_test.py fetch                         # ~5-year snapshot -> ab_cache/long/
     python ab_test.py fetch --days 1095             # production-shaped -> ab_cache/
+    python ab_test.py fetch --incremental           # build on the newest long snapshot,
+                                                    # fetch only what is new
     python ab_test.py list                          # list long snapshots
     python ab_test.py list --root ab_cache          # list production-shaped snapshots
     python ab_test.py run [--snapshot YYYY-MM-DD] [--shifts 0-5 | --grid] [--expanding]
@@ -36,6 +38,18 @@ check before shipping). `--expanding` on `run` falls back to the headline eval's
 geometry, which is what every grid before 2026-10 used. What the switch changed
 when it was measured is in docs/AB_TESTING.md ("Measurement grids") and
 docs/DECISIONS.md.
+
+INCREMENTAL FETCH (`--incremental [DATE]`, added 2026-11-13): re-downloading five years of
+every source makes a snapshot only as obtainable as the least reliable API on the day
+(Yahoo answered TTF=F with 0 rows). `--incremental` seeds production's source cache
+(se4/source_cache.py, docs/DATA_CACHE.md) from the newest ab_cache/long/ snapshot -- or from
+DATE -- and runs the normal fetch against it, so each source is asked only for the last
+`overlap_days` and everything after, with the same merge rules and stale limits production
+uses. Sources whose recorded cache version differs from the code's are fetched in full.
+`--overlay DIR` first lays a downloaded production cache over the snapshot (production keeps
+3 years, so it can only extend the snapshot, never replace it). `--max-stale-days N` lets a source that cannot be refreshed (Yahoo down) be served from the
+base snapshot up to N days old; the days past its last real row are forward-filled
+downstream, so the shortfall is printed and recorded in meta.json ("stale_sources").
 
 Every fetch rebuilds the merged frame and checks it for date gaps before
 finishing: the grid scripts equate rows with consecutive days (shift arithmetic,
@@ -92,6 +106,57 @@ def _check_date_continuity(inputs: dict) -> tuple:
     return gaps, len(data)
 
 
+def _incremental_inputs(base: str, cache_root: Path, today, max_stale_days, overlay=None):
+    """
+    fetch_training_inputs(today), answered from the snapshot `base` ('' = newest under
+    `cache_root`) wherever it can be. Returns (inputs, extra meta for the new snapshot).
+    """
+    from datetime import date
+    from se4 import fetch_data
+    from se4.ab.seed import seeded_cache
+
+    available = list_snapshots(cache_root=cache_root)
+    if not available:
+        sys.exit(f"--incremental needs a snapshot to build on, and none exists under "
+                 f"{cache_root}/. Run a full 'python ab_test.py fetch' first.")
+    base_name = base or available[-1]
+    base_inputs, base_meta = load_snapshot(base_name, cache_root=cache_root)
+    behind = (today - date.fromisoformat(base_meta["today"])).days
+    print(f"Incremental: building on snapshot {base_name} ({behind} days old) from "
+          f"{cache_root}/ ...")
+    if "source_versions" not in base_meta:
+        print("  NOTE: that snapshot predates version recording; its rows are assumed to "
+              "mean what the current code makes of a response. Fine unless a source's "
+              "request/parse/reduction changed since it was fetched (docs/DATA_CACHE.md).")
+
+    with seeded_cache(base_inputs, base_meta, fetch_data.WEATHER_ARCHIVE_LAG_DAYS,
+                      max_stale_days, overlay=overlay) as (skipped, _):
+        for name, why in skipped.items():
+            print(f"  {name}: NOT seeded ({why}) -- fetched in full")
+        inputs = fetch_data.fetch_training_inputs(today)
+
+    # Which sources ended short of `today`? Only the daily ones can: the hourly sources are
+    # judged by fetch_data/data checks, and a stale one raises before it gets here.
+    stale = {}
+    for stem, key in (("ttf_daily", "ttf"), ("eua_daily", "eua")):
+        last = max(inputs[stem]["date"])
+        if (today - last).days > 3:
+            stale[key] = {"last_day": last.isoformat(), "days_before_today": (today - last).days}
+    if stale:
+        print("\nWARNING -- stale sources in this snapshot (forward-filled past their last row):")
+        for key, info in stale.items():
+            print(f"  {key}: last real row {info['last_day']}, {info['days_before_today']} "
+                  f"days before {today}")
+        print("  The newest evaluation rows see a flat price for these -- do not read NOW-cluster "
+              "verdicts that touch gas/carbon features off this snapshot.")
+    extra = {"incremental_from": base_name}
+    if overlay:
+        extra["overlay_from"] = str(overlay)
+    if stale:
+        extra["stale_sources"] = stale
+    return inputs, extra
+
+
 def cmd_fetch(args):
     from se4 import fetch_data
 
@@ -108,6 +173,8 @@ def cmd_fetch(args):
 
     is_long = args.days > production_days
     fetch_data.TRAINING_DAYS = args.days
+    if args.incremental is None and (args.max_stale_days is not None or args.overlay):
+        sys.exit("--max-stale-days and --overlay only apply to --incremental fetches.")
 
     if args.root:
         cache_root = Path(args.root)
@@ -119,8 +186,13 @@ def cmd_fetch(args):
     today = datetime.now(UTC).date()
     print(f"Fetching training inputs for {today} "
           f"({fetch_data.TRAINING_DAYS} days) -> {cache_root}/ ...")
-    inputs = fetch_data.fetch_training_inputs(today)
-    snapshot_dir = save_snapshot(inputs, today, cache_root=cache_root)
+    extra_meta = {}
+    if args.incremental is None:
+        inputs = fetch_data.fetch_training_inputs(today)
+    else:
+        inputs, extra_meta = _incremental_inputs(args.incremental, cache_root, today,
+                                                 args.max_stale_days, args.overlay)
+    snapshot_dir = save_snapshot(inputs, today, cache_root=cache_root, extra_meta=extra_meta)
     print(f"\nSaved snapshot: {snapshot_dir}")
 
     print("\nVerifying date continuity...")
@@ -272,6 +344,24 @@ def main():
     fetch_parser.add_argument("--root", default=None,
                                help="Cache root to save under (default: ab_cache/long/ "
                                     "for the default length, ab_cache/ for --days 1095).")
+    fetch_parser.add_argument("--incremental", nargs="?", const="", default=None,
+                               metavar="SNAPSHOT",
+                               help="Build on an existing snapshot (default: the newest under "
+                                    "the cache root) and fetch only what is new, using the "
+                                    "production source cache's rules. For when a source's "
+                                    "full-history download is unreliable (Yahoo TTF=F).")
+    fetch_parser.add_argument("--overlay", default=None, metavar="DIR",
+                               help="With --incremental: a production source cache downloaded "
+                                    "with .github/workflows/export_source_cache.yml, laid over "
+                                    "the base snapshot so the newest rows come from a run "
+                                    "whose APIs answered. Production's own stale limits still "
+                                    "apply.")
+    fetch_parser.add_argument("--max-stale-days", type=int, default=None, metavar="N",
+                               help="With --incremental: if a source cannot be refreshed, "
+                                    "serve the base snapshot's rows up to N days behind today "
+                                    "(overrides each source's production limit, e.g. 5 for "
+                                    "Yahoo). The shortfall is printed and written to "
+                                    "meta.json as stale_sources.")
 
     list_parser = subparsers.add_parser("list", help="List cached snapshots.")
     list_parser.add_argument("--root", default=None,
