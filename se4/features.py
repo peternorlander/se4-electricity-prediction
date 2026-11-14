@@ -134,7 +134,8 @@ TROUGH_FEATURE_COLUMNS = [
     "residual_load_min",           # kept over the 37-drop variant on tie-break: lower
                                     # std, physically the trough-defining feature, and
                                     # increasingly relevant as solar buildout continues
-                                    # (see FEATURE_REVALIDATION_PLAN.md round 5)
+                                    # (docs/DECISIONS.md, "Per-target feature lists
+                                    # for min and cheap2h", round 5)
     "temp_gradient_se3_se4",
     "radiation_variability",
     "ttf_price_lag1",

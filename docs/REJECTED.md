@@ -4,6 +4,14 @@ Everything tested and **not** adopted, grouped by what it touched. Keeping this
 list is what prevents re-testing the same idea every few months; it is the
 negative half of the ledger, the twin of [DECISIONS.md](DECISIONS.md).
 
+**How to read a row's verdict.** Rows before 2026-11-15 were decided by sign rules
+on archive weather (`classify`, `classify_clustered`): `NOISE` there means "the sign
+flipped across shifts or clusters", `clmean` is the mean of three cluster means, and
+"k/n favourable" counts points that share most of their test days. From that date a
+row quotes a delta with its 95 % interval on forecast weather, and `UNRESOLVED` means
+the interval covers zero. Which model and grid a date stands for is in
+[Model epochs](AB_TESTING.md#model-epochs-what-a-verdict-was-measured-on).
+
 **Before re-opening anything here, read
 [the re-opening rule](AB_TESTING.md#how-changes-are-validated).** A rejection is
 re-opened only with a *stated mechanism*, written down before the run: what
@@ -36,9 +44,16 @@ changes what someone does on a *different* item; those go to
 
 ## Feature lists for the trough targets (`min` / `cheap2h`)
 
-The 15-column `TROUGH_FEATURE_COLUMNS` / 14-column `MIN_FEATURE_COLUMNS` are a
-local optimum in both directions: nothing excluded has replicated when added
-back, and nothing kept has survived a leave-one-out as droppable.
+`TROUGH_FEATURE_COLUMNS` (17 columns) and `MIN_FEATURE_COLUMNS` (16) were audited
+when they were 15 and 14 columns (rounds 11–14a, 2026-08-05/06). At that size, on the
+expanding grid of the time, they were a local optimum in both directions: nothing
+excluded replicated when added back, and nothing kept survived a leave-one-out as
+droppable. **That audit describes an earlier model.** Since then both lists gained the
+two northern wind columns, both regressors gained the coupling probability, and the
+grid trains every week on production's 1088 rows
+([Model epochs](AB_TESTING.md#model-epochs-what-a-verdict-was-measured-on)). The rows
+below stand as measured; whether the lists are still a local optimum is plan item
+"2.25 Re-audit of the trough feature lists".
 
 | Feature | Reason rejected |
 |---------|----------------|
@@ -109,7 +124,7 @@ back, and nothing kept has survived a leave-one-out as droppable.
 | Shorter training window (2.0y / 2.5y vs 3y) | Round 15d, 2026-08-06. NOISE on all four period clusters for both priority targets, sign-flipping (cheap2h 2.0y: NOW +0.404 but −12M −0.467). Together with the row above this closes window length in BOTH directions: it is not a lever, and 15c's single-period 24/24 was a period effect. Keep `TRAINING_DAYS = 1095`. |
 | 5-year training window as regime insurance (re-opened only for the ceiling, not for headline MAE) | Round 19, 2026-08-22. The 3-year window's cheap2h targets top out at 107.9 so 127.9 is unreachable; a 5-year window tops out at 450.2 and does score better on the 2026-08-17 break (spike MAE 48.52 vs 52.84) — but **three times worse on the calm days before it** (7.98 vs 2.53). Regime insurance with a real premium; consistent with round 15a/15c/15d's closure of window length rather than a challenge to it. Not a lever. |
 | `objective="reg:absoluteerror"` (vs default `reg:squarederror`) | Drift-free same-slice A/B: worse on both priority targets — cheap2h +0.61, min +0.14, avg +0.78 EUR/MWh; only max (non-priority) improved (2026-07). Squared error stays. |
-| Seed ensembling (3-seed avg per target) | No improvement, 3× the train compute. The reported MAE std is between-window regime dispersion, which averaging seeds cannot reduce — it slightly *raised* std on min/avg/cheap2h (2026-07). |
+| Seed ensembling (3-seed avg per target) | No improvement, 3× the train compute. The reported MAE std is between-window regime dispersion, which averaging seeds cannot reduce — it slightly *raised* std on min/avg/cheap2h (2026-07). **Reopened 2026-11-15** as plan item "2.23 Seed-averaged prediction", with a mechanism: this row was read against one seed on the 51-column model, and two fits of today's `cheap2h` model under different seeds differ by a weekly SD of 1.9 EUR/MWh ([DECISIONS.md](DECISIONS.md#the-adoption-bar-is-an-interval-on-forecast-weather)). |
 | Time-decay sample weights on `min`/`cheap2h`/`max` (`weight = 0.5 ** (age_days / half_life)`) | Drift-free same-slice A/B, swept over **three** runs (2026-07-22, stride-3, 121 overlapping windows). On the priority targets the effect is **noise**: min's delta at hl=500 went +0.22 → −0.22 → −0.01 across the three runs and cheap2h's collapsed to ~0 — i.e. the effect (~±0.2) is smaller than the run-to-run variability (~0.4 swing). `max` was likewise noisy/mixed and is not a priority. A single favorable stride-3 run (−0.22/−0.20) did *not* replicate — the lesson being that a small effect needs replication across days, not one A/B. **`avg` is the exception and IS kept** with decay (half-life 500): it improved at *every* half-life in *all three* runs (~−0.35 EUR/MWh at hl=500), so `HALF_LIFE_DAYS` weights only the (independent) avg model and leaves min/cheap2h/max on uniform weights. |
 | Time-decay weights on `min`/`cheap2h` re-tested with a stated drift mechanism — half-lives 365/500/730, decided on the NOW cluster as planned (round 25) | Five caches. `min` is worse in the NOW cluster on all five (+0.01…+0.35, 0–2 of 4 points favourable). cheap2h flips with the window: −0.12…−0.27 on `2026-08-21` (−0.16 for the 365-day half-life on `-09-16`), +0.11…+0.25 on the freshest cache. On the primary, −6M and FAR favour decay (−0.07…−0.30) but describe a world before the drift. Not validated: closed for `min`, inconclusive for cheap2h. |
 

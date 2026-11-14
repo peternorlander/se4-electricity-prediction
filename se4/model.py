@@ -8,6 +8,14 @@ from xgboost import XGBClassifier, XGBRegressor
 from se4.features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS, AVG_FEATURE_COLUMNS
 
 
+# The one seed behind every stochastic step of a fit: XGBoost's row and column subsampling
+# and the out-of-fold splits of the two hurdles. Production never changes it. The A/B
+# harness does, one fit at a time, to average a paired delta over several seeds
+# (ab.harness.SeededFit, docs/AB_TESTING.md "Seeds") -- so everything below reads it when
+# called, never at import.
+RANDOM_STATE = 42
+
+
 # Time-decay sample weighting (step 5 — regime handling). Per target: each
 # training row is weighted 0.5 ** (age_days / half_life), age measured from the
 # most recent training day, so recent data anchors the price level while the full
@@ -119,7 +127,7 @@ def _make_regressor() -> XGBRegressor:
         min_child_weight=3,
         reg_alpha=0.1,
         reg_lambda=1.5,
-        random_state=42
+        random_state=RANDOM_STATE
     )
 
 
@@ -153,7 +161,7 @@ def _make_hurdle_classifier() -> XGBClassifier:
         min_child_weight=3,
         reg_alpha=0.1,
         reg_lambda=1.5,
-        random_state=42,
+        random_state=RANDOM_STATE,
         eval_metric="logloss",
     )
 
@@ -201,7 +209,7 @@ def _fit_hurdle_model(data: pd.DataFrame, feature_cols: list, target_col: str,
 
     oof_proba = cross_val_predict(
         _make_hurdle_classifier(), X, neg_label,
-        cv=KFold(n_splits=5, shuffle=True, random_state=42),
+        cv=KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE),
         method="predict_proba",
     )[:, 1]
 
@@ -277,7 +285,7 @@ def _fit_coupled_model(data: pd.DataFrame, name: str, target_col: str, feature_c
 
     oof = cross_val_predict(
         _make_coupling_classifier(), data[COUPLING_FEATURE_COLUMNS].values, coupling_label(data),
-        cv=KFold(n_splits=5, shuffle=True, random_state=42), method="predict_proba",
+        cv=KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE), method="predict_proba",
     )[:, 1]
     classifier = fit_coupling_classifier(data)
 
@@ -409,7 +417,7 @@ def _make_quantile_regressor(alpha: float) -> XGBRegressor:
         min_child_weight=3,
         reg_alpha=0.1,
         reg_lambda=1.5,
-        random_state=42,
+        random_state=RANDOM_STATE,
         objective="reg:quantileerror",
         quantile_alpha=alpha,
     )

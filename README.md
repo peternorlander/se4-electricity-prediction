@@ -74,7 +74,7 @@ pip install -r requirements.txt
 | Production run (fetch → train → predict → push to HA) | `python predict.py` | Needs `ENTSO_E_TOKEN`, `HA_URL`, `HA_TOKEN`. This is what GitHub Actions runs. |
 | Cache a data snapshot for experiments | `python ab_test.py fetch` | Needs `ENTSO_E_TOKEN`. Caches ~5 years under `ab_cache/long/` — the only shape that can train every test week on production's own 1088 rows. `--days 1095` caches a production-shaped one under `ab_cache/` for the integration check. |
 | List cached snapshots | `python ab_test.py list` | Lists `ab_cache/long/`; `--root ab_cache` for the production-shaped ones. Reports each snapshot's **weather tail**; snapshots with different tails must not share one measurement grid. |
-| Run an A/B | `python ab_test.py run` | `--snapshot YYYY-MM-DD`, `--shifts 0-5` or `--grid` (NOW / −6M / FAR clusters); `--targets cheap2h` (or `avg`, …) fits only what the screen needs — `min` and `cheap2h` always together. Trains each test week on a rolling 1088 rows like production; `--expanding` for the pre-2026-10 geometry. Compares `BASELINE` against whatever `CANDIDATE` in `se4/ab/variants.py` says. Every fit is scored twice and the report labels both: **ARCHIVE** weather (a perfect forecast — the standing gate) and **FORECAST** weather (what production pays). The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
+| Run an A/B | `python ab_test.py run` | Compares `BASELINE` against whatever `CANDIDATE` in `se4/ab/variants.py` says. With no grid argument this is **the gate**: the year grid (every week alignment over the two newest evaluation years, 14 points), each test week trained on a rolling 1088 rows like production, and per target a delta with its 95 % interval on **FORECAST** weather for the six sent days ([the adoption bar](docs/AB_TESTING.md#the-adoption-bar)). **ARCHIVE** weather (a perfect forecast) is printed beside it as the ceiling. `--snapshot YYYY-MM-DD`; `--targets cheap2h` (or `avg`, …) fits only those — `min` and `cheap2h` always together; `--seeds 3` averages three fits per point; `--since DATE` reads only later test days (forward confirmation); `--shifts 0-5` is a quick look, `--grid clusters` the NOW / −6M / FAR grid of rounds 24–30; `--expanding` for the pre-2026-10 geometry. The forecast vintages come from Open-Meteo (public, no token) and are cached under `ab_cache/vintages/`; `--no-vintage` skips them. |
 | Fetch / check the forecast vintages | `python ab_test.py vintages` | Warms `ab_cache/vintages/` for a snapshot's evaluated days and fails if any hour lacks a vintage. `run` does this itself; use it to fetch ahead of a long run. |
 | Run the tests | `python -m pytest` | `pip install -r requirements-dev.txt` first. Offline; the snapshot checks run once per cache under `ab_cache/long/` and are skipped where there is none (the Actions runner). Runs on every push and pull request (`tests.yml`). How to add one: [docs/TESTING.md](docs/TESTING.md). |
 | Self-check the verdict rules | `python se4/ab/check_verdict.py` | |
@@ -90,7 +90,7 @@ different), so a local number never reproduces production's to the bit — see
 Install exactly `requirements.txt`: the numeric stack is pinned, and a change of pin moves numbers.
 
 The full walkthrough for running an experiment, including what to put in
-`CANDIDATE` and which verdict function to call, is
+`CANDIDATE` and what bar each kind of change has to clear, is
 [docs/AB_TESTING.md](docs/AB_TESTING.md#how-to-run-an-experiment-agent-playbook).
 
 ## Documentation map
@@ -116,8 +116,8 @@ a commit message, a chat transcript, or a script under `experiments/`.
 
 | Outcome | Where it goes |
 |---|---|
-| A/B validated, shipped | An entry in [docs/DECISIONS.md](docs/DECISIONS.md), plus whatever it changes in [docs/MODEL.md](docs/MODEL.md) / [docs/FEATURES.md](docs/FEATURES.md). Delete the item from the improvement plan. |
-| A/B rejected | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round. Delete the item from the improvement plan. |
+| Cleared [the adoption bar](docs/AB_TESTING.md#the-adoption-bar), shipped | An entry in [docs/DECISIONS.md](docs/DECISIONS.md), plus whatever it changes in [docs/MODEL.md](docs/MODEL.md) / [docs/FEATURES.md](docs/FEATURES.md). A change to a point model also gets a row in the plan's [forward-confirmation register (4.4)](IMPROVEMENT_PLAN.md#44-forward-confirmation-register) and a line in [Model epochs](docs/AB_TESTING.md#model-epochs-what-a-verdict-was-measured-on). Delete the item from the improvement plan. |
+| Did not clear the bar | A row in [docs/REJECTED.md](docs/REJECTED.md), in the group it belongs to, tagged with its round and date. Delete the item from the improvement plan. |
 | Either, **and** the lesson would change what someone does on a *different* item | The ledger row or entry, *and* a dated section in [docs/FINDINGS.md](docs/FINDINGS.md) that the row links to. If it only explains this verdict, it is row content — compress it into the row instead. |
 | A change to how we measure | [docs/AB_TESTING.md](docs/AB_TESTING.md). |
 | A source's request, parsing or reduction changed (so the same API response would give different rows) | **Bump that source's `version` in `source_cache.SOURCES` in the same commit**, then update `RECORDED` in `tests/test_source_cache_versions.py` (`python -m se4.source_cache` prints it). The test fails until you have looked. [docs/DATA_CACHE.md](docs/DATA_CACHE.md#when-you-change-a-source-the-version-rule). |
@@ -130,8 +130,8 @@ Five rules that make this work:
 
 1. **A rejected row is four slots and about 60 words**, not a report:
    **what** was tested (precisely enough to recognise a re-proposal) · **the
-   number and the instrument** (delta in EUR/MWh, which grid, how many
-   measurements favourable — and whether the arm was leaky or horizon-honest,
+   number and the instrument** (delta in EUR/MWh with its interval, which grid and
+   which weather, the per-year deltas — and whether the arm was leaky or horizon-honest,
    [why that matters](docs/AB_TESTING.md#horizon-honesty-measure-only-what-production-can-know))
    · **why** it failed, one sentence · **status**: closed, or what would reopen
    it. If it will not fit, the overflow is either unnecessary or a finding.
@@ -141,13 +141,18 @@ Five rules that make this work:
 2. **One fact, one place.** A row states its verdict and links to the finding;
    it does not restate it. The same number in two files is the failure mode
    that makes both unreadable.
-3. **Quote A/B deltas, not before/after headline MAE.** Headline MAE moves with
-   the evaluation period more than with the model; two unchanged models once
-   moved +1.28 and −1.76 between two windows a few weeks apart. See
+3. **Quote A/B deltas with their interval, not before/after headline MAE.**
+   Headline MAE moves with the evaluation period more than with the model; two
+   unchanged models once moved +1.28 and −1.76 between two windows a few weeks
+   apart. And say `UNRESOLVED` when the interval covers zero: "the days could not
+   resolve it" and "it does nothing" are different results. See
    [docs/AB_TESTING.md](docs/AB_TESTING.md#how-changes-are-validated).
-4. **Tag the round.** `experiments/` scripts are named `run_round21_*.py`, so a
-   round number in the ledger row is what connects a verdict to the run that
-   produced it for as long as that scratch directory survives.
+4. **Tag the round and the date.** `experiments/` scripts are named
+   `run_round21_*.py`, so a round number in the ledger row is what connects a
+   verdict to the run that produced it for as long as that scratch directory
+   survives. The date is what places the row in a
+   [model epoch](docs/AB_TESTING.md#model-epochs-what-a-verdict-was-measured-on):
+   which model, which grid and which rule it was measured on.
 5. **A change to `min` or `cheap2h` reports the band too.** `cheap2h_low` /
    `cheap2h_high` / `cheap2h_risk` are what the automation warns on, and MAE
    cannot see them. Run `python ab_test.py band` and put its scorecard — and any
@@ -188,7 +193,7 @@ belongs in the ledgers above. Concretely, if you are working in that directory:
 - **The model sees exactly three years, and that is fixed.** `TRAINING_DAYS = 1095` is a *sliding* window, not an accumulating one, so history does not build up: every fit sees 1095 rows and any regime older than that is invisible. Both longer (4y/4.4y/4.8y) and shorter (2.0y/2.5y) windows were tested and rejected — window length is not a lever (see [REJECTED.md](docs/REJECTED.md)). The binding consequence is the **prediction ceiling**: XGBoost cannot extrapolate past its training targets, so a price the last three years never reached is unreachable — see [The 2026-08-17 regime break](docs/FINDINGS.md#the-2026-08-17-regime-break).
 - **Daily resolution**: The model predicts daily aggregates, not 24 hourly prices. Hour-level predictions would be more actionable for EV scheduling but require significantly more feature engineering. The `cheap2h` target partially addresses this: it predicts what a ~2h charging session picking the day's cheapest hours would pay, which is the number the "charge today or wait" decision needs.
 - **Forecast horizon**: All forecast days (1–8) use the same features and a single model that doesn't distinguish horizon. Horizon-aware modelling was **evaluated and shelved** (2026-07): the anchor-staleness sensitivity showed the true stale-lag cost is only ~1 EUR/MWh for min/cheap2h, so a `forecast_horizon` feature has little headroom. The scary-looking per-horizon curve is a weekday artifact of the step-7 walk-forward (see [Current MAE Baseline](docs/MODEL.md#current-mae-baseline)), not real horizon decay. The price-lag anchor is kept fresh regardless, since that was a free win.
-- **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis. Measured on forecast vintages (Open-Meteo Previous Runs): scoring the same models on the forecast issued L days earlier costs the current model **+1.8 cheap2h / +1.8 min / +2.7 avg EUR/MWh on the six sent days** (six caches, 2026-10-22; +2.7 on cheap2h in the most recent year, +3.4 on the newest window), almost all of it from D+5 — see [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b). The headline MAE in [MODEL.md](docs/MODEL.md) and every weather feature's archive-weather A/B gain should be read with that in mind; of the two weather candidates re-scored so far, the northern wind points kept 40–75 % of their gain and the MW-scale residual load none of it on the days production sends.
+- **Weather in evaluation**: walk-forward uses archive weather as a stand-in for the forecast, so results are optimistic on the weather axis. Measured on forecast vintages (Open-Meteo Previous Runs): scoring the same models on the forecast issued L days earlier costs the current model **about 2 EUR/MWh on `cheap2h` and `min` and about 3 on `avg` on the six sent days**, more in the most recent year and almost all of it from D+5 — the numbers per target, period and model version are in [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b). Since 2026-11-15 the A/B gate is read on forecast weather, so a ledger delta from then on already includes it. The archive-weather numbers in [MODEL.md](docs/MODEL.md) and every A/B gain recorded before that date should be read with it in mind; of the two weather candidates re-scored so far, the northern wind points kept 40–75 % of their gain and the MW-scale residual load none of it on the days production sends.
 - **The headline eval trains on less than production does.** `walk_forward_validate` expands: its 52 test weeks have to come out of the same 1088-row frame production fits on, so the first trains on 724 rows and the last on 1081 — ~900 on average against production's 1088. Measured on the current feature set, production-length training scores **~0.36 better** on `min` in the most recent period, so the headline is mildly pessimistic there, though the sign is period-dependent. Production cannot avoid this (three years of fetch is exactly one evaluation year short), so the A/B grid was fixed instead and the headline was not — see [Production-length training in the A/B grid](docs/DECISIONS.md#production-length-training-in-the-ab-grid).
 - **The eval does not model the training tail.** `walk_forward_validate` fits right up to its test window. Until 2026-08-23 production fitted ~5 days behind (the archive lag), so every baseline recorded before that date is optimistic by roughly the numbers in [Closing the weather-archive lag](docs/DECISIONS.md#closing-the-weather-archive-lag-round-19a). The top-up closes the gap to ~1 day; the residual is measured at **+0.155 (cheap2h) / +0.258 (min) / +0.591 (avg)** (the `gap1` arm), and the recent-analysis product's own error against the archive is on top of that and still unmeasured.
 - **Max prediction accuracy** (the highest MAE of the four targets by a wide margin — see [MODEL.md](docs/MODEL.md#current-mae-baseline)): Intentionally not optimized. Max prices are driven by rare spike events that are hard to predict from daily features.

@@ -21,7 +21,7 @@ Everything settled lives under [docs/](docs/): the current model in
 rejected ledger in [REJECTED.md](docs/REJECTED.md), the dated write-ups in
 [FINDINGS.md](docs/FINDINGS.md) and the methodology in [AB_TESTING.md](docs/AB_TESTING.md).
 Read AB_TESTING.md in full first — the harness, "How to run an experiment", "How changes
-are validated" (the adoption bar), "Measurement grids" and "Which verdict function to
+are validated" (with "The adoption bar"), "Measurement grids" and "Which verdict function to
 call" — and REJECTED.md before trying anything. This file assumes that context and does
 not repeat it.
 
@@ -33,14 +33,20 @@ is explicitly not a priority.**
 - Re-opening a rejected idea, or trying a new one, needs a stated mechanism for why it
   should work — not "we changed a lot, maybe it's different now." If you can't state
   one, that's the answer.
-- Screen on one period cluster, confirm on the others, and pre-register the
-  confirmation bar before looking at the screen.
-- Measure on a long snapshot (`ab_test.py fetch`) on the rolling grid —
-  NOW / −6M / FAR today, see
-  [Measurement grids](docs/AB_TESTING.md#measurement-grids-training-geometry-and-period-clusters-read-before-designing-a-run)
-  — and judge with `classify_clustered` / `classify_ablation_clustered`, not the plain
-  `classify` / `classify_ablation`
-  ([which one](docs/AB_TESTING.md#which-verdict-function-to-call)). `OMP_NUM_THREADS=4`.
+- Screen on one year, confirm on the other, and pre-register the confirmation bar
+  before looking at the screen.
+- Measure on a long snapshot (`ab_test.py fetch`) with a plain `python ab_test.py run`:
+  the year grid, FORECAST weather, the interval verdict. Every item names, before its
+  run, which row of [the adoption bar](docs/AB_TESTING.md#the-adoption-bar) it has to
+  clear (addition, removal, correctness fix, band-only) and how many seeds it runs.
+  `OMP_NUM_THREADS=4`.
+- **An item whose bar was written before 2026-11-15 keeps that bar** and the cluster
+  grid it names (`ab_test.py run --grid clusters`); its ledger entry also records the
+  interval verdict of a default run. In November 2026 that is "2.18 Near-horizon model"
+  and "2.20 Nuclear column as production sees it".
+- An adopted change to a point model gets a row in the
+  [forward-confirmation register (4.4)](#44-forward-confirmation-register) in the commit
+  that ships it.
 
 **How this file is maintained.** A measured item is cut back to what is still open — or
 deleted outright — as soon as its verdict is in the ledgers:
@@ -108,8 +114,8 @@ backtest does not, **until 2026-11-15** (later if the node was not writing every
 
 **Mechanism.** Every accuracy number in docs/MODEL.md is a backtest with two known
 optimisms that no backtest can remove: archive weather in place of the forecast
-(measured 2026-10-11 on vintages: +1.63 cheap2h / +1.69 min / +2.81 avg at production's
-leads, [FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b);
+(measured on vintages at one to three EUR/MWh on the sent days,
+[FINDINGS.md](docs/FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b);
 the log shows what it is in practice) and the gap1 fit tail (+0.155 / +0.258 /
 +0.591). The only instrument that measures what Home Assistant actually
 received is the record of what was sent, scored against what was realised.
@@ -659,6 +665,124 @@ the window as it is and close this as REJECTED with the number. Nothing else dep
 **Effort.** About an hour of code and tests (a frame-equality test on synthetic data, with the
 warm-up days present and absent), plus one snapshot fetch and one pass.
 
+### 2.23 Seed-averaged prediction (reopened 2026-11-15)
+
+**State (2026-11-15):** Not started. **Blocked by** the "2.20 Nuclear column as production
+sees it" and "2.18 Near-horizon model" runs, **because** it changes what every point model
+predicts and so moves the baseline those results are measured against; **until** both are
+done.
+
+**What it is.** Fit each target under K seeds and serve the mean of the K predictions,
+instead of one fit under seed 42.
+
+**Why it is reopened.** [REJECTED.md](docs/REJECTED.md) holds "Seed ensembling (3-seed avg
+per target)" as *no improvement* (2026-07). The mechanism for a different answer now, in
+three parts:
+
+1. *It cannot be worse on average.* On any day, the absolute error of a mean of predictions
+   is at most the mean of the members' absolute errors. So the averaged model's MAE is at or
+   below the average single-seed MAE; how far below depends on how much the seeds disagree.
+2. *The seeds disagree more than they did.* The 2026-07 test ran on one 51-column regressor
+   per target. `min` and `cheap2h` are now a chain of stochastic steps (out-of-fold coupling
+   probability, out-of-fold negative-price probability, a regressor that samples 80 % of 16–17
+   columns per tree), and the measured fit-to-fit difference is no longer small: a reseed
+   moves `cheap2h` by 0.13 on a cluster mean (round 27), and Windows and Linux differ by up to
+   ±0.29 on one evaluation year from the same data and seed
+   ([FINDINGS.md](docs/FINDINGS.md#windows-and-linux-fit-different-models-from-the-same-data-round-31)).
+3. *The 2026-07 measurement could not see an effect of this size.* It compared against a
+   single seed on shifts 0–5, read by a rule with no noise estimate.
+
+A second gain is not about MAE: an averaged model depends less on the platform, so what is
+measured on Windows is closer to what the Linux runner serves.
+
+**Arms and bar (to pre-register before running).** `S3`: the mean of three seeds per target,
+taken before the `min ≤ cheap2h` coherence step. `S5`: five. The member seeds are derived
+from `model.RANDOM_STATE`, so that `--seeds` reseeds the whole ensemble. Row of the bar:
+addition (a model component). `REAL` on `cheap2h` or `min`, no target `HARMFUL`, the band
+scored. Run with `--seeds 3`: a comparison against one particular seed measures that seed's
+luck, not the method. Decide `S5` only if `S3` is `REAL`; if `S3` is `UNRESOLVED`, close it.
+
+**Prior and what a failure means.** A small gain, a few hundredths to 0.2 EUR/MWh on
+`cheap2h`: it is bounded by the fit noise, which is the smaller part of the error. If it is
+`UNRESOLVED` with three harness seeds, the row in REJECTED.md stands, with the interval
+added. Cost if adopted: K times the fit time of the point models in every production run.
+
+**Effort.** An hour of code (an averaging wrapper around the fitted models, `train` and
+`get_feature_importance` taught about it), one default run with `--seeds 3` on
+`cheap2h` / `min` and one on `avg`, the band, the integration check.
+
+### 2.24 Forward confirmation, first pass (added 2026-11-15)
+
+**State (2026-11-15):** Not started. **Blocked by** forward days, **because** the question is
+whether a change still pays on days it was not selected on, and those days do not exist yet;
+**until** the first long snapshot fetched on or after 2027-05-15 (180 days after the newest
+change in [the register](#44-forward-confirmation-register)).
+
+**Mechanism.** Every model change since 2026-10 was chosen on the same two years of test
+days, by about thirty rounds of arms. A change picked that way looks better on those days
+than it is. The rule and its default revert bar are in
+[AB_TESTING.md](docs/AB_TESTING.md#forward-confirmation-every-adopted-change-is-read-once-more-on-new-days).
+
+**What to run.** One pass, one arm per register row: `CANDIDATE` is production with that one
+change taken out, `python ab_test.py run --since <its adoption date>` on that target. For the
+northern wind columns the arm is the feature lists without `north_wind_power` /
+`north_wind_night`; for the coupling hurdle, a `fit_fn` that fits `min` and `cheap2h` without
+it; for the `avg` time index, the list without `t_index` and half-life 500.
+"2.10 `min ≤ cheap2h` coherence" has its own re-check and bar from before this rule, and is
+not repeated here.
+
+**Reading it.** By each row's bar. The forward days are few (about 200 to 215 per change in
+May 2027, under seven alignments), so `UNRESOLVED` is the likely result for the small
+changes; that is recorded, the change stays, and the row gets a second date one year after
+adoption. A revert is a DECISIONS entry like any other change.
+
+**Effort.** Half a day: three revert variants, three runs, the entries.
+
+### 2.25 Re-audit of the trough feature lists (added 2026-11-15)
+
+**State (2026-11-15):** Not started. **Blocked by** the "2.18 Near-horizon model" run,
+**because** that item may change the `cheap2h` / `min` models and an audit measured before it
+would go stale; **until** its verdict is in.
+
+**Mechanism: why the August answer may not hold.** `TROUGH_FEATURE_COLUMNS` and
+`MIN_FEATURE_COLUMNS` were found to be a local optimum in rounds 11–14a (2026-08-05/06),
+when they had 15 and 14 columns. Three things are different now
+([Model epochs](docs/AB_TESTING.md#model-epochs-what-a-verdict-was-measured-on)):
+
+1. *The grid.* The audit ran on expanding points whose test weeks trained on 731–1088 rows.
+   When the grid moved to production's 1088 rows, labels moved on several of the seven arms
+   that were re-run on both geometries
+   ([DECISIONS.md](docs/DECISIONS.md#production-length-training-in-the-ab-grid)). Only one
+   audit arm has been measured on the new grid since: the seasonal interaction, in round 25,
+   which is closed with its own reopening condition. The leave-one-out has not been repeated.
+2. *The model.* Both regressors now read the coupling probability, whose classifier is fed
+   eight of the columns the regressors also read (gas, reservoirs, wind). A column that was
+   load-bearing alone may now be carried twice, and one that was dropped may matter again.
+3. *Columns have a measured price.* Eleven uninformative columns cost `cheap2h` +0.33
+   (round 29). So a column that carries nothing is not free, and removing it should show.
+
+**Arms.** Leave-one-out of every regressor column of `cheap2h` (17) and `min` (16), and the
+add-back blocks of round 11 (seven blocks, eight singles). The seasonal interaction
+(`radiation_midday` + the day-of-year pair) is not among them: round 25 closed it on the
+rolling grid, and its row in [REJECTED.md](docs/REJECTED.md) says what would reopen it.
+
+**Design and bar (to pre-register before running).** About fifty arms on the same days is a
+search, so it is run in two steps with the selection fixed beforehand. *Screen* on the PREV
+year alone (`--shifts 364-370`), one seed. *Confirm* on the NOW year (`--shifts 0-6`,
+`--seeds 3`) at most three arms: the best removal per target and the best add-back, and
+only arms whose screen delta is below zero. (Three seeds because a confirmation on one
+year has half the days; they narrow the interval by about a sixth, no more.) An arm is adopted if its confirmation, read on
+NOW alone, clears its row of the bar (removal row for a leave-one-out, addition row for an
+add-back) and the default two-year run does not contradict it (`HARMFUL` or `MIXED`). The
+band is scored for anything adopted.
+
+**Prior and what a failure means.** Most arms will be `UNRESOLVED`; the lists were pruned
+hard once already. Zero survivors is a result: the lists stand, the REJECTED.md section
+intro is updated to say they were re-audited on the current model, and the item closes.
+
+**Effort.** Two days of compute spread over runs (a screen arm is seven points on two
+targets), half a day of scripting on top of `ab_test.py`.
+
 ## 3. Carried at low priority
 
 Leads with a stated mechanism and a low prior. They are not blocked by anything, but they are
@@ -722,6 +846,7 @@ plan means the first item of 4.1, and nothing else.**
 - **If 4.1 is empty, the answer is that nothing is ready**: say so, list what 4.2 waits for and
   the earliest date, and stop. Do not pick a blocked item instead.
 - 4.3 is the register of shadow arms running in production.
+- 4.4 is the register of adopted changes that still owe their forward confirmation.
 
 ### 4.1 Ready now, in order
 
@@ -752,6 +877,9 @@ the *because*, what is done so far and where to resume are in the item.
 | **2.11 Longer horizon** | Peter's product decision | — |
 | **2.14 Nord Pool outage messages (UMM)** (parked) | A consumer: a new per-day column from a revisioned document | — |
 | **`B6_fuel_co2` on `min`** (section 3) | Far periods that train on post-crisis windows | the mid-November cache |
+| **2.23 Seed-averaged prediction** | The 2.20 and 2.18 runs: it changes what every point model predicts | after both |
+| **2.25 Re-audit of the trough feature lists** | The 2.18 run: it may change the `cheap2h` / `min` models | after 2.18 |
+| **2.24 Forward confirmation, first pass** | Forward days after the changes of 2026-10 and 2026-11 | 2027-05-15 |
 
 ### 4.3 Shadow arms in production
 
@@ -776,3 +904,22 @@ or the served model reads restarts its comparison. Rules:
 | `variant` | Item | What it predicts | Added | Bar | Ends |
 |---|---|---|---|---|---|
 | `blend` | 2.3b Three-model weather blend | The served models and band on the hourly mean of ECMWF IFS, ICON and GFS (`BLEND_MODELS`, all nine points) instead of `best_match` | 2026-10-31 | 2.3b: production-mapped `cheap2h` and `min` negative in every cluster-equivalent period, pooled ≤ −0.2 | When the 2.3b replay has its verdict, at the latest twelve weeks after the first logged row; adopt (blend becomes `served`) or remove |
+
+### 4.4 Forward-confirmation register
+
+Every adopted change to a point model is read once more on test days after its adoption
+([the rule](docs/AB_TESTING.md#forward-confirmation-every-adopted-change-is-read-once-more-on-new-days)).
+A row is written in the commit that ships the change and deleted in the commit that records
+its forward read in the ledgers. The default revert bar: the change is reverted if the arm
+without it is `REAL` on the forward days. Correctness fixes and band-only changes are not
+registered; they were not selected by an A/B gain.
+
+| Change | Target | Adopted | Forward read due | Revert bar |
+|---|---|---|---|---|
+| Northern wind points (`north_wind_power`, `north_wind_night`) | `cheap2h`, `min`, `avg` | 2026-10-12 | 2.24, first long snapshot from 2027-05-15 | default |
+| Coupling hurdle on the point models | `min`, `cheap2h` | 2026-10-16 | 2.24, same pass | default |
+| `min ≤ cheap2h` coherence | `min`, `cheap2h` | 2026-10-12 | 2.10, a long snapshot from 2027-01-15 | its own, written 2026-10: see 2.10 |
+| Time index and half-life 365 | `avg` | 2026-11-14 | 2.24, same pass | default |
+
+Changes adopted before 2026-10-10 were measured on the expanding grid and are covered by
+"2.25 Re-audit of the trough feature lists" for `min` / `cheap2h`, not by a row here.

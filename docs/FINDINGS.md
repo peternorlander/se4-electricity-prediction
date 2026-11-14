@@ -11,6 +11,7 @@ check whether the code it describes still looks that way.
 
 | Finding | When | Why it still matters |
 |---|---|---|
+| [What the rolling grid holds](#what-the-rolling-grid-holds-2026-11-14) | 2026-11-14 | Six caches × 12 points are 733 distinct days and two independent years; points of one cluster disagree by tenths because they are different week alignments; a reseed is as noisy as a one-column arm. The reason the gate is now an interval over days, on forecast weather |
 | [Windows and Linux fit different models from the same data](#windows-and-linux-fit-different-models-from-the-same-data-round-31) | 2026-10-31 | Same snapshot, same pinned versions, same seed: every test row differs and MAE moves up to ±0.29 on `min`/`cheap2h` (±1.3 on `max`) — a reseed, not jitter. Local numbers and production's are never bit-identical; compare like with like, on one platform |
 | [The 2026-08-17 regime break](#the-2026-08-17-regime-break) | 2026-08 | The clearest evidence of what the model structurally cannot do: a 3-year window cannot output 128 EUR/MWh, and four independent routes to fixing that all failed |
 | [The autumn-2026 coupling regime](#the-autumn-2026-coupling-regime-round-24) | 2026-10-16 | Weekday troughs became "either ~10 or ~120": a point regressor hedges in between, trees cannot extrapolate the dry-reservoir state at the window's edge, and a linear coupling probability fixes both the point (min −0.30 … −0.46) and the warning |
@@ -29,6 +30,67 @@ check whether the code it describes still looks that way.
 | [The physical residual load is a high ceiling that the weather reaches little of](#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29) | 2026-10-25 | Handing the models the realised load − wind − solar of the eight zones is −1.19 `cheap2h` / −0.96 `min` / −1.30 `avg` (REAL on all six caches), a net worth twice its parts; a weather-based first stage keeps 11–21 % of it on `cheap2h`, nothing on `min`, and on `avg` loses it on forecast vintages. Eleven noise columns cost +0.33 by themselves. One near-horizon lead (D+2…D+4 −0.36) |
 | [ENTSO-E documents: four traps found validating the round-25 fetch](#entso-e-documents-four-traps-found-validating-the-round-25-fetch-2026-10-11) | 2026-10-11 | A75/A65/A68 are A03 (repeats omitted), DE_LU has an extra zero `out` series, A68 is patchy, and the A77 `psrType` filter is ignored — so `nuclear_outage_se3` counts gas, hydro, wind and cancelled records (2.38 vs 1.13, wrong on 70 % of days) — yet the plain fix makes `avg` worse (+0.13, round 26). A72 (reservoir) is A03 too but arrives complete — checked 2026-10-14, 0 omitted of 158 weeks |
 | [Solar-capacity buildout is visible in the data; a linear index still doesn't capture it](#solar-capacity-buildout-is-visible-in-the-data-a-linear-index-still-doesnt-capture-it-round-22) | 2026-09-13 | A real, replicating year-over-year trend the fixed-divisor solar term can't see — but the obvious fix (a linear-in-time index) still fails cross-vintage replication |
+
+## What the rolling grid holds (2026-11-14)
+
+A review of how changes are decided. It read the stored per-week results of rounds 28
+and 29 (six long caches, the 12-point cluster grid, 21 arms) and ran four controls on
+`long/2026-11-13`. It is why the adoption bar changed
+([DECISIONS.md](DECISIONS.md#the-adoption-bar-is-an-interval-on-forecast-weather)); the
+controls and their numbers are in that entry.
+
+**Two years of days, not three periods and not six caches.** All six long caches times
+twelve points evaluate 733 distinct days, 2024-10-13 → 2026-10-15. On `long/2026-10-16`
+the NOW year is 2025-10-10 → 2026-10-09, FAR is 2024-10-16 → 2025-10-17, and −6M is
+2025-04-11 → 2026-04-12: half of each. FAR is the same calendar window in every cache
+and NOW overlaps 92–99 % between them (both already recorded in
+[AB_TESTING.md](AB_TESTING.md#the-rolling-grid-in-practice-round-25-now--6m--far-and-what-five-caches-replicate)).
+So "REAL on 6/6 caches, 60/60 points" counts the same days up to six times, and three
+clusters voting are two independent years.
+
+**The points of one cluster disagree.** The methodology said they agree "almost by
+construction". A one-column time-index arm on `cheap2h`, NOW cluster, four points:
++0.79 / +0.56 / −0.28 / +0.67 on `long/2026-10-16` and −0.09 / +0.65 / +0.53 / −0.10 on
+`long/2026-10-10`. The median spread (SD) of point deltas inside a cluster is 0.30 for
+that arm, 0.21 for the week-ahead load and 0.14 for the smallest arm measured. The
+baseline's own MAE moves 13.9–14.5 between NOW points and 11.9–13.8 between FAR points.
+
+**The reason is the week alignment.** With the rolling training window, the model for a
+test week is decided by the day the week starts on. Points that differ by a multiple of
+seven days are therefore the same fits on the weeks they share (checked on
+`long/2026-11-13`: shifts 0, 7 and 364 agree to the last digit on every shared day), and
+points on different weekdays are different fits on the same days, each weekday read at
+another lead. Shifts 0 / 1 / 4 / 7 are three of the seven alignments, with 0 counted
+twice.
+
+**How noisy one point is.** The weekly paired difference of a one-column arm on `cheap2h`
+has an SD of 1.1–1.9 EUR/MWh (1.9–3.9 for an 11-column block) and is uncorrelated from
+one week to the next (lag 1–4 autocorrelation −0.07 … +0.06 over the 21 arms). One
+52-week point therefore has a standard error of 0.16–0.27. Two fits of the *same* model
+under different seeds differ by about as much: weekly SD 1.9 on `cheap2h`, 1.6 on `min`,
+1.7 on `avg`, 4.3 on `max` (seed 7 against 42, forecast weather, sent rows). On one
+point, most of the noise in a small arm's delta is the fit, not the days. Once all seven
+alignments are run that reverses, because every day is then predicted by six fits:
+three seeds narrow the two-year interval by only about a sixth
+([AB_TESTING.md](AB_TESTING.md#seeds-how-much-of-the-noise-is-the-fit)).
+
+**What the sign rules did with that.** `classify_clustered` asks whether three cluster
+means share a sign and average at least 0.10. It called a reseed REAL at +0.13 on
+`cheap2h` (round 27), and rejected `cpl_gap7` at −0.268 with 11 of 14 points favourable
+because the −6M mean was +0.027. Neither decision used an estimate of how noisy a
+cluster mean is. The floor, 0.10, is below the standard error of a single point.
+
+**No untouched days.** About thirty rounds of arms were chosen on these two years. An
+interval describes the noise of one comparison; it does not describe the selection among
+many. Only days after a change is adopted can, which is what the
+[forward confirmation](AB_TESTING.md#forward-confirmation-every-adopted-change-is-read-once-more-on-new-days)
+is for.
+
+**What this does not say.** It does not re-judge the ledger. The two largest recent wins
+were re-read under the new rule and hold. The small adopted effects (the coherence step
+on `cheap2h`, the coupling hurdle on `cheap2h`, the price anchor on `cheap2h`) are
+smaller than one seed resolves on two years; they were not re-read, and are either
+correctness fixes or rows of the forward-confirmation register.
 
 ## Windows and Linux fit different models from the same data (round 31)
 
@@ -962,7 +1024,7 @@ better on archive.
 
 **The leak-smell test saw it first.** The archive gain grew with the test row: row 6 over
 row 0 was **3.96 (SR) and 3.69 (SA)** on `avg`, against the flag of 2 in
-[AB_TESTING.md](AB_TESTING.md#archive-weather-is-a-perfect-forecast-re-score-weather-candidates-on-vintages),
+[AB_TESTING.md](AB_TESTING.md#archive-weather-is-a-perfect-forecast-every-run-scores-forecast-vintages-too),
 while the northern wind points sit at 0.90 (cheap2h) / 1.32 (`min`). Nothing was wired
 wrong. As the frozen lags go stale down the week, perfect-foresight weather becomes
 worth more, and a column that carries more weather collects more of it. On a weather
@@ -1296,8 +1358,8 @@ monthly climatology 23.9. Weekday means: Mon 40, Tue 49, Wed 47, Thu 38, Fri
 Reproduce 1.1 (needs a snapshot, no token):
 
 ```python
-from ab.snapshot import load_snapshot
-import features as F
+from se4.ab.snapshot import load_snapshot
+from se4 import features as F
 inputs, meta = load_snapshot("2026-09-05")
 base = F.build_training_data(**inputs)
 print(base["residual_load"].corr(base["mean_temp"]))        # -0.9997

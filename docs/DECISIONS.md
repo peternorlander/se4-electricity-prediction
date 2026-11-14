@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [The adoption bar is an interval on forecast weather](#the-adoption-bar-is-an-interval-on-forecast-weather) | 2026-11-15 | no delta of its own — it changes how every later change is decided: a delta with a 95 % interval over two years of days and all seven week alignments, read on forecast weather. Controls: a reseed is `UNRESOLVED` on all four targets; northern wind `cheap2h` −0.52 [−1.01, −0.05] and the `avg` time index −0.57 [−0.92, −0.23] are `REAL`. **Rows below were decided on the earlier sign rules, on archive weather** |
 | [Time index for `avg`](#time-index-for-avg-round-30) | 2026-11-14 | `avg` −0.39 clmean (`t_index` + half-life 365 against production's 500; REAL on 6/6 caches, 71 of 72 points), −0.51 on forecast-vintage weather; replicated on a seventh cache fetched four weeks later (NOW −0.80 / −0.45 / −0.27); the 2026-08-17 break weeks −0.63, not worse |
 | [Source cache](#source-cache) | 2026-11-08 | no model change — production keeps its historical fetches between runs and asks each source only for what is new; a failed Yahoo / Open-Meteo / reservoir tail serves a recent-enough cache instead of failing the run; every external-API failure now logs what the API said |
 | [Engineering hygiene](#engineering-hygiene-round-31) | 2026-10-31 | no model change — tests before every production run, a data check that fails the run on broken inputs, a run-status sensor, pinned dependencies; A/B harness: `build_fn` hook and `--targets` (bit-identical on all six caches), and `ab_test.py band` now applies the candidate's `transform` |
@@ -44,6 +45,96 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## The adoption bar is an interval on forecast weather
+
+In force from 2026-11-15, the day after the last entry decided on the old rules. A change
+to what every later verdict *means*, so it has no A/B delta of its own. The bar itself is
+[AB_TESTING.md](AB_TESTING.md#the-adoption-bar); this entry is why, and what the new rule
+says on cases with a known answer.
+
+**What was wrong.** The written bar (`classify` on shifts 0–5, a replay on another
+snapshot when borderline) was not the one in use; the one in use (`classify_clustered` on
+NOW / −6M / FAR, plus conditions each round wrote for itself) decided on the signs of
+three cluster means with no estimate of their noise. Measured
+([FINDINGS.md](FINDINGS.md#what-the-rolling-grid-holds-2026-11-14)): the grid holds two
+independent years, not three periods; the points of a cluster are different week
+alignments and disagree by tenths; a reseed read REAL. The gate was also read on archive
+weather, a perfect forecast, although every evaluated day has had a forecast vintage
+since round 25.
+
+**What changed.**
+
+- `se4/ab/dayverdict.py`: one row per (week alignment, calendar day), the paired
+  difference with a 95 % block-bootstrap interval over 14-day calendar blocks, the same
+  per year, and a verdict: `REAL` / `MIXED` / `UNRESOLVED` / `HARMFUL` / `NO_CHANGE`, plus
+  a bounded-cost test for removals and fixes.
+- `ab_test.py run` without a grid argument runs the **year grid** (`year_grid`: shifts
+  0–6 and 364–370, all seven alignments over two years, 14 points) and reads the verdict
+  on FORECAST weather, sent rows. `--grid clusters` is the old grid with the old rules,
+  `--shifts` a quick look.
+- `--seeds N` fits every point under N seeds and averages the errors
+  (`model.RANDOM_STATE`, `harness.SeededFit`). `--since DATE` reads only later test days.
+- One bar per kind of change (addition, removal, correctness fix, band-only, measurement),
+  a forward confirmation for every adopted model change, and a table of model epochs.
+
+**Production is untouched.** `model.RANDOM_STATE` is 42 and is the only edit under
+`se4/model.py`; the fits are the same. The harness with one seed returns the old
+harness's errors bit for bit (`long/2026-11-13`, shift 0, `avg`, 52 windows, compared
+array against array with the unmodified checkout).
+
+**Controls** (`long/2026-11-13`, year grid, one seed, `OMP_NUM_THREADS=4`; 733 sent days,
+2024-11-09 → 2026-11-11; delta = arm − reference, EUR/MWh, with its 95 % interval):
+
+| Control | Target | FORECAST, sent rows (the gate) | NOW / PREV | Verdict | ARCHIVE, sent rows |
+|---|---|---|---|---|---|
+| Reseed: seed 7 against 42, nothing else changed | `cheap2h` | +0.07 [−0.08, +0.23] | +0.08 / +0.06 | `UNRESOLVED` | +0.14 [−0.02, +0.31] |
+| | `min` | +0.03 [−0.08, +0.14] | +0.14 / −0.08 | `UNRESOLVED` | +0.13 [−0.01, +0.27] |
+| | `avg` | −0.02 [−0.14, +0.09] | −0.09 / +0.04 | `UNRESOLVED` | −0.06 [−0.18, +0.06] |
+| | `max` | +0.04 [−0.25, +0.34] | +0.26 / −0.18 | `UNRESOLVED` | −0.08 [−0.38, +0.24] |
+| Northern wind columns, in against out | `cheap2h` | −0.52 [−1.01, −0.05] | −0.89 / −0.15 | `REAL` | −0.95 [−1.50, −0.42] |
+| | `min` | −0.57 [−1.04, −0.14] | −0.83 / −0.32 | `REAL` | −0.89 [−1.43, −0.40] |
+| Time index and half-life 365, in against out | `avg` | −0.57 [−0.92, −0.23] | −0.87 / −0.27 | `REAL` | −0.51 [−0.93, −0.11] |
+| One column of noise added to both trough lists | `cheap2h` | −0.00 [−0.12, +0.12] | +0.03 / −0.03 | `UNRESOLVED` | +0.05 [−0.07, +0.18] |
+| | `min` | +0.04 [−0.06, +0.14] | +0.05 / +0.03 | `UNRESOLVED` | +0.06 [−0.05, +0.17] |
+| The same, three seeds | `cheap2h` | +0.03 [−0.08, +0.12] | +0.03 / +0.02 | `UNRESOLVED` | +0.02 [−0.09, +0.12] |
+| | `min` | +0.05 [−0.03, +0.13] | +0.06 / +0.04 | `UNRESOLVED` | +0.03 [−0.06, +0.11] |
+
+What they show:
+
+- **Nothing reads as something.** The reseed and the noise column are `UNRESOLVED` on
+  every target, on both weathers. Of its sixteen per-year intervals one excludes zero (`min`, ARCHIVE, NOW:
+  +0.25 [+0.06, +0.46]), which is what 95 % intervals do by chance; the per-year numbers
+  are therefore a veto against the tolerance, never a verdict.
+- **What one seed can resolve.** The two null arms' intervals are ±0.12 to ±0.15 on
+  `cheap2h`, ±0.10 to ±0.11 on `min` and `avg`, ±0.30 on `max`. A steady effect smaller
+  than that is invisible to one seed on two years. An effect that comes and goes needs to
+  be larger still: the northern wind interval is ±0.48.
+- **Seeds buy little.** Two fits of the same model differ by a weekly SD of 1.9 on
+  `cheap2h`, and three seeds cut the noise of one point by a third. On the year grid,
+  where every day is already predicted by six fits, they narrow the interval only from
+  ±0.12 to ±0.10, for three times the run. One seed is the default.
+- **The two known wins hold, and are smaller and later than the ledger says.** On
+  forecast weather the northern wind columns are worth −0.52 on `cheap2h`, against −0.95
+  on archive weather, and the interval ends at −0.05. Most of every gain is in the newest
+  year: no PREV-year interval excludes zero on its own (`cheap2h` −0.15 [−0.68, +0.42]).
+  "REAL on 6/6 caches, 60/60 points" described the same effect and gave no way to see
+  that.
+
+**What it gives up, and what stays provisional.**
+
+- Verdicts before this date are not re-judged. Their words keep their old meaning
+  ([AB_TESTING.md](AB_TESTING.md#the-adoption-bar), last paragraph of the bar).
+- Small effects become `UNRESOLVED` where the sign rules sometimes said REAL or NOISE.
+  That is the honest reading of two years of days, and it will reject changes the old
+  rule would have shipped. More seeds narrow the interval by a sixth; more days do not
+  exist yet.
+- The tolerance (1.5 % of baseline MAE), the block length (14 days) and the confidence
+  level (95 %) are choices, not measurements. The block length rests on the weekly
+  differences being uncorrelated; the tolerance is to be revisited after the first
+  forward confirmations.
+- An interval does not correct for choosing among many arms. The forward confirmation
+  does, months later.
 
 ## Time index for `avg` (round 30)
 

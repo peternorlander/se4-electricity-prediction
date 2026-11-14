@@ -8,9 +8,10 @@ the full design and the agent playbook.
                                                     # fetch only what is new
     python ab_test.py list                          # list long snapshots
     python ab_test.py list --root ab_cache          # list production-shaped snapshots
-    python ab_test.py run [--snapshot YYYY-MM-DD] [--shifts 0-5 | --grid] [--expanding]
-                          [--no-vintage] [--workers 4] [--targets cheap2h]
-    python ab_test.py vintages [--snapshot YYYY-MM-DD] [--grid]   # warm the vintage cache
+    python ab_test.py run [--snapshot YYYY-MM-DD] [--workers 4] [--targets cheap2h] [--seeds 3]
+                          [--shifts 0-5 | --grid clusters] [--since YYYY-MM-DD]
+                          [--expanding] [--no-vintage]
+    python ab_test.py vintages [--snapshot YYYY-MM-DD]            # warm the vintage cache
     python ab_test.py band [--snapshot YYYY-MM-DD] [--workers 4]   # cheap2h band scorecard
 
 Needs ENTSO_E_TOKEN (and the other source-API env vars) only for `fetch`;
@@ -21,6 +22,13 @@ a newer snapshot reaches past it. `--no-vintage` skips that and reports archive
 weather only. The report always labels the two numbers ARCHIVE and FORECAST: the
 eval's weather is ERA5 archive, a forecast with no error, and FORECAST is what
 production pays (docs/AB_TESTING.md, "Archive weather is a perfect forecast").
+
+THE DEFAULT RUN IS THE GATE (changed 2026-11-15). With no --shifts and no --grid, `run`
+fits the year grid -- every week alignment (shifts 0-6) over the newest evaluation year and
+the one before it, 14 points -- and decides each target with the day-level interval verdict
+on FORECAST weather, sent rows (se4/ab/dayverdict.py; docs/AB_TESTING.md "The adoption
+bar"). `--shifts` is a quick look and says so; `--grid clusters` is the NOW / -6M / FAR grid
+of rounds 24-30 with the rules those rounds were decided on, for reproducing them.
 
 LONG SNAPSHOTS ARE THE DEFAULT (changed 2026-10-10, and `run` now trains on a
 rolling window). A ~3-year fetch builds to ~1088 rows, which IS production's
@@ -262,14 +270,31 @@ def cmd_list(args):
     print("'*' means the snapshot predates the field and it was derived on read.")
 
 
-def _grid(inputs, train_window):
-    """The per-snapshot NOW / -6M / FAR cluster grid (ab.verdict.default_clusters)."""
+def _grid(inputs, train_window, kind):
+    """The year grid (ab.verdict.year_grid, the gate) or the NOW / -6M / FAR cluster grid
+    of rounds 24-30 (ab.verdict.default_clusters), placed on this snapshot's frame."""
     from se4 import features as feat
-    from se4.ab.verdict import default_clusters
+    from se4.ab.verdict import default_clusters, year_grid
     if train_window is None:
-        sys.exit("--grid needs the rolling geometry (it places FAR from the training window); "
-                 "drop --expanding or pass --shifts.")
-    return default_clusters(len(feat.build_training_data(**inputs)), train_window)
+        sys.exit("a grid needs the rolling geometry (it places its oldest shifts from the "
+                 "training window); drop --expanding or pass --shifts.")
+    n_rows = len(feat.build_training_data(**inputs))
+    return (year_grid if kind == "year" else default_clusters)(n_rows, train_window)
+
+
+def _resolve_points(args, inputs, train_window):
+    """(clusters or None, shifts, grid kind) for `run` and `vintages`. --shifts wins;
+    otherwise --grid's value; otherwise the year grid, or shifts 0-5 under --expanding,
+    which has no rolling window to place a grid from."""
+    if args.shifts is not None:
+        if args.grid is not None:
+            sys.exit("--shifts and --grid are alternatives; pass one.")
+        return None, parse_shift_range(args.shifts), None
+    kind = args.grid or ("year" if train_window is not None else None)
+    if kind is None:
+        return None, parse_shift_range("0-5"), None
+    clusters = _grid(inputs, train_window, kind)
+    return clusters, [s for ss in clusters.values() for s in ss], kind
 
 
 def cmd_run(args):
@@ -277,12 +302,15 @@ def cmd_run(args):
     inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
     print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
     train_window = None if args.expanding else args.train_window
-    if args.grid:
-        clusters = _grid(inputs, train_window)
-        shifts = [s for ss in clusters.values() for s in ss]
-        print(f"  cluster grid: {clusters}")
+    clusters, shifts, kind = _resolve_points(args, inputs, train_window)
+    if kind == "year":
+        print(f"  year grid (the gate): {clusters}")
+        if "PREV" not in clusters:
+            print("  NOTE: this frame has no room for a second year; the verdict will not be a gate.")
+    elif kind == "clusters":
+        print(f"  cluster grid (rounds 24-30; its rules are printed, the gate needs the year grid): {clusters}")
     else:
-        clusters, shifts = None, parse_shift_range(args.shifts)
+        print(f"  shifts {shifts}: a quick look. The gate needs the year grid (run without --shifts).")
     # Forecast-vintage scoring is the default: every weather input in the eval is a perfect
     # forecast, and a run that reports only that number invites reading it as production's.
     # Opting out is explicit, and the report says so.
@@ -291,6 +319,7 @@ def cmd_run(args):
     target_names = tuple(t.strip() for t in args.targets.split(",")) if args.targets else None
     run_ab(inputs, shifts, train_window=train_window, clusters=clusters,
            vintage_root=vintage_root, workers=args.workers, save=args.save_errors,
+           seeds=args.seeds, since=args.since, legacy_rules=(kind != "year"),
            **({"target_names": target_names} if target_names else {}))
 
 
@@ -302,10 +331,7 @@ def cmd_vintages(args):
     inputs, meta = load_snapshot(args.snapshot, cache_root=cache_root)
     print(f"Using snapshot: {meta['today']} (fetched {meta['fetched_at']}, root={cache_root})")
     data = feat.build_training_data(**inputs)
-    if args.grid:
-        shifts = [s for ss in _grid(inputs, args.train_window).values() for s in ss]
-    else:
-        shifts = parse_shift_range(args.shifts)
+    _, shifts, _ = _resolve_points(args, inputs, args.train_window)
     days = evaluated_dates(data["date"], shifts)
     vintage_root = Path(args.vintage_root) if args.vintage_root else default_vintage_root(cache_root)
     print(f"Vintage cache: {vintage_root}  (evaluated days {days[0]} -> {days[-1]}, {len(days)})")
@@ -377,7 +403,9 @@ def main():
 
     run_parser = subparsers.add_parser("run", help="Run the BASELINE vs CANDIDATE A/B across simulated shifts.")
     run_parser.add_argument("--snapshot", default=None, help="Snapshot date (YYYY-MM-DD). Default: newest.")
-    run_parser.add_argument("--shifts", default="0-5", help="Shift range, e.g. '0-5' or '0,2,4'. Default: 0-5.")
+    run_parser.add_argument("--shifts", default=None,
+                             help="A quick look at these shifts instead of a grid, e.g. '0-5' or "
+                                  "'0,2,4'. Not a gate. (Default under --expanding: 0-5.)")
     run_parser.add_argument("--root", default=None,
                              help="Cache root to load from (default: ab_cache/long/).")
     run_parser.add_argument("--train-window", type=int, default=PRODUCTION_TRAIN_ROWS,
@@ -390,11 +418,22 @@ def main():
                                   "(the headline eval's geometry, and what every grid "
                                   "before 2026-10 used). Only way to run on a "
                                   "production-shaped snapshot.")
-    run_parser.add_argument("--grid", action="store_true",
-                             help="Run the per-snapshot cluster grid (NOW 0/1/4/7, -6M "
-                                  "180/183/186/189, FAR = the oldest four shifts the "
-                                  "rolling geometry fits) instead of --shifts, and report "
-                                  "per cluster.")
+    run_parser.add_argument("--grid", nargs="?", const="clusters", default=None,
+                             choices=("year", "clusters"),
+                             help="'year' (the default without --shifts): every week alignment, "
+                                  "shifts 0-6, over the newest evaluation year and the one "
+                                  "before it -- the grid the gate is read on. 'clusters' (also "
+                                  "a bare --grid): NOW 0/1/4/7, -6M 180/183/186/189, FAR = the "
+                                  "oldest four shifts the rolling geometry fits -- rounds 24-30, "
+                                  "with the rules those rounds were decided on.")
+    run_parser.add_argument("--seeds", type=int, default=1,
+                             help="Fit every point under this many seeds and average the errors "
+                                  "(default 1 = production's seed, bit-identical to earlier runs). "
+                                  "Costs that many times the run and narrows the interval by "
+                                  "about a sixth at 3; decide it before the run.")
+    run_parser.add_argument("--since", default=None, metavar="YYYY-MM-DD",
+                             help="Read the day-level verdict on test days from this date only: "
+                                  "the forward confirmation of a change adopted then.")
     run_parser.add_argument("--no-vintage", action="store_true",
                              help="Archive weather only. By default every fit is ALSO "
                                   "scored on the forecast Open-Meteo issued L days ahead "
@@ -420,8 +459,10 @@ def main():
     vintage_parser = subparsers.add_parser(
         "vintages", help="Fetch/extend the forecast-vintage cache for a snapshot and check its coverage.")
     vintage_parser.add_argument("--snapshot", default=None, help="Snapshot date (YYYY-MM-DD). Default: newest.")
-    vintage_parser.add_argument("--shifts", default="0-5", help="Shift range to cover. Default: 0-5.")
-    vintage_parser.add_argument("--grid", action="store_true", help="Cover the cluster grid, as `run --grid`.")
+    vintage_parser.add_argument("--shifts", default=None, help="Shift range to cover instead of a grid.")
+    vintage_parser.add_argument("--grid", nargs="?", const="clusters", default=None,
+                                choices=("year", "clusters"),
+                                help="Which grid to cover, as `run --grid` (default: the year grid).")
     vintage_parser.add_argument("--train-window", type=int, default=PRODUCTION_TRAIN_ROWS,
                                 help="Training rows (only places FAR for --grid).")
     vintage_parser.add_argument("--root", default=None, help="Cache root of the snapshot (default: ab_cache/long/).")

@@ -158,9 +158,8 @@ directory never was the record.
 
 ## How changes are validated
 
-**Standing practice (2026-08): no feature or model change is adopted on anything
-but a drift-free A/B result, and the README quotes A/B deltas — not
-before/after headline MAE — as the evidence for a change.**
+**Standing practice (2026-08): the evidence for a change is a paired A/B delta, and the
+README quotes A/B deltas — not before/after headline MAE.**
 
 Why this is a rule and not just a preference:
 
@@ -170,24 +169,99 @@ Why this is a rule and not just a preference:
   directions. A before/after comparison across runs cannot separate the change from
   that, which is what makes it misleading rather than merely imprecise.
 - **A/B removes exactly that.** `BASELINE` and `CANDIDATE` are fit on identical
-  slices, so the delta isolates the change. Running several `shift`s then samples
-  different day-alignments of the same history, and re-running on a
-  separately-fetched snapshot additionally covers data revisions.
+  slices, so the delta isolates the change. Running every week alignment over two
+  evaluation years then says how sure that delta is.
 - **Feature importance is not evidence either.** It measures in-sample usage, not
   marginal value. `min` measurably improved when its highest-importance feature was
   removed (see [Per-Target Feature Sets](MODEL.md#per-target-feature-sets)).
 
-The bar for adoption:
+### The adoption bar
 
-| Verdict | Meaning | Action |
-|---------|---------|--------|
-| `REAL` | sign-consistent across shifts, and abs(mean) ≥ spread | adopt |
-| `BORDERLINE` | sign-consistent but smaller than the spread | replay on a **separately-fetched** snapshot; adopt only if the sign holds |
-| `NOISE` | sign flips across shifts | reject |
-| `NO_CHANGE` | identical to baseline | reject |
+**One bar, in one place (rewritten 2026-11-15).** It replaces the `classify` table that
+stood here, the cluster rule the improvement plan pointed to, and the conditions rounds
+22–30 added in their own pre-registrations (a NOW gate, a forecast-vintage bar,
+agreement across caches). What was wrong with the old rules is measured in
+[FINDINGS.md](FINDINGS.md#what-the-rolling-grid-holds-2026-11-14); what the new rule
+says about a reseed and about two known wins is in
+[DECISIONS.md](DECISIONS.md#the-adoption-bar-is-an-interval-on-forecast-weather).
 
-Additional standing requirements: the per-window **std must not inflate**, and
-priority order is **cheap2h → min → avg** (`max` is not a priority).
+**The measurement** is `python ab_test.py run` with no grid argument, on the newest long
+snapshot:
+
+- **The year grid.** 14 points: shifts 0–6 and 364–370, which is every weekday a test
+  week can start on, over the newest evaluation year (NOW) and the one before it (PREV).
+  See [The year grid](#the-year-grid-what-the-gate-is-read-on-2026-11-15).
+- **Production's training length.** Every test week trains on the 1088 rows before it.
+- **FORECAST weather, sent rows.** Each fit is scored on the forecast that was issued
+  for that day, on the six days production sends (D+2 … D+7). ARCHIVE weather is
+  printed beside it as the ceiling and for the leak check; it is not the gate.
+- **The day-level interval verdict** (`se4/ab/dayverdict.py`). Per target: the mean of
+  `|candidate error| − |baseline error|` over every (week alignment, day), its 95 %
+  interval from a block bootstrap over 14-day calendar blocks, and the same mean per
+  year. Negative means the candidate is better.
+
+| Verdict | Meaning |
+|---|---|
+| `REAL` | the whole interval is below zero, and no year is worse than the tolerance |
+| `MIXED` | the whole interval is below zero, but one year is worse than the tolerance: one period pays for the other |
+| `UNRESOLVED` | the interval covers zero: two years of days cannot tell the change from nothing |
+| `HARMFUL` | the whole interval is above zero |
+| `NO_CHANGE` | the candidate's errors equal the baseline's on every row |
+
+The **tolerance** is 1.5 % of the target's baseline MAE on the gate rows (about 0.25
+EUR/MWh on `cheap2h`; the report prints it). It is the share
+`DEAD_WEIGHT_FRACTION` has used for "no measurable effect" since 2026-08, it sits above
+the seed floor, and it is provisional until the first
+[forward confirmations](#forward-confirmation-every-adopted-change-is-read-once-more-on-new-days)
+exist.
+
+**What each kind of change needs.** Decide which row applies before the run and write
+it in the plan item.
+
+| Kind of change | Bar | Also required |
+|---|---|---|
+| **Addition** to a point model: a feature, a source, a model component, a setting | `REAL` on the target it is for. No target `HARMFUL`. `cheap2h` and `min` not `MIXED`. | The [horizon-honesty](#horizon-honesty-measure-only-what-production-can-know) answers; the [band](#scoring-the-band) for `min` / `cheap2h`; a [permuted null](#adding-columns-has-a-price-the-permuted-null-arm-round-29) for more than three columns; a [time-index arm](#a-slowly-moving-external-series-needs-a-time-index-arm-round-28) for a drifting series |
+| **Removal or simplification**: a column, a component, a setting back to its default | The report's `removal/fix bar` says `PASS` on every target that reads it: the interval's upper end is below the tolerance, and no year is above it | The band for `min` / `cheap2h` |
+| **Correctness fix**: see the definition below | No target `HARMFUL`. Where the fix changes the targets themselves, both arms are scored against the corrected targets. A fix whose sent predictions are bit-identical needs no A/B; say so in the entry. | A test that fails on the code before the fix ([TESTING.md](TESTING.md)) |
+| **Band-only change** | The point models read `NO_CHANGE`; every `BREACH` of `ab_test.py band` is decided on and written down | — |
+| **A change to the measurement** | Bit-identity with the harness it replaces wherever it claims none; a DECISIONS entry | — |
+
+A **correctness fix** makes an input, a target or the served payload agree with what it
+is documented to be: a parser that dropped rows, a unit, a day boundary, an anchor on
+the wrong day. A change that gives the model new information, or asks it to do
+something else, is an addition whatever its motivation. The row exists because a fix
+should not have to prove it improves MAE, and it is narrow so that it cannot become
+the way around the first row.
+
+**Priority order is `cheap2h` → `min` → `avg`; `max` is not a priority.** A change that
+is `REAL` on `avg` and `HARMFUL` on `cheap2h` is rejected. The reverse is a decision,
+stated in the entry.
+
+**A removal has its own row because "not shown to help" and "not shown to hurt" are
+different statements.** Asking a removal for `REAL` would keep dead weight forever (a
+worthless column's effect flips sign with the fit), and dropping whatever is
+`UNRESOLVED` would drop columns that matter. The row asks for the *cost* of the removal
+to be bounded below the tolerance. A column whose mean effect is nothing but which
+swings hard in one regime shows up as a year above the tolerance, and stays.
+
+**Seeds are part of the pre-registration.** One run fits production's seed. `--seeds 3`
+fits every point under three seeds and averages the errors; measured, that narrows the
+interval by about a sixth for three times the run
+([Seeds](#seeds-how-much-of-the-noise-is-the-fit)). Choose the number before the run:
+1 by default, 3 only where that sixth can decide the item. Adding seeds after seeing a
+result is allowed only if the item said so in advance.
+
+**What counts as replication is distinct test days.** Two caches that evaluate the same
+days fit the same models and return the same errors; a second cache is new evidence
+only for the days it adds. "Replay on a separately fetched snapshot" is therefore no
+longer part of the bar. Fetched history was measured stable across fetches
+([FINDINGS.md](FINDINGS.md#cached-history-is-stable-except-for-one-column-2026-09-17)),
+so a replay re-measured the fit, not the period.
+
+**The spread of the error is reported, not gated.** The report prints the standard
+deviation of the daily absolute error for both arms. A `REAL` verdict whose spread
+rises is stated in the ledger entry with both numbers. (The earlier wording, "the
+per-window std must not inflate", had no threshold and the report did not print it.)
 
 **A precondition that outranks the whole table: the candidate must only be able
 to see what production can see.** A REAL verdict on an arm that was handed
@@ -197,13 +271,49 @@ reproduce when the change ships. Before reading any verdict, settle the question
 in [Horizon honesty](#horizon-honesty-measure-only-what-production-can-know)
 below, and record the answer in the ledger entry.
 
+**Items whose bar was written before 2026-11-15 keep it.** A plan item that
+pre-registered its bar in the old vocabulary (in November 2026: "2.18 Near-horizon
+model" and "2.20 Nuclear column as production sees it") is decided on that bar and on
+the grid it names; `ab_test.py run --grid clusters` prints those rules. Its entry also
+records the interval verdict from a default run. Ledger entries before that date keep
+their words: `REAL` / `BORDERLINE` / `NOISE` there are `classify` or `classify_clustered`
+labels, "clmean" is the mean of three cluster means, and "REAL on 6/6 caches" means the
+cluster rule passed on six caches that share almost all of their test days.
+
+### Forward confirmation: every adopted change is read once more on new days
+
+About thirty rounds of arms have been chosen on the same two years of test days. A
+winner picked that way looks better on those days than it is, and no rule applied to
+the same days can correct for it. The days after a change is adopted are the only ones
+it was not selected on.
+
+So every adopted change to a point model gets one forward read:
+
+- **When:** on the first long snapshot fetched at least 180 days after the adoption.
+- **How:** `CANDIDATE` is production with that one change taken out again;
+  `python ab_test.py run --since <adoption date>` reads the verdict on test days from
+  that date only. Positive now means the change is still earning its place.
+- **The revert bar is written at adoption,** in the DECISIONS entry. The default: the
+  change is reverted if the arm without it is `REAL` on the forward days, kept
+  otherwise, and an `UNRESOLVED` forward read is recorded as such. An entry may set a
+  stricter bar; "2.10 `min ≤ cheap2h` coherence" did, before this rule existed.
+- **Where it is tracked:** the plan's
+  [forward-confirmation register](../IMPROVEMENT_PLAN.md#44-forward-confirmation-register).
+
+This is a backtest on new days, not a shadow arm: nothing runs in production and
+nothing on `main` has to wait for it. The production prediction log
+([plan 2.2](../IMPROVEMENT_PLAN.md#22-production-prediction-log-and-realised-scorecard))
+answers a different question, whether the backtest's *level* matches what was served.
+
+### The A/B verdict is the gate
+
 **The A/B verdict is the gate (changed 2026-08-05).** A change counts as done once
 it clears the bar above; it no longer waits on a confirming Actions run. The
 previous rule required both, which in practice meant a validated improvement sat
 unshipped for a day to be re-measured by a *weaker* instrument — a single rolling
 run whose headline MAE moves ±1.3 with the period alone (see
-[Current MAE Baseline](MODEL.md#current-mae-baseline)). An A/B across several shifts and
-snapshots is strictly more evidence about accuracy than one production run is.
+[Current MAE Baseline](MODEL.md#current-mae-baseline)). An A/B over two evaluation
+years is strictly more evidence about accuracy than one production run is.
 
 What that trade gives up, stated plainly so nobody has to rediscover it: the
 Actions run was never a good *accuracy* check, but it was the only end-to-end
@@ -221,25 +331,13 @@ is replaced, not dropped:
 - The next Actions run is still where a live-fetch or push regression would
   surface — **watch it, but don't block the change on it.**
 
-**For *ablations* (testing whether to remove an existing feature) use
-`se4/ab/verdict.py::classify_ablation` instead of `classify`.** This is the
-exception, not the everyday path — day-to-day A/B work is almost always testing
-an *addition* (a new feature, a new source, a model change), where `classify`'s
-"unproven → keep the status quo" is exactly right, because rejecting an unproven
-addition already leaves the simpler model. That logic inverts for a removal:
-"unproven → keep" then means *keep the feature*, so a genuinely worthless
-feature — whose ~zero effect flips sign purely from fitting noise — gets
-classified NOISE and never leaves. `classify_ablation` fixes this by also
-weighing the *magnitude* of the effect (scaled to the target's own baseline
-MAE), distinguishing dead weight (never matters, safe to drop) from a feature
-that's large but genuinely regime-dependent (matters a lot sometimes, keep it) —
-see the function's docstring for the full verdict table. It is **not** wired
-into `ab_test.py run` / `run_ab()` — that entrypoint always uses `classify`,
-since most CANDIDATEs are additions. Reach for `classify_ablation` explicitly
-(`from ab.verdict import classify_ablation`) only when the CANDIDATE actually
-removes a column, typically during a periodic feature-set audit like the one
-that produced [Per-Target Feature Sets](MODEL.md#per-target-feature-sets) — not for
-routine feature-addition testing.
+**Removals before 2026-11-15 were judged with `classify_ablation` /
+`classify_ablation_clustered`** (`se4/ab/verdict.py`), which weigh the size of the
+effect against the target's baseline MAE to tell dead weight from a column that
+matters in one regime; their verdicts are `REMOVE_HARMFUL`, `REMOVE_DEADWEIGHT`,
+`KEEP_LOAD_BEARING`, `KEEP_SCENARIO` and `INCONCLUSIVE`. The functions stay so that
+those entries can be read and reproduced. A removal measured now uses the removal row
+of the bar above.
 
 **Re-opening a rejected verdict requires a stated mechanism, written before the
 run.** [REJECTED.md](REJECTED.md) is long, and per-measurement noise is a few tenths — so if
@@ -249,7 +347,9 @@ anything from [Features Tested and Rejected](REJECTED.md), write
 down *why the answer would now differ*: what changed in the model, the data or the
 measurement that caused the original rejection. "A lot has changed, maybe it
 behaves differently now" is not a mechanism, and if you cannot state one, that is
-your answer. Worked example: after the 2026-08 prune cut the priority targets from
+your answer. A row measured in an earlier [model epoch](#model-epochs-what-a-verdict-was-measured-on)
+is not reopened by that fact alone either: say what the epoch change does to this
+row. Worked example: after the 2026-08 prune cut the priority targets from
 51 columns to 15, a full re-audit of every rejected entry found exactly four items
 with a stated mechanism for why the prune could change the answer (per-target
 hyperparameters, solar-capacity scaling, time-decay weights on min/cheap2h, and the
@@ -258,8 +358,38 @@ min≤cheap2h coherence check) and five explicitly declined with reasons.
 The same discipline covers any test with many arms — a hyperparameter sweep, a
 per-feature ranking. Picking the best of N on the grid you also validate on is
 selection on noise (this is what made round 2's per-feature ranking unusable, at
-37% sign reproduction). **Screen on one period cluster, confirm the winner on the
-others**, and fix the confirmation bar before looking at the screen results.
+37% sign reproduction). **Screen on one year, confirm the winner on the other**
+(`--shifts 0-6` is the NOW year alone, `--shifts 364-370` the year before), and fix the
+confirmation bar before looking at the screen results.
+
+### Model epochs: what a verdict was measured on
+
+A ledger row carries a date or a round, and this table says which model and which
+measurement that date means. A row dated before the newest line that touches its target
+was measured on something else than today's model.
+
+| From | What changed | Targets it touches |
+|---|---|---|
+| 2026-08-05 | Per-target feature lists: 51 columns → 15 (`cheap2h`) / 14 (`min`) | `min`, `cheap2h` |
+| 2026-08-21 | `avg` drops the price/market lag family | `avg` |
+| 2026-08-23 | Weather archive lag closed (training tail ~5 days → ~1) | all |
+| 2026-09-17 | Residual-load wind-curve unit fix | all that read `residual_load*` |
+| 2026-10-10 | **Measurement:** every test week trains on production's 1088 rows (before: expanding, 731 → 1088). Targets corrected by the A03 fill; `price_de` is the SDAC curve | all |
+| 2026-10-12 | Northern wind columns; `min ≤ cheap2h` coherence | `min`, `cheap2h`, `avg` |
+| 2026-10-16 | Coupling hurdle on `min` / `cheap2h`; the warning-light band | `min`, `cheap2h` |
+| 2026-10-22 | Price anchor on D+1: eval rows 0–5 are the sent days D+2 … D+7 | all |
+| 2026-11-14 | `t_index` and half-life 365 | `avg` |
+| 2026-11-15 | **Measurement:** the gate is the interval verdict on FORECAST weather, on the year grid (before: sign rules on ARCHIVE weather, on the cluster grid) | all |
+
+Two uses. **Before trusting an old row**, find its line: a rejection from before
+2026-10-10 was measured with less training data than production has, and one from
+before 2026-11-15 on a perfect weather forecast and by a rule without a noise estimate.
+That is context for a stated mechanism, never a mechanism by itself. **When a line is
+added**, the adopted components it touches are listed for a re-read in the plan
+(as "2.25 Re-audit of the trough feature lists" was), instead of being found stale
+later by accident — which is how the hurdle case below was found.
+
+Add a line here in the same commit as the DECISIONS entry that causes it.
 
 **A validated change's verdict is scoped to the model it was measured on —
 re-check *adopted* changes too when a feature list changes materially, not
@@ -285,7 +415,7 @@ a production run:
 | what | where it comes from |
 |---|---|
 | the headline MAE table in [MODEL.md](MODEL.md#current-mae-baseline) | one named snapshot, re-measured deliberately, `OMP_NUM_THREADS=4` pinned, with the snapshot date and the code state quoted beside it |
-| the evidence for any change | its **A/B delta** on the four-cluster grid — never a before/after of the headline table, and never a single run |
+| the evidence for any change | its **A/B delta with its interval** on the year grid (before 2026-11-15: a cluster-mean delta on the cluster grid) — never a before/after of the headline table, and never a single run |
 | an Actions run's own walk-forward output | **nowhere.** Production stopped computing one on 2026-10-24 ([DECISIONS.md](DECISIONS.md#walk-forward-out-of-the-production-run)); `mae_*` attributes in old Home Assistant history are not a record either. |
 
 The last row was the easy mistake while it existed. Each run measured whatever
@@ -386,8 +516,9 @@ diverge first. It is one cheap probe against several days of replication.
    vintage exists for the older clusters and a forward-looking feature built from
    it **cannot be backtested honestly at all** (see
    [FINDINGS.md](FINDINGS.md#if-you-touch-ab_cachecrossborder-read-this-first)).
-   Prices and weather get revised too, which is why a cross-snapshot replay is
-   part of the bar.
+   Prices and weather were checked for the same thing and are stable across
+   fetches ([Snapshot generations](#snapshot-generations--check-the-weather-tail-before-building-a-grid)),
+   so the bar no longer asks for a cross-snapshot replay.
 
 ### The case worth knowing by heart: what "lag1" actually means
 
@@ -473,9 +604,10 @@ upper bound is evidence; an upper bound mistaken for a result is not.
 
 Every weather input in this repo's eval is ERA5 archive — a forecast with no error.
 Production pays the error, and it is not small: scoring the same models on the
-forecast issued L days earlier costs +1.30 cheap2h / +1.49 min / +2.38 avg EUR/MWh
-on the six days production sends, +3…+5 at a 7-day lead and ~0 under D+3
-([FINDINGS.md](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)).
+forecast issued L days earlier costs between one and three EUR/MWh on the six days
+production sends, most of it at the long leads and ~0 under D+3 (the numbers, per
+target and per model version, are in
+[FINDINGS.md](FINDINGS.md#archive-weather-flatters-the-eval-by-13-eurmwh-almost-all-of-it-beyond-d4-round-25-plan-23a23b)).
 That error is shared by both arms of a paired A/B, so it cancels from a *feature set*
 comparison — and it does not cancel from a *weather feature*, whose whole value is
 the forecast skill it carries. The measured case: three northern wind points scored
@@ -488,8 +620,13 @@ numbers so they cannot be taken for one another:
 
 | label | the test rows carry | rows | what it is |
 |---|---|---|---|
-| **ARCHIVE** | ERA5 archive weather — a perfect forecast | all 7 of a test week | the standing gate and every ledger number to date |
-| **FORECAST** | the forecast issued j + 2 days ahead, for row j (0-based) | rows 0–5 (D+2 … D+7) | what production pays |
+| **ARCHIVE** | ERA5 archive weather — a perfect forecast | all 7 of a test week; rows 0–5 in the interval verdict | the ceiling and the leak check; the gate until 2026-11-15, and every ledger number before it |
+| **FORECAST** | the forecast issued j + 2 days ahead, for row j (0-based) | rows 0–5 (D+2 … D+7) | what production pays, and **the gate** |
+
+Every test day of the year grid is after 2024-03-01, where the forecast vintages
+begin, so nothing forces the gate back onto archive weather. `--no-vintage` reads the
+gate on archive weather, sent rows, and the report says that a weather-derived
+candidate then reads optimistic.
 
 The mapping is production's: it sends D+2 … D+7 and anchors its frozen price lags on
 D+1 ([DECISIONS.md](DECISIONS.md#price-anchor-on-d1), 2026-10-22), so the first eval row
@@ -533,31 +670,38 @@ Two consequences: a window that evaluates before 2024-03-01 cannot be scored (`-
 runs archive-only and says so), and a snapshot's newest day needs a day or so to be
 published. `--no-vintage` is an explicit choice; there is no quiet degrade.
 
-**Reading the report.** Per shift: one ARCHIVE line and one FORECAST line. Then the verdict
-twice (the standing `classify` rule, and the cluster rule when there are three clusters), on
-ARCHIVE and on FORECAST. Then, per target and cluster, four labelled rows — ARCHIVE
+**Reading the report.** Per shift: one ARCHIVE line and one FORECAST line. Then, per
+target and cluster (NOW and PREV on the year grid), four labelled rows — ARCHIVE
 rows 0–6, archive rows 0–5, FORECAST rows 0–5, and the penalty — and the MAE by lead
-(every row scored at lead L, L1 … L7) with the candidate − baseline delta. Last, the
-**leak check**: the ARCHIVE delta by test row j, and `j6/j0` (flagged above 2).
-`--grid` runs the per-snapshot cluster grid (NOW 0/1/4/7, −6M 180/183/186/189, FAR the four
-oldest shifts the rolling geometry fits) so the tables are per cluster; `--workers N` runs
-the (variant, shift) jobs in processes (pin `OMP_NUM_THREADS=4`); `--save-errors PATH` keeps
-every row's error for later analysis.
+(every row scored at lead L, L1 … L7) with the candidate − baseline delta. Then the
+**leak check**: the ARCHIVE delta by test row j, and `j6/j0` (flagged above 2). Last, the
+interval verdict twice: on ARCHIVE weather, sent rows (the ceiling), and on FORECAST
+weather, sent rows — **the gate**. Each target gets two lines: the delta, its interval,
+the per-year deltas and the verdict; then both arms' MAE, the tolerance, whether the
+removal/fix bar passes, and the spread of the daily error. A `NOTE` line says when the
+run is not a gate (fewer than seven alignments or two years, or `--since`).
+`--shifts 0-5` is a quick look at those shifts; `--grid clusters` runs the cluster grid of
+rounds 24–30 (NOW 0/1/4/7, −6M 180/183/186/189, FAR the four oldest shifts the rolling
+geometry fits) and also prints the rules those rounds were decided on. `--workers N` runs
+the (variant, shift) jobs in processes (pin `OMP_NUM_THREADS=4`); `--seeds N` fits every
+point under N seeds; `--save-errors PATH` keeps every row's error, with the frame's dates,
+for later analysis.
 
 For any addition whose columns derive from weather inputs:
 
-1. Take the FORECAST number as seriously as the ARCHIVE one. Row j maps to lead j + 2, and
-   the report already scores the sent rows only; nothing needs re-running by hand.
-2. Record both in the ledger entry. The survival criterion written before the run for N1
-   was "negative in every cluster on cheap2h"; a gain that keeps its sign at a fraction of
-   its size is a smaller true effect, not a failure.
+1. The FORECAST verdict decides. Row j maps to lead j + 2, and the report already scores
+   the sent rows only; nothing needs re-running by hand.
+2. Record both in the ledger entry. A gain that keeps its sign on FORECAST at a fraction
+   of its ARCHIVE size is a smaller true effect, not a failure — and one that is `REAL`
+   on ARCHIVE and `UNRESOLVED` on FORECAST is not adopted.
 3. Read the gain by lead. An honest weather feature decays with lead (here −1.0 at L1–L3 →
    −0.45 at L6 → 0 at L7); archive gain at test row 6 over row 0 above ~2 is the leak
    signature, and the report prints it.
 
-A non-weather change (a model setting, a price feature) does not need the FORECAST verdict
-to decide it, and its two deltas should agree to within noise; if they do not, the change
-interacts with weather and that is worth a sentence in the ledger entry.
+A non-weather change (a model setting, a price feature) is decided on the FORECAST
+verdict too — it is the model as production runs it — and its two deltas should agree to
+within noise; if they do not, the change interacts with weather and that is worth a
+sentence in the ledger entry.
 
 **What it cannot do.** A CANDIDATE is a `transform` of the merged *daily* frame, and that
 is all the harness can rebuild on a vintage. A candidate whose columns are computed from the
@@ -663,8 +807,11 @@ backwards from the *end* of the data (`min_train = n - iterations*step`). So
 truncating the last `s` rows of the merged frame reproduces the eval exactly as it
 would have run `s` days earlier — window placement **and** the training tail both
 move together, the same way a real earlier run would differ. One knob (`shift`)
-captures the whole between-day axis; running shifts `0..5` gives six simulated
-run-days from one fetch.
+captures the whole between-day axis; running shifts `0..6` gives the seven
+possible week alignments from one fetch. **A shift of 7 gives nothing new**: with the
+rolling training window, a test week's model depends only on the day the week starts,
+so shift `s + 7` refits the same models as shift `s` on every week they share
+([The year grid](#the-year-grid-what-the-gate-is-read-on-2026-11-15)).
 
 **The shift axis is not a regime axis — don't read a NOISE verdict as "not
 regime-dependent."** All six shifts cover nearly the same ~365 days, offset by
@@ -711,19 +858,20 @@ instead of comparing across shifts.
   measures nothing. Finish the measurements, then ship. (Corollary: after
   shipping, comparing against the *old* configuration needs an explicit `targets`
   override, not `BASELINE`.)
-- `se4/ab/verdict.py` — runs both variants across the shifts (or the `--grid` clusters),
-  classifies each target on ARCHIVE weather and, with vintages, on FORECAST weather too, and
-  prints the report.
+- `se4/ab/verdict.py` — runs both variants across the grid (`year_grid`, the default; the
+  cluster grid of rounds 24–30; or `--shifts`), under one or several seeds, and prints the
+  report. It also holds the sign rules earlier ledger entries were decided on.
+- `se4/ab/dayverdict.py` — the day-level interval verdict the gate is read on: one row per
+  (week alignment, calendar day), a block bootstrap over calendar blocks, the per-year
+  check, and the verdict ([The adoption bar](#the-adoption-bar)).
 
-**The verdict rule** (`se4/ab/verdict.py::classify`), applied per target on the list of
-per-shift deltas (`candidate_MAE − baseline_MAE`, negative = candidate better):
-- **`NO_CHANGE`** — every delta is exactly 0 (candidate ≡ baseline).
-- **`NOISE`** — the delta's sign flips across shifts. The effect is smaller than the
-  between-day variability → reject.
-- **`REAL`** — sign is consistent across all shifts **and** `|mean delta| ≥` the
-  between-shift spread (`max − min`) → adopt.
-- **`BORDERLINE`** — sign-consistent but the effect is smaller than the spread →
-  replay on a **different real-day snapshot** before deciding.
+**The verdict** is the day-level interval verdict of
+[The adoption bar](#the-adoption-bar). Until 2026-11-15 it was `se4/ab/verdict.py::classify`,
+applied per target to the list of per-shift deltas, and entries from then use its words:
+`NO_CHANGE` (every delta zero), `NOISE` (the sign flips across shifts), `REAL` (one sign
+and `|mean| ≥ max − min`), `BORDERLINE` (one sign, smaller than that spread). On a grid
+with period clusters the same words came from `classify_clustered`, one vote per cluster
+mean. `--shifts` and `--grid clusters` still print them.
 
 This never touches the headline eval (`evaluate.walk_forward_validate`, still
 step=7 / 52 windows) or production (`predict.py` always fetches fresh, never reads
@@ -738,8 +886,8 @@ Follow this whenever testing a feature or model change from the improvement plan
    recent snapshot is already cached — a snapshot a few days old is fine for
    iterating. The default is a **~5-year fetch into `ab_cache/long/`**, which is
    what a measurement needs: it is the only shape that can give every test week
-   production's own 1088 training rows, and it carries the sliding four-cluster
-   grid. The fetch prints which clusters its rows reach. `--days 1095` caches a
+   production's own 1088 training rows, and it carries the two evaluation years
+   of the year grid. `--days 1095` caches a
    production-shaped snapshot in `ab_cache/` instead — for the integration check
    in step 5, not for measuring.
 2. **Express the change as `CANDIDATE`** in `se4/ab/variants.py`. This is the only file
@@ -783,51 +931,41 @@ Follow this whenever testing a feature or model change from the improvement plan
      leaves a new column per-day fresh, which is a leak for anything lag-like.
      See "Horizon honesty" above; it is the difference between a number that
      survives production and one that does not.
-3. **Run it.** `python ab_test.py run` (add `--snapshot YYYY-MM-DD` to pick a
-   specific one, `--shifts 0-5` to change the grid). It loads from
-   `ab_cache/long/` and trains every test week on a rolling 1088 rows, printing
-   the geometry it used; `--expanding` reverts to the pre-2026-10 geometry, and
-   is the only way to run against a production-shaped snapshot. `--grid` runs
-   the NOW / −6M / FAR cluster grid instead of `--shifts` and reports per cluster;
-   `--targets cheap2h` (or `min`, `avg`, `max`, a comma list) fits only those targets,
-   with `min` and `cheap2h` always together because the coherence step rewrites one from
-   the other — the targets fitted score bit-identically to a full run (round 31, all six
-   caches), at ~45 % of the cost for the pair and ~25 % for `avg` alone. A `cheap2h`-only
-   fit is *not* offered: without `min` the coherence step is skipped and `cheap2h` reads
-   +0.02 … +0.28 worse than what Home Assistant receives;
-   `--workers 4` with `OMP_NUM_THREADS=4` runs the jobs in parallel. Every fit is also
-   scored on forecast-vintage weather (first run: fetches `ab_cache/vintages/`, no token;
-   `--no-vintage` to skip), so the report carries two labelled numbers, **ARCHIVE** (a
-   perfect forecast — the gate) and **FORECAST** (what production pays); see
-   [Archive weather is a perfect forecast](#archive-weather-is-a-perfect-forecast-every-run-scores-forecast-vintages-too).
-   Read the per-target verdict table. **Priority order is cheap2h first, then min**;
-   `avg` is welcome, `max` is not a priority.
-4. **Decide by the verdict**, weighing cheap2h/min and checking std isn't inflated:
-   - `REAL` → adopt: implement the change properly in the real modules, then revert
-     `CANDIDATE` to the no-op `Variant(name="candidate")`.
-   - `NOISE` / `NO_CHANGE` → reject: record it as a row in
-     [REJECTED.md](REJECTED.md), in the group it belongs to and with its numbers,
-     and revert `CANDIDATE`.
-   - `BORDERLINE` → fetch a snapshot on a later real day (`ab_test.py fetch` again
-     after a day or two) and `python ab_test.py run --snapshot <older>` vs the new
-     one; adopt only if the sign agrees. The cross-snapshot replay is the *only* case
-     that needs multiple caches — it covers real data revisions (weather backfill,
-     price corrections) that tail-truncation alone can't simulate.
-     **Getting the shift right on the new snapshot matters — the default `0-5`
-     range can silently duplicate windows you've already tested.** `build_training_data`
-     is a *fixed-length* sliding window (not accumulating), so a snapshot fetched
-     `N` days later is the same length, just shifted `N` rows forward. That means
-     `apply_shift(newer_data, N)` reproduces the older snapshot's shift-0 windows
-     **exactly** — the one shift value that gives a genuine "same test,
-     independently re-fetched" comparison. Any other shift on the new snapshot
-     either duplicates a window the old snapshot's `0-5` sweep already covered, or
-     (for extending coverage rather than replaying) needs checking against every
-     shift used so far, not just the immediately preceding snapshot. Verify
-     programmatically before trusting the result — don't assume: compare each
-     candidate shift's resulting last `date` against the older run's tested dates,
-     and assert no overlap (or, for a same-window replay, assert the dates match
-     exactly). Getting `N` wrong doesn't error, it just quietly reuses data and
-     inflates apparent replication.
+3. **Run it.** `python ab_test.py run --workers 4` with `OMP_NUM_THREADS=4` (add
+   `--snapshot YYYY-MM-DD` to pick a specific one). With no grid argument this is the
+   gate: the year grid, every test week trained on a rolling 1088 rows, every fit scored
+   on ARCHIVE and on FORECAST weather (first run: fetches `ab_cache/vintages/`, no token).
+   - `--targets cheap2h` (or `min`, `avg`, `max`, a comma list) fits only those targets,
+     with `min` and `cheap2h` always together because the coherence step rewrites one from
+     the other — the targets fitted score bit-identically to a full run (round 31, all six
+     caches), at ~45 % of the cost for the pair and ~25 % for `avg` alone. A `cheap2h`-only
+     fit is *not* offered: without `min` the coherence step is skipped and `cheap2h` reads
+     +0.02 … +0.28 worse than what Home Assistant receives.
+   - `--seeds 3` only if the plan item said so; it buys about a sixth of the interval
+     ([Seeds](#seeds-how-much-of-the-noise-is-the-fit)).
+   - `--shifts 0-6` is a quick look at one year, and the report says it is not a gate.
+     `--grid clusters` reproduces the grid and the rules of rounds 24–30.
+   - `--expanding` reverts to the pre-2026-10 geometry and is the only way to run against
+     a production-shaped snapshot; `--no-vintage` skips the forecast scoring.
+
+   Read the two lines per target under **THE GATE**. **Priority order is cheap2h first,
+   then min**; `avg` is welcome, `max` is not a priority.
+4. **Decide by the row of [the bar](#the-adoption-bar) the plan item named**:
+   - The bar is met → adopt: implement the change properly in the real modules, revert
+     `CANDIDATE` to the no-op `Variant(name="candidate")`, and write the DECISIONS entry
+     with the delta, its interval, the per-year deltas, the ARCHIVE delta beside it, and
+     the revert bar for its forward confirmation. Add the change to the plan's
+     [forward-confirmation register](../IMPROVEMENT_PLAN.md#44-forward-confirmation-register),
+     and a line to [Model epochs](#model-epochs-what-a-verdict-was-measured-on) if it
+     changes a point model.
+   - The bar is not met → reject: record it as a row in [REJECTED.md](REJECTED.md), in the
+     group it belongs to, with the delta and its interval, and revert `CANDIDATE`. Write
+     `UNRESOLVED` as what it is: the row says the days could not resolve an effect of that
+     size, not that the effect is zero. That difference is what a later re-opening needs.
+   - Do not re-run on another snapshot hoping for a different answer. The same days give
+     the same errors. What can legitimately follow an `UNRESOLVED` is more seeds, if the
+     item said so in advance (it narrows the interval by about a sixth), or waiting for
+     days that do not exist yet.
 4a. **Score the band whenever `min` or `cheap2h` changes** — the point model, its
    features, the coupling classifier, or the band itself. The band is clamped around
    the point estimate and its warning reads the same classifier, so a change that wins
@@ -906,11 +1044,11 @@ worse than the baseline by more than `BAND_TOLERANCE` — 2 percentage points on
 `above_high` / `below_low` / `above_high_unwarned`, 5 on `recall` / `precision`, 5 EUR/MWh
 on `lowrisk_high` — in any cluster or in the recent weeks. (`calm_high` was the
 tolerance until round 24b showed it conflates calm days with uncertain ones; see
-[DECISIONS.md](DECISIONS.md#risk-binned-unwarned-high-round-24b).) Same discipline as the MAE grid: one vote per
-cluster, never a pooled number, and the recent weeks are where a regime shows first.
+[DECISIONS.md](DECISIONS.md#risk-binned-unwarned-high-round-24b).) The band is read per
+cluster, never as a pooled number, and the recent weeks are where a regime shows first.
 A breach is a product decision, not a statistical one: state it, decide it, and put
 it in the ledger entry. The tolerances were set from the size of the round-24 effects
-and are as provisional as `MIN_CLUSTER_EFFECT`.
+and are provisional.
 
 **What a historical walk-forward cannot tell you.** Weather in the grid is archive
 weather, so `risk` is scored on a perfect forecast — the same optimism
@@ -988,6 +1126,50 @@ pessimistic in the period closest to production and the sign is
 period-dependent — consistent with [round 15d](REJECTED.md) closing window
 length as a lever.
 
+### The year grid: what the gate is read on (2026-11-15)
+
+**What a rolling grid can and cannot vary.** With `train_window` set, the model for a
+test week is fitted on the 1088 rows before that week and on nothing else. The shift
+only decides *which* weeks a point contains. Two consequences:
+
+* **Shifts that differ by a multiple of 7 are the same fits.** Shift 7 is shift 0 moved
+  back one week: 51 of its 52 weeks are shift 0's, with the same training rows, the same
+  model and the same errors (checked on `long/2026-11-13`: shifts 0, 7 and 364 agree to
+  the last digit on every day they share). The cluster grid's NOW points 0 / 1 / 4 / 7
+  were therefore three week alignments, not four.
+* **The only things that vary are the week alignment and the calendar day.** There are
+  seven alignments (the weekday a test week starts on; it decides which weekday is
+  predicted at which lead) and as many days as the frame can reach. Every point of every
+  grid is a subset of that (alignment, day) table.
+
+**The grid.** `ab.verdict.year_grid`, the default of `ab_test.py run`:
+
+| cluster | shifts | what it is |
+|---|---|---|
+| NOW | 0, 1, 2, 3, 4, 5, 6 | all seven alignments over the newest evaluation year |
+| PREV | 364, 365, …, 370 | the same seven alignments over the year before |
+
+Shift `s + 364` continues shift `s` backwards without a gap or an overlap, so each
+alignment runs 104 consecutive test weeks and the two years share no day. That is 14
+points and 733 distinct sent days, nearly all of them read under six of the seven
+alignments (the seventh has the day as row 6, which production does not send). The interval verdict counts
+every (alignment, day) once, and splits the days into years by the calendar, not by
+cluster name.
+
+**How far back it reaches.** Shift 370 needs `1088 + 364 + 370 = 1822` rows, and the
+frame cannot start before 2021-10-21; `long/2026-11-13` is the first cache that has
+them. An older cache gets the seven oldest shifts it fits for PREV; that year then
+overlaps NOW, the overlap is counted once, and the run has fewer than 733 days. A
+third year is out of reach until late October 2027: before then its training rows
+would have to start before any carbon price exists.
+
+**Why not more points, or the cluster grid.** The cluster grid (NOW, −6M, FAR; rounds
+24–30) spent 12 points on three alignments per cluster, and its −6M year is half NOW's
+days and half FAR's. Its three "periods" are the same two years the year grid has,
+sampled less completely and voted on as if they were three
+([FINDINGS.md](FINDINGS.md#what-the-rolling-grid-holds-2026-11-14)). More shifts inside
+the same two years add nothing: there is no eighth alignment.
+
 ### Tail-truncated vs sliding windows
 
 `ab.harness.apply_shift` truncates the **tail** only, so a shifted point also
@@ -1036,13 +1218,16 @@ measured on `long/2026-08-06`:
 | −12M | 360, 363, 366, 369 | 2024-07-31 → 2025-08-07 | ~2 % |
 | −21M | 637, 640, 643, 646 | 2023-10-28 → 2024-11-03 | 0 % |
 
-**Points within a cluster overlap 97–100 %.** Their evaluation years differ by
-one to twelve days, so they agree with each other almost by construction —
-sign-consistency *within* a cluster is close to free, and only agreement *across*
-clusters is a finding. That is the whole reason `classify_clustered` gives each
-cluster one unweighted vote instead of counting points. Asserting that the points
-have distinct end dates is still worth doing, but distinctness alone is a weak
-guarantee, not independence.
+**Points within a cluster overlap 97–100 % in days — and still disagree.** Their
+evaluation years differ by one to twelve days, and this page used to conclude that they
+"agree with each other almost by construction". Measured, they do not: a one-column
+arm's four NOW points read +0.79 / +0.56 / −0.28 / +0.67 on `cheap2h`
+([FINDINGS.md](FINDINGS.md#what-the-rolling-grid-holds-2026-11-14)). Points on
+different week alignments are different fits on the same days, so their spread is fit
+and alignment noise, and points one week apart are the same fits and say nothing twice.
+A cluster mean over four such points is a noisy number, which is what
+`classify_clustered` voted on. The [year grid](#the-year-grid-what-the-gate-is-read-on-2026-11-15)
+replaces the vote.
 
 ### The rolling grid in practice (round 25): NOW / −6M / FAR, and what five caches replicate
 
@@ -1073,6 +1258,40 @@ The null arm that prices this grid: identical features, xgboost `random_state` 7
 instead of 42, `min` and `cheap2h`. Its cluster-mean delta against the production seed, per cache: **cheap2h 0.010 – 0.115** (0.04 / 0.03 / 0.01 on the three 1d caches, 0.115 / 0.083 on the two 5d caches), **min 0.008 – 0.029**. So a cheap2h effect below ~0.15 on one cache is indistinguishable from refitting with another seed, and `MIN_CLUSTER_EFFECT = 0.10` sits inside that band; `min` resolves ~0.05. What carries a small verdict is agreement across caches and clusters, never the size of one clmean. (The 5d caches' larger floor is one cache each — read it as "up to ~0.1", not as a property of 5d caches.)
 
 **Re-measured under the coupling hurdle (round 27, `long/2026-10-16`, rolling FAR):** cheap2h NOW +0.16 / −6M +0.09 / FAR +0.15, clmean **+0.13 — and `classify_clustered` calls the reseed REAL**; `min` 0.05 (NOISE); `avg` NOW −0.14, clmean −0.01 (NOISE). That is three times round 25's 0.01–0.04 on the 1d caches; whether the newest window or the model change did it, one cache cannot say. Until a second cache says otherwise, one cache's cheap2h REAL below ~0.15 is not evidence, and neither is an `avg` cluster mean under ~0.15. Replication across caches is what separates them.
+
+### Seeds: how much of the noise is the fit
+
+Measured 2026-11-14 on `long/2026-11-13`, year grid, `cheap2h` / `min`, forecast weather,
+sent rows.
+
+**Two fits of the same model differ a lot, week by week.** Production against itself
+under seed 7: the weekly paired difference has an SD of 1.9 EUR/MWh on `cheap2h` (1.6
+`min`, 1.7 `avg`, 4.3 `max`), as much as a one-column arm's. On one 52-week point most
+of the noise in a small arm's delta is therefore the fit.
+
+**The year grid already averages most of it away.** Every day is predicted by six
+different fits, one per alignment that sends it. A null arm (one column of noise added
+to both trough lists), run with one seed and with three:
+
+| | `cheap2h` delta [95 %] | `min` delta [95 %] | weekly SD of one point, `cheap2h` |
+|---|---|---|---|
+| 1 seed | −0.00 [−0.12, +0.12] | +0.04 [−0.06, +0.14] | 1.44 |
+| 3 seeds | +0.03 [−0.08, +0.12] | +0.05 [−0.03, +0.13] | 0.95 |
+
+Three seeds cut the noise of a single point by a third and narrow the gate's interval
+by about a sixth (±0.12 → ±0.10 on `cheap2h`, ±0.10 → ±0.08 on `min`), for three times
+the run. What is left is the days, and seeds do not add days.
+
+**So:** one seed is the default. `--seeds 3` is worth its cost only where a sixth of the
+interval can decide the item, and that has to be said before the run. It does not turn
+an effect of 0.05 into a verdict. The fits are `seed_list`: production's own seed first
+(left exactly as it is), then fixed others; a custom `fit_fn` is reseeded only if it
+builds its estimators through `se4/model.py` or reads `model.RANDOM_STATE` itself.
+
+**What one seed resolves.** On `cheap2h` a steady effect needs to be larger than about
+0.12–0.15 for its interval to exclude zero on two years (0.10–0.11 on `min` and `avg`,
+0.30 on `max`). An effect that is concentrated in some weeks needs more: the northern
+wind columns' interval is ±0.48.
 
 ### How long a snapshot to fetch, and why a long one is shorter than you asked for
 
@@ -1126,12 +1345,6 @@ carbon prices before 2021-10-18 — is data the source does not have.
 5d-tail caches from before the archive top-up; `long/2026-09-12` is the first 1d
 one. Per the rule above they must not share one measurement grid — that is a real
 incompatibility, unlike the head.
-
-Two points per cluster would be enough for the cluster vote; four in the far
-clusters buys a per-cluster sanity read at negligible extra compute. The
-within-cluster points overlap ~97 %, which is why
-[`classify_clustered`](#which-verdict-function-to-call) gives each *cluster* one
-unweighted vote rather than counting points.
 
 **Especially important for any component that fits something internally** — a
 classifier, cross-validation, an ensemble. Tail truncation starves it: the
@@ -1190,6 +1403,15 @@ Measured at `OMP_NUM_THREADS=4`, one walk-forward (52 windows):
 | `avg` | ~17.0 s | time-decay weights |
 | `cheap2h` | ~17.9 s | ~2.4× `min` — the hurdle's 5-fold `cross_val_predict` |
 
+(These three are from 2026-08, before the coupling hurdle and the forecast scoring.)
+
+**A default run** — the year grid, both arms, every fit scored on archive weather and at
+seven forecast leads — measured 2026-11-14 on `long/2026-11-13`, 16 cores, two runs
+sharing the machine for the first and the last figure, so read those as upper bounds:
+all four targets **26 min** on four workers; `--targets cheap2h` (the `min` / `cheap2h`
+pair) **8 min** on four workers with the machine to itself, 23 min with `--seeds 3`;
+`--targets avg` **6 min** on three.
+
 All targets are fit together in one `run_walk_forward` call, so a point costs
 about the sum, not the max. Rules of thumb from the ledger: the 16-point grid
 with 2 configs is ~10 min on 4 workers; 4 configs ~27 min serial and ~7–10 min on
@@ -1200,28 +1422,25 @@ always been designing the measurement, not running it.
 
 ## Which verdict function to call
 
-| Situation | Function | Notes |
+| Situation | What decides | Where |
 |---|---|---|
-| Addition, shift grid (`ab_test.py run`) | `classify` | REAL / BORDERLINE / NOISE / NO_CHANGE |
-| Removal, shift grid | `classify_ablation` | needs `baseline_mae`; not wired into `run` |
-| Addition, **period-cluster grid** | `classify_clustered` | one vote per period |
-| Removal, **period-cluster grid** | `classify_ablation_clustered` | needs per-point deltas, refuses cluster means |
+| Any change measured now | the day-level interval verdict, read against the row of [the bar](#the-adoption-bar) that fits the change | printed by `ab_test.py run`; `ab.dayverdict.day_verdict` |
+| Reproducing an entry of rounds 24–30 | `classify_clustered` (addition) / `classify_ablation_clustered` (removal) | `ab_test.py run --grid clusters` prints the first; call the second on the per-point deltas |
+| Reproducing an older shift-grid entry | `classify` / `classify_ablation` | `ab_test.py run --shifts 0-5` |
 
-`classify`'s magnitude test is `|mean| >= spread`, and spread is a **range**
-statistic — it grows with the number of measurement points while a real
-standard error shrinks, so the rule gets *stricter* the more you measure
-(measured: P(REAL) 96% at 2 points → 0% at 8, at a constant −0.234 effect). On
-a 16-point grid it calls the cheap2h hurdle NOISE. Use the `_clustered`
-variants whenever the grid has period clusters: they judge sign-consistency
-across NOW / −6M / −12M (…) with one unweighted vote each, since the points
-*within* a cluster overlap ~97% and would otherwise win on count alone.
-`MIN_CLUSTER_EFFECT = 0.10` is **provisional** — the historical ledger cannot
-discriminate 0.10 from 0.20; the only hard constraint is that it must stay
-below ~0.29 so the hurdle keeps passing. Self-check: `python se4/ab/check_verdict.py`.
+Why the sign rules were retired, in the order they failed. `classify` tests
+`|mean| >= spread`, and spread is a **range**: it grows with the number of points while
+a standard error shrinks, so the rule gets *stricter* the more you measure (P(REAL) 96 %
+at 2 points → 0 % at 8, at a constant −0.234 effect). `classify_clustered` fixed that
+with one vote per cluster mean and a floor, `MIN_CLUSTER_EFFECT = 0.10`, that was never
+validated and sits below the seed floor: it calls a reseed REAL at +0.13 on `cheap2h`
+and rejects an arm at −0.268 for one cluster mean of +0.027. Neither rule estimates how
+noisy its own inputs are. Self-check of the old functions: `python se4/ab/check_verdict.py`.
 
-**Always check `corr(delta, min_train)` before reading a cluster table.** A real
-effect should not care about training-set size; if it does, the grid is telling
-you about data volume, not period.
+**`corr(delta, min_train)` is a check for tail-truncated and expanding grids only.** On
+those, a shifted point also trains on less data, and round 12 mistook that for a period
+effect. With the rolling window every point trains on 1088 rows and there is nothing to
+correlate against.
 
 ## Regime structure lives inside a run, not across shifts
 
@@ -1241,6 +1460,9 @@ Single-window deltas are noisy, so trust the correlation across the 52 windows
 and the cross-shift stability of that correlation, never an individual window.
 
 ## Replaying the same windows on an independently fetched snapshot
+
+*Not part of the bar since 2026-11-15, and written for production-shaped snapshots under
+the expanding geometry. Kept for reproducing an old replay.*
 
 `build_training_data` is a *fixed-length* sliding window, so two snapshots
 fetched `N` days apart build to the **same length** and the later one is the

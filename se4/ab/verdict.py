@@ -10,7 +10,8 @@ import pandas as pd
 from se4 import model as model_module
 from se4.features import build_training_data
 from se4.ab.harness import (run_walk_forward, run_walk_forward_errors, summarize_errors, apply_shift,
-                        ARCHIVE, LEADS)
+                        ARCHIVE, LEADS, SeededFit)
+from se4.ab.dayverdict import day_verdict, format_verdict, FORECAST, CONFIDENCE, BLOCK_DAYS
 from se4.ab.variants import BASELINE, CANDIDATE
 
 DEFAULT_TARGET_NAMES = tuple(model_module.TARGETS.keys())
@@ -142,9 +143,13 @@ def classify(deltas: list) -> str:
 # classify() above is correct for that; this module is the deliberate exception.
 # It is NOT wired into run_ab()/ab_test.py run, which always uses classify() --
 # call classify_ablation() yourself on the per-shift deltas when you're
-# specifically testing a removal (see docs/AB_TESTING.md "How changes are validated" for the
-# full rationale and FEATURE_REVALIDATION_PLAN.md / experiments/ for a worked
-# example of the audit this was built for).
+# specifically testing a removal (see docs/AB_TESTING.md "The adoption bar" for the
+# full rationale and docs/DECISIONS.md "Per-target feature lists for min and cheap2h"
+# for the audit this was built for).
+#
+# SUPERSEDED AS THE BAR (2026-11-15): a removal is now judged by the interval verdict's
+# non-inferiority test (ab/dayverdict.py, is_non_inferior). This function is kept to
+# read and reproduce the ledger entries that were decided on it.
 #
 # classify() above answers "should we ADOPT this change?", where NOISE means
 # "unproven -> don't change -> keep the status quo". For an ADDITION that is
@@ -302,8 +307,15 @@ def classify_ablation(deltas: list, baseline_mae: float = None, replay_delta: fl
 # veto a change is a judgement call that has NOT been made. Until it is, check
 # the correlation between per-point delta and min_train before reading any
 # cluster table (round 12's standing instruction).
-MIN_CLUSTER_EFFECT = 0.10  # PROVISIONAL -- see point 1 above; not validated
-MIN_CLUSTERS = 3           # the standard grid: NOW / -6M / -12M
+#
+# SUPERSEDED AS THE BAR (2026-11-15) by the day-level interval verdict (ab/dayverdict.py).
+# Both worries above turned out to be symptoms of one thing: a vote over cluster means
+# carries no estimate of the noise. A reseed reads REAL at +0.13 on cheap2h (round 27),
+# which is above this floor, and the three clusters are two independent years, not three
+# periods (-6M is half of each). The functions stay, to read and reproduce every ledger
+# entry decided on them, and `ab_test.py run --grid clusters` still prints them.
+MIN_CLUSTER_EFFECT = 0.10  # PROVISIONAL -- see point 1 above; below the seed floor (0.13)
+MIN_CLUSTERS = 3           # NOW / -6M / FAR (-12M on the expanding grids before 2026-10)
 
 
 def _cluster_means(cluster_deltas: dict) -> dict:
@@ -477,9 +489,11 @@ def classify_ablation_clustered(cluster_deltas: dict, baseline_mae: float = None
 # never be mistaken for one another:
 #
 #   ARCHIVE   test rows carry ERA5 archive weather -- a forecast with no error. Every
-#             ledger number to date, and the standing gate, is this.
+#             ledger number before 2026-11-15 is this, and it was the gate until then. It is
+#             now the ceiling and the leak check.
 #   FORECAST  test rows carry the forecast issued j+2 days ahead for sent row j (D+2..D+7),
-#             rows 0-5 only: what production pays. Row 6 (D+8) is not sent and is left out.
+#             rows 0-5 only: what production pays, and what the gate is read on. Row 6
+#             (D+8) is not sent and is left out.
 #
 # The FORECAST total covers six rows and the ARCHIVE total seven, so the penalty is taken
 # against archive rows 0-5 ("archive_sent"), never against the seven-row figure.
@@ -489,18 +503,39 @@ _FORECAST_TAG = "FORECAST weather (production-mapped: rows 0-5, row j at lead j+
 _WORKER = {}
 
 
-def _point_errors(data: pd.DataFrame, variant, shift: int, train_window=None, vintage_frames=None) -> dict:
-    """One variant at one shift: the harness's error arrays for every condition."""
+def _point_errors(data: pd.DataFrame, variant, shift: int, train_window=None, vintage_frames=None,
+                  seed=None) -> dict:
+    """One variant at one shift: the harness's error arrays for every condition. `seed`
+    refits under another model.RANDOM_STATE; None is the variant's own fit, untouched."""
     transformed = _apply_variant(apply_shift(data, shift), variant)
     vintage = None
     if vintage_frames:
         vintage = {lead: _apply_variant(apply_shift(frame, shift), variant)
                    for lead, frame in vintage_frames.items()}
+    fit_fn = variant.fit_fn if seed is None else SeededFit(variant.fit_fn, seed)
     return run_walk_forward_errors(
-        transformed, variant.fit_fn, variant.targets,
+        transformed, fit_fn, variant.targets,
         frozen_features=variant.frozen_features, frozen_rolling=variant.frozen_rolling,
         train_window=train_window, vintage_frames=vintage,
     )
+
+
+def seed_list(n_seeds: int) -> list:
+    """The seeds an n-seed run fits: production's own first (None = the untouched fit, so a
+    one-seed run is bit-identical to a run without seeds), then fixed others."""
+    extra = [7, 1234, 2718, 31415, 99, 4242, 60221, 8675309]
+    if not 1 <= n_seeds <= len(extra) + 1:
+        raise ValueError(f"--seeds takes 1..{len(extra) + 1}, got {n_seeds}.")
+    return [None] + extra[:n_seeds - 1]
+
+
+def _mean_errors(per_seed: list) -> dict:
+    """Row-wise mean of several error dicts {condition: {target: array}}: the expected
+    absolute error of ONE fit drawn at random from the seeds, not the error of an ensemble."""
+    if len(per_seed) == 1:
+        return per_seed[0]
+    return {cond: {name: np.mean([e[cond][name] for e in per_seed], axis=0) for name in per_seed[0][cond]}
+            for cond in per_seed[0]}
 
 
 def _init_worker(data, vintage_frames, train_window):
@@ -508,20 +543,20 @@ def _init_worker(data, vintage_frames, train_window):
 
 
 def _worker_job(job):
-    which, variant, shift = job
+    which, variant, shift, seed = job
     return which, shift, _point_errors(_WORKER["data"][which], variant, shift,
                                        train_window=_WORKER["train_window"],
-                                       vintage_frames=_WORKER["vintage_frames"][which])
+                                       vintage_frames=_WORKER["vintage_frames"][which], seed=seed)
 
 
 def _compute_points(data, jobs, train_window, vintage_frames, workers):
     """Yield (which, shift, errors) in job order, in-process or on a pool. `data` and
     `vintage_frames` are keyed by arm ("base" / "cand"): each arm is scored on its own
-    build_fn's frames."""
+    build_fn's frames. A job is (which, variant, shift, seed)."""
     if workers <= 1:
-        for which, variant, shift in jobs:
+        for which, variant, shift, seed in jobs:
             yield which, shift, _point_errors(data[which], variant, shift, train_window=train_window,
-                                              vintage_frames=vintage_frames[which])
+                                              vintage_frames=vintage_frames[which], seed=seed)
         return
     # Process workers pickle the variants: module-level functions only, no lambdas. Pin
     # OMP_NUM_THREADS before launching -- XGBoost is not bit-identical across thread counts.
@@ -603,16 +638,17 @@ def _print_lead_tables(clusters, summ, target_names):
 
 def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
            train_window=None, clusters: dict = None, vintage=None, vintage_root=None,
-           workers: int = 1, save=None) -> dict:
+           workers: int = 1, save=None, seeds: int = 1, since=None, legacy_rules: bool = True) -> dict:
     """
     Build training data once from a snapshot, then run BASELINE and
-    CANDIDATE through the walk-forward at each shift, printing a verdict
-    table classified per the replication rule above.
+    CANDIDATE through the walk-forward at each shift, and print the day-level
+    interval verdict (ab/dayverdict.py) -- the gate -- per target.
 
     With forecast vintages (`vintage` or `vintage_root`) every fit is also scored
     on forecast-vintage weather and the report carries BOTH numbers, labelled
-    ARCHIVE and FORECAST, per shift, per cluster and by lead. The ARCHIVE
-    numbers and verdict are exactly what a run without vintages prints.
+    ARCHIVE and FORECAST, per shift, per cluster and by lead. The gate is read on
+    FORECAST weather when the run has it, on ARCHIVE weather otherwise, and always
+    on the six rows production sends.
 
     Args:
         inputs:       fetch_training_inputs()-shaped dict (from a snapshot).
@@ -634,13 +670,27 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
         workers:      Processes for the (variant, shift) jobs (default 1). Pin
                       OMP_NUM_THREADS yourself; variants must pickle.
         save:         Optional path: pickle every point's error arrays there
-                      ({"clusters", "points": {(variant, shift): errors}}) for analysis.
+                      ({"clusters", "points": {(variant, shift): errors}, "dates"}) for
+                      analysis. With several seeds the arrays are the mean over seeds.
+        seeds:        How many seeds each point is fitted under (seed_list). Every error
+                      is the mean over the seeds, so the delta loses the part of its
+                      noise that comes from the fit. 1 = production's seed only,
+                      bit-identical to a run before seeds existed.
+        since:        Keep only test days on or after this date in the day-level verdict
+                      (the forward confirmation of a change adopted then).
+        legacy_rules: Also print the per-shift `classify` table and, with three
+                      clusters, the cluster rule -- what ledger entries before
+                      2026-11-15 were decided on. ab_test.py turns it off on the
+                      year grid, where 14 shifts make `classify` meaningless.
 
     Returns:
         {target_name: {"deltas": [...], "mean_delta": float, "spread": float,
-                        "verdict": str}}   -- ARCHIVE weather, one delta per shift.
-        With vintages each entry also has "forecast": the same keys for the
-        production-mapped forecast numbers, plus "penalty_base" / "penalty_cand".
+                        "verdict": str, "gate": DayVerdict}}
+        "deltas" etc. are ARCHIVE weather, all seven rows, one per shift, and
+        "verdict" is the legacy `classify` label. "gate" is the interval verdict
+        on the gate condition; with vintages "archive_sent" holds the same for
+        archive weather on the sent rows, and "forecast" the legacy keys for the
+        production-mapped forecast numbers plus "penalty_base" / "penalty_cand".
     """
     arms = {"base": restrict_targets(BASELINE, target_names),
             "cand": restrict_targets(CANDIDATE, target_names)}
@@ -697,10 +747,19 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
         print("Reporting ARCHIVE weather only (no forecast-vintage scoring: every weather input is a "
               "perfect forecast, so a weather-derived candidate is optimistic by the forecast error).\n")
 
-    jobs = [(which, arms[which], shift) for shift in shifts for which in ("base", "cand")]
+    fit_seeds = seed_list(seeds)
+    if len(fit_seeds) > 1:
+        print(f"Every point is fitted under {len(fit_seeds)} seeds (production's and "
+              f"{fit_seeds[1:]}); errors are the mean over seeds.\n")
+    jobs = [(which, arms[which], shift, seed)
+            for shift in shifts for which in ("base", "cand") for seed in fit_seeds]
     errors, summ = {}, {}
-    pending = {}
+    pending, per_seed = {}, {}
     for which, shift, err in _compute_points(frames, jobs, train_window, vintage_frames, workers):
+        per_seed.setdefault((shift, which), []).append(err)
+        if len(per_seed[(shift, which)]) < len(fit_seeds):
+            continue
+        err = _mean_errors(per_seed.pop((shift, which)))
         errors[(shift, which)] = err
         summ[(shift, which)] = {name: summarize_errors(err, name) for name in err[ARCHIVE]}
         pending.setdefault(shift, set()).add(which)
@@ -712,14 +771,18 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
     if save:
         import pickle
         with open(save, "wb") as f:
-            pickle.dump({"clusters": clusters, "points": errors, "vintage_points": vintage.points if vintage else None}, f)
+            pickle.dump({"clusters": clusters, "points": errors, "dates": list(data["date"]),
+                         "seeds": fit_seeds,
+                         "vintage_points": vintage.points if vintage else None}, f)
         print(f"\nSaved per-row error arrays to {save}")
 
-    def verdict_table(title, key):
-        print(f"\n=== {title} ===")
+    report_order = [n for n in _REPORT_ORDER if n in target_names] + \
+                   [n for n in target_names if n not in _REPORT_ORDER]
+
+    def verdict_table(title, key, show=True):
+        say = print if show else (lambda *args: None)
+        say(f"\n=== {title} ===")
         out = {}
-        report_order = [n for n in _REPORT_ORDER if n in target_names] + \
-                       [n for n in target_names if n not in _REPORT_ORDER]
         for name in report_order:
             deltas = [summ[(s, "cand")][name][key] - summ[(s, "base")][name][key] for s in shifts]
             verdict = classify(deltas)
@@ -734,24 +797,71 @@ def run_ab(inputs: dict, shifts: list, target_names=DEFAULT_TARGET_NAMES,
                 out[name].update(penalty_base=pb, penalty_cand=pc)
                 extra = f"   (pays over archive rows 0-5: base {pb:+.2f}, cand {pc:+.2f})"
             line = f"  {name:<8} mean_delta={mean_delta:+.3f}  spread={spread:.3f}  -> {verdict}{marker}{extra}"
-            print(line)
+            say(line)
             if len(clusters) >= MIN_CLUSTERS:
                 cl = {c: [summ[(s, "cand")][name][key] - summ[(s, "base")][name][key] for s in ss]
                       for c, ss in clusters.items()}
                 means = " ".join(f"{c} {np.mean(v):+.3f}" for c, v in cl.items())
-                print(f"           clusters: {means} -> {classify_clustered(cl)} (cluster rule)")
+                say(f"           clusters: {means} -> {classify_clustered(cl)} (cluster rule)")
         return out
 
-    results = verdict_table(f"Verdict on {_ARCHIVE_TAG} -- the standing gate (priority: cheap2h, then min)"
-                            if with_vintage else "Verdict (priority: cheap2h, then min)", "archive")
+    def gate_table(title, condition, key):
+        print(f"\n=== {title} ===")
+        for name in report_order:
+            v = day_verdict(data["date"], errors, shifts, name, condition, since=since)
+            results[name][key] = v
+            for line in format_verdict(v, " <-- priority" if name in PRIORITY_TARGETS else ""):
+                print(line)
+
+    if legacy_rules:
+        print("\n(The shift rule below is what ledger entries before 2026-11-15 were decided on. "
+              "It is not the gate.)")
+    results = verdict_table(f"Legacy shift rule on {_ARCHIVE_TAG}, all 7 rows", "archive", show=legacy_rules)
     if with_vintage:
-        forecast = verdict_table(f"Same fits on {_FORECAST_TAG} -- what production pays", "forecast")
+        forecast = verdict_table(f"Legacy shift rule on {_FORECAST_TAG}", "forecast", show=legacy_rules)
         for name, entry in forecast.items():
             results[name]["forecast"] = entry
         _print_cluster_tables(clusters, summ, [n for n in results])
         _print_lead_tables(clusters, summ, [n for n in results])
 
+    interval = (f"{CONFIDENCE:.0%} interval, block bootstrap over {BLOCK_DAYS}-day calendar blocks; "
+                f"delta = cand - base, negative = cand better; priority: cheap2h, then min")
+    if with_vintage:
+        gate_table(f"Ceiling and leak check: ARCHIVE weather, sent rows 0-5 ({interval})",
+                   ARCHIVE, "archive_sent")
+        gate_table(f"THE GATE: FORECAST weather, sent rows 0-5 = D+2..D+7 ({interval})",
+                   FORECAST, "gate")
+    else:
+        gate_table(f"THE GATE on ARCHIVE weather, sent rows 0-5 -- no forecast vintages in this run, "
+                   f"so a weather-derived candidate reads optimistic ({interval})", ARCHIVE, "gate")
+    print("\n    Addition: adopt on REAL.  Removal or simplification: adopt when the removal/fix bar says PASS.")
+    print("    Correctness fix: ship unless HARMFUL.  See docs/AB_TESTING.md, \"The adoption bar\".")
+
     return results
+
+
+def year_grid(n_rows: int, train_window: int) -> dict:
+    """
+    The gate's grid since 2026-11-15: every week alignment over two years.
+
+    NOW is shifts 0..6: one walk-forward year per weekday a test week can start on. PREV
+    is the same seven alignments one evaluation year (364 rows) earlier, shifts 364..370,
+    so each alignment's 104 test weeks are consecutive and the two years share no day.
+    A frame too short for shift 370 (fewer than train_window + 734 rows) gets the seven
+    oldest shifts it fits instead; PREV then overlaps NOW, which costs nothing but days,
+    because ab.dayverdict counts every (alignment, day) once. A frame with no room for a
+    second year at all returns NOW alone, and the verdict says it is not a gate.
+    """
+    far = n_rows - train_window - 364
+    if far < 6:
+        raise ValueError(f"a {n_rows}-row frame is too short for seven week alignments at a "
+                         f"{train_window}-row training window (largest shift {far}); use --shifts")
+    grid = {"NOW": list(range(7))}
+    if far >= 370:
+        grid["PREV"] = list(range(364, 371))
+    elif far >= 13:
+        grid["PREV"] = list(range(far - 6, far + 1))
+    return grid
 
 
 def default_clusters(n_rows: int, train_window: int) -> dict:

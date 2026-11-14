@@ -55,6 +55,30 @@ FIRST_SENT_LEAD = 2
 SENT_ROWS = 6
 
 
+class SeededFit:
+    """
+    A variant's fit_fn run under another model.RANDOM_STATE, restored afterwards.
+
+    A class, not a closure, so process workers can pickle it. It reseeds whatever reads
+    model.RANDOM_STATE when called (every factory in se4/model.py); a custom fit_fn that
+    builds its own estimators with a literal seed is not reseeded and must read the
+    constant too.
+    """
+
+    def __init__(self, fit_fn, seed: int):
+        self.fit_fn = fit_fn
+        self.seed = seed
+
+    def __call__(self, train_slice, targets=None):
+        from se4 import model
+        previous = model.RANDOM_STATE
+        model.RANDOM_STATE = self.seed
+        try:
+            return self.fit_fn(train_slice, targets=targets)
+        finally:
+            model.RANDOM_STATE = previous
+
+
 def parse_shift_range(spec: str) -> list:
     """
     Parse a shift spec into a sorted list of non-negative ints.

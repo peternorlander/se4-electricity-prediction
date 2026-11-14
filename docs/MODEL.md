@@ -243,7 +243,32 @@ Production does not run this eval (since 2026-10-24); a result taken from whatev
 window a given day ends on moves with the evaluation period and cannot be reproduced
 or compared later ([AB_TESTING.md](AB_TESTING.md#how-changes-are-validated)).
 
-Current, measured on the **2026-08-21** data snapshot with the production code as
+**Current, measured 2026-11-14** on `long/2026-11-13` with the production model of
+commit `28035f5` (`avg` with the time index; the coupling hurdle, coherence and northern
+wind on `min` / `cheap2h`): the A/B harness's baseline arm on the
+[year grid](AB_TESTING.md#the-year-grid-what-the-gate-is-read-on-2026-11-15), every test
+week trained on production's 1088 rows, seed 42, Windows, `OMP_NUM_THREADS=4`. MAE in
+EUR/MWh, per evaluation year, because the two years differ by more than any change ever
+adopted:
+
+| Target | FORECAST weather, the six sent days: 2025-11 → 2026-11 | 2024-11 → 2025-11 | ARCHIVE weather, all seven rows: 2025-11 → 2026-11 | 2024-11 → 2025-11 |
+|---|---|---|---|---|
+| min | 19.36 | 13.05 | 16.59 | 11.97 |
+| avg | 23.87 | 19.13 | 21.24 | 16.64 |
+| max | 42.35 | 43.32 | 39.38 | 40.55 |
+| cheap2h | **19.57** | **13.92** | 16.54 | 12.73 |
+
+The FORECAST columns are the closest a backtest comes to what Home Assistant receives:
+the weather forecast as it was issued, on the days that are sent. The ARCHIVE columns
+are the same fits on a perfect forecast, and are what the older table below measured.
+On `cheap2h` the forecast costs 3.3 EUR/MWh in the newest year and 1.2 in the year
+before. This table is not comparable with the one below: another period, another
+training geometry (rolling 1088 rows against expanding), and the Windows fit, which
+differs from the Linux runner's like a reseed
+([FINDINGS.md](FINDINGS.md#windows-and-linux-fit-different-models-from-the-same-data-round-31)).
+The `gap0` optimism described further down applies to it as well.
+
+**Earlier table**, measured on the **2026-08-21** data snapshot with the production code as
 it stood then (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
 trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06; `avg`
 on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21). **The table predates the northern
@@ -336,14 +361,18 @@ So "min improved by 0.41" understates a −1.01 change that happened to face a
 period headwind. Cross-run comparison cannot separate the two.
 
 The honest measure of any change is its **drift-free A/B delta** — same data, same
-slices, one thing varied. Those are the numbers to trust:
+slices, one thing varied. Those are the numbers to trust. Every row below was decided
+before 2026-11-15, on archive weather and by the sign rules of the time
+([what a date stands for](AB_TESTING.md#model-epochs-what-a-verdict-was-measured-on));
+"measurements" are grid points that share most of their test days, not independent
+replications:
 
 | Change | A/B delta | Replication |
 |--------|-----------|-------------|
 | `min` pruned feature list | **−0.64 EUR/MWh** | 16 measurements, **4 evaluation periods**, all negative. (The originally recorded −1.01 came from 14 measurements taken partly on the list's own selection windows; this is the confound-free re-measurement.) |
 | `min` drops `price_se4_max_lag1` | **−0.55 EUR/MWh** | 16 measurements, **4 evaluation periods**, all negative; per-window std also −1.07. Corroborated at −0.24 (7 of 8) on a second data vintage |
 | `cheap2h` pruned feature list | **−0.86 EUR/MWh** | 16 measurements, **3 evaluation periods**, all negative (after 17/17 in an earlier round) |
-| Negative-price hurdle (cheap2h) | **−0.44 EUR/MWh** | 6 measurements, 1 snapshot, all negative |
+| Negative-price hurdle (cheap2h) | **−0.25 EUR/MWh** on the pruned list (round 15b, 2026-08-06) | removal costs +0.250, positive in all four period clusters. The originally recorded −0.44 (6 shifts, 1 snapshot) was measured on the 51-column list ([DECISIONS.md](DECISIONS.md#negative-price-hurdle-on-cheap2h)) |
 | `avg` time index (`t_index`) with half-life 365 | **−0.39 EUR/MWh** (clmean; −0.51 on forecast weather) | 72 measurements (71 favourable), six caches REAL, replicated on a seventh cache fetched four weeks later ([DECISIONS.md](DECISIONS.md#time-index-for-avg-round-30)) |
 | `avg` drops the 9-column price/market family | **−1.2 to −1.97 EUR/MWh** (clmean) | 32 measurements, **4 evaluation periods**, on **two independently-fetched 5-year snapshots** 15 days apart — all 4 clusters negative both times. Magnitude is regime-dependent (see [Per-Target Feature Sets](#per-target-feature-sets)), so read this as a range, not a point estimate |
 
