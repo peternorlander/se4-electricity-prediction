@@ -28,8 +28,8 @@ Feature engineering (se4/features.py)
 Model training (se4/model.py)
     → 4 separate XGBoost regressors: price_min, price_avg, price_max, price_cheap2h
     → per-target feature sets: `max` uses all 51, `avg` runs a validated
-      44-column list (AVG_FEATURE_COLUMNS: a 42-column subset + 2 northern-wind
-      columns), and the two trough targets (cheap2h, min) run validated pruned
+      45-column list (AVG_FEATURE_COLUMNS: a 42-column subset + 2 northern-wind
+      columns + the time index t_index, trained with a 365-day sample half-life), and the two trough targets (cheap2h, min) run validated pruned
       lists of 17 / 16 columns (TROUGH_FEATURE_COLUMNS, MIN_FEATURE_COLUMNS)
     → min and cheap2h get a coupling hurdle: a linear logistic P(the trough
       prices at continental level), from weather + Nordic reservoirs, feeds both

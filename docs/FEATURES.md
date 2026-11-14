@@ -33,7 +33,7 @@ feature** — see [Per-Target Feature Sets](MODEL.md#per-target-feature-sets):
 | Model | Features used |
 |-------|---------------|
 | max | all 51 |
-| **avg** | **a validated 44-feature list** (`AVG_FEATURE_COLUMNS`) — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns |
+| **avg** | **a validated 45-feature list** (`AVG_FEATURE_COLUMNS`) — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns and `t_index` |
 | **cheap2h** | **a validated 17-feature list** (`TROUGH_FEATURE_COLUMNS`: 15 of the 51 + the two northern-wind columns), plus `neg_price_proba` at fit/serve |
 | **min** | **the same list minus `price_se4_max_lag1`** (`MIN_FEATURE_COLUMNS`, 16) |
 
@@ -149,6 +149,7 @@ Two columns computed in `aggregate_intraday_features` from the three northern po
 ### Calendar
 - `is_workday` — 1 for normal workdays, 0 for weekends, Swedish public holidays, and bridge days (Friday after Ascension). Demand drops 20–40% on non-workdays. (**3rd–5th most important feature**)
 - `month_sin/cos`, `day_of_year_sin/cos`, `dow_sin/cos` — cyclic encoding to avoid ordinal discontinuities
+- `t_index` — years since 2021-10-21 (`(date − epoch).days / 365`), a straight line through the calendar. Read by `avg` only (it hurts `min` and `cheap2h`, and `max` does not use it). A function of the date alone, so every forecast day has it and it is never frozen; the epoch is a fixed constant (`features.TIME_INDEX_EPOCH`). [Time index for `avg`](DECISIONS.md#time-index-for-avg-round-30)
 
 ### Forecast Uncertainty Proxies
 - `wind_variability`, `radiation_variability` — rolling 7-day std of weather variables. High variability = less reliable forecasts = higher price spike risk

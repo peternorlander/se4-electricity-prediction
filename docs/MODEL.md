@@ -62,7 +62,7 @@ is therefore deliberately heterogeneous.
 | Model | Feature list | Count |
 |-------|--------------|-------|
 | `max` | `FEATURE_COLUMNS` | 51 |
-| `avg` | `AVG_FEATURE_COLUMNS` — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns | **44** |
+| `avg` | `AVG_FEATURE_COLUMNS` — `FEATURE_COLUMNS` minus the 9-column price/market lag family, plus the two northern-wind columns and the time index `t_index` (last); sample half-life 365 days | **45** |
 | `cheap2h` | `TROUGH_FEATURE_COLUMNS` — plus `p_couple` from the coupling hurdle and `neg_price_proba` from the negative-price hurdle, both appended at fit/serve time | **17** (+2) |
 | `min` | `MIN_FEATURE_COLUMNS` — the same list minus `price_se4_max_lag1`, plus `p_couple` | **16** (+1) |
 
@@ -125,7 +125,8 @@ re-open without a mechanism that is not about staleness.**
 program, `min` adopting its prune first, `cheap2h` borrowing that list and
 winning on it out-of-sample, and the audit that closed both directions — is
 recorded in [DECISIONS.md](DECISIONS.md#per-target-feature-lists-for-min-and-cheap2h).
-`avg`'s 42-column base list (44 with the northern columns) comes from a separate block-level re-audit, recorded in
+`avg`'s 42-column base list (44 with the northern columns, 45 with the time index of 2026-11-14,
+[DECISIONS.md](DECISIONS.md#time-index-for-avg-round-30)) comes from a separate block-level re-audit, recorded in
 [DECISIONS.md](DECISIONS.md#avg-drops-the-pricemarket-lag-family-round-14b).
 
 **Coherence (2026-10-12).** `min` and `cheap2h` are still independent models, and their
@@ -246,7 +247,7 @@ Current, measured on the **2026-08-21** data snapshot with the production code a
 it stood then (negative-price hurdle on cheap2h; `cheap2h` on the pruned 15-feature
 trough list, `min` on the 14-column `MIN_FEATURE_COLUMNS` since 2026-08-06; `avg`
 on the 42-column `AVG_FEATURE_COLUMNS` since 2026-08-21). **The table predates the northern
-wind points (2026-10-12, +2 columns on each) and has not been re-measured**; their A/B
+wind points (2026-10-12, +2 columns on each) or the `avg` time index and half-life 365 (2026-11-14) and has not been re-measured**; their A/B
 evidence is in [DECISIONS.md](DECISIONS.md#northern-wind-points-round-25):
 
 | Target  | MAE (EUR/MWh) | Std |
@@ -343,6 +344,7 @@ slices, one thing varied. Those are the numbers to trust:
 | `min` drops `price_se4_max_lag1` | **−0.55 EUR/MWh** | 16 measurements, **4 evaluation periods**, all negative; per-window std also −1.07. Corroborated at −0.24 (7 of 8) on a second data vintage |
 | `cheap2h` pruned feature list | **−0.86 EUR/MWh** | 16 measurements, **3 evaluation periods**, all negative (after 17/17 in an earlier round) |
 | Negative-price hurdle (cheap2h) | **−0.44 EUR/MWh** | 6 measurements, 1 snapshot, all negative |
+| `avg` time index (`t_index`) with half-life 365 | **−0.39 EUR/MWh** (clmean; −0.51 on forecast weather) | 72 measurements (71 favourable), six caches REAL, replicated on a seventh cache fetched four weeks later ([DECISIONS.md](DECISIONS.md#time-index-for-avg-round-30)) |
 | `avg` drops the 9-column price/market family | **−1.2 to −1.97 EUR/MWh** (clmean) | 32 measurements, **4 evaluation periods**, on **two independently-fetched 5-year snapshots** 15 days apart — all 4 clusters negative both times. Magnitude is regime-dependent (see [Per-Target Feature Sets](#per-target-feature-sets)), so read this as a range, not a point estimate |
 
 See [How changes are validated](AB_TESTING.md#how-changes-are-validated) for why this project

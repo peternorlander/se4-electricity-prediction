@@ -18,6 +18,7 @@ whether the number was ever achievable in production
 
 | Change | Adopted | A/B delta (EUR/MWh) |
 |---|---|---|
+| [Time index for `avg`](#time-index-for-avg-round-30) | 2026-11-14 | `avg` −0.39 clmean (`t_index` + half-life 365 against production's 500; REAL on 6/6 caches, 71 of 72 points), −0.51 on forecast-vintage weather; replicated on a seventh cache fetched four weeks later (NOW −0.80 / −0.45 / −0.27); the 2026-08-17 break weeks −0.63, not worse |
 | [Source cache](#source-cache) | 2026-11-08 | no model change — production keeps its historical fetches between runs and asks each source only for what is new; a failed Yahoo / Open-Meteo / reservoir tail serves a recent-enough cache instead of failing the run; every external-API failure now logs what the API said |
 | [Engineering hygiene](#engineering-hygiene-round-31) | 2026-10-31 | no model change — tests before every production run, a data check that fails the run on broken inputs, a run-status sensor, pinned dependencies; A/B harness: `build_fn` hook and `--targets` (bit-identical on all six caches), and `ab_test.py band` now applies the candidate's `transform` |
 | [Walk-forward out of the production run](#walk-forward-out-of-the-production-run) | 2026-10-24 | pipeline cleanup, no A/B — predictions, band and feature importance unchanged; the `mae_*` / `mae_by_horizon` attributes are no longer sent |
@@ -43,6 +44,82 @@ whether the number was ever achievable in production
 
 The same deltas, with their replication counts, are tabulated in
 [MODEL.md](MODEL.md#current-mae-baseline).
+
+## Time index for `avg` (round 30)
+
+Adopted 2026-11-14 as `t_index` in `features.add_time_features`, last in
+`AVG_FEATURE_COLUMNS` (45 columns), with `HALF_LIFE_DAYS["avg"]` 500 → 365. Replay scripts
+under `experiments/run_round30*` (not committed); the numbers below are the record.
+
+**The change.** `t_index` = days since 2021-10-21 divided by 365, a straight line through
+the calendar. `avg` is the one target that wants recency: its half-life weights already pull
+the fit toward the newest rows, and the index lets the trees give the newest regime a leaf of
+its own, which every forecast row then lands in. Found as a control in round 28 (a bare index
+on the 500-day weights, −0.28 on six caches); this round asked whether it is a new lever or a
+cheaper way to get recency, and replicated it on a cache with new weeks.
+
+**Horizon-honest by construction.** The column is a function of the date alone: known for
+every forecast day, identical on archive and forecast-vintage frames, never frozen, never a
+weather value, so neither the forecast-vintage trap nor the serve-time condition applies.
+`min` and `cheap2h` do not read it (REAL-harmful there, [REJECTED.md](REJECTED.md)), and `max`
+is untouched.
+
+**Measurement.** Walk-forward, rolling 1088-row fits, NOW / −6M / FAR × 4 points on the six
+long caches (2026-08-06 … 2026-10-16, FAR borrowed from 2026-10-10 on four of them) and, as
+the replication the plan required, on `long/2026-11-13` with its own 12-point grid.
+`classify_clustered`; every fit scored on archive weather (the gate) and on forecast
+vintages at production's lead map. Delta = arm − production `avg`; the null is the same
+model with `random_state` 7.
+
+| Arm | six-cache mean (archive) | favourable caches | forecast vintages |
+|---|---|---|---|
+| `TI` (index, half-life 500) | −0.28 | 6 / 6 | −0.39 |
+| `TI365` (index, half-life 365) | **−0.39** | 6 / 6, 71 of 72 points | −0.51 |
+| half-life 250, no index | +0.15 | 0 / 6 | +0.13 |
+| half-life 365, no index | −0.03 | 0 / 6 | −0.02 |
+| step per calendar year, half-life 500 | −0.02 | 0 / 6 | −0.06 |
+| seed 7 (null) | −0.05 | 0 / 6 | −0.16 |
+
+- **It is not a cheaper way to get recency.** The index on top of half-life 250 / 365 is
+  −0.40 / −0.36, REAL on all six caches, and a shorter half-life alone does not reproduce it
+  (+0.15 / −0.03). Against whole years the straight line wins by 0.26, so it is the slope
+  that carries it, not the levels.
+- **The pick between `TI` and `TI365` was fixed before the run** (simplest eligible arm,
+  a more complex one only if it is lower by more than the 0.10 noise floor of `avg`).
+  `TI365` cleared that by 0.009, so read the two as one family: both were eligible, both
+  replicate.
+- **The regime break.** The four weeks from 2026-08-17, scored apart on the three caches
+  whose NOW window covers them: `TI` −0.77, `TI365` −0.63 (per cache −0.09 / −0.59 / −1.21).
+  Not worse than production anywhere.
+- **Replication, `long/2026-11-13`** (four weeks after the primary): `TI365` NOW / −6M / FAR
+  −0.80 / −0.45 / −0.27, REAL, forecast-vintage NOW −0.72; `TI` −0.57 / −0.51 / −0.23,
+  forecast NOW −0.63; the null −0.13 / −0.05 / −0.07. Only the five test weeks after
+  2026-10-08 are new to it (the rest of its NOW window overlaps the old caches): `TI365`
+  −3.1 on archive and −1.5 on forecast weather over those five weeks, `TI` −1.2 / −0.6. Five
+  weeks are thin, so this supports the result and is not a second proof.
+- **The null is not zero on forecast weather** (−0.16, REAL on five caches): the forecast
+  deltas share a floor of about that size, so the forecast column is read as direction, and
+  the archive column (null −0.05) is the gate.
+- **`max` with the index**, reported only: six-cache mean +0.01, REAL-harmful on one of six.
+  It is not applied.
+- **The band** reads `min` / `cheap2h`, which are unchanged, so `ab_test.py band` was not run.
+
+**Integration check** (`train` → `train_band` → `predict(band=)` → `get_feature_importance`,
+on `long/2026-11-13`): production's frame carries `t_index` and equals the experiment frame
+to the last digit; the production `avg` fit reproduces the stored `TI365` arm per window
+(52 windows, max |diff| 0.0); 1088 training rows, importance sizes min 17 / avg 45 /
+cheap2h 19, `t_index` carries 0.276 of `avg`'s importance; the live forecast path gives
+finite columns, `t_index` rising 1/365 per day, band ordered, risk in [0, 1]. On the same
+rows the old configuration predicted `avg` 158 … 284 EUR/MWh over the nine days and the new
+one 212 … 286, against a realised 200 … 400 over the last 14 days.
+
+**Standing hazard, and what to watch.** A tree cannot extrapolate along the index: through a
+regime break the model keeps predicting the newest leaf, and `t_index` has a high weight in
+`avg`. The break weeks above are the one test of that, and it went the right way. The
+prediction log ([plan 2.2](../IMPROVEMENT_PLAN.md#22-production-prediction-log-and-realised-scorecard))
+is the first honest read of `avg` since the change (`git_sha` groups the rows); if served
+`avg` misses by clearly more than the backtest suggests on a week that moves regime, the first
+suspect is this column.
 
 ## Source cache
 

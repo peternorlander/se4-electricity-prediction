@@ -751,7 +751,7 @@ Follow this whenever testing a feature or model change from the improvement plan
    - `fit_fn(train_slice) -> models` — override to change training (objective, sample
      weights, hyperparameters). Default: `model._fit_models` (production).
      **Gotcha: `avg` is the one target with time-decay weighting**
-     (`HALF_LIFE_DAYS["avg"] = 500`), looked up **by target name** inside
+     (`HALF_LIFE_DAYS["avg"] = 365`), looked up **by target name** inside
      `_fit_models`. A variant that renames the target key silently drops the
      weighting and measures a model production does not run. Assert the key at
      startup.

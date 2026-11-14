@@ -430,7 +430,7 @@ weight vector per run, because the state is frozen across the six days.
 
 **What to build.** A snapshot longer than five years (the rolling grid leaves the oldest
 cluster no older pool otherwise), the weight function, `sample_weight` through the existing
-`HALF_LIFE_DAYS` path. Score the August break weeks apart, as 2.19 Time index for `avg` does.
+`HALF_LIFE_DAYS` path. Score the August break weeks apart, as the time-index round (DECISIONS.md "Time index for avg") did.
 
 **Bar (suggested).** `classify_clustered` on `cheap2h`, not REAL-harmful on `min`, the
 calm-week MAE before 2026-08-17 not worse, and the band without a breach.
@@ -502,8 +502,8 @@ why the mechanism is different.
 
 ## 8. Order of work against the open plan
 
-- Nothing here is wired in before the November run (2.19 Time index for `avg`, 2.20 Nuclear
-  column as production sees it, 2.18 A near-horizon model; from 2026-11-13) has its verdicts:
+- Nothing here is wired in before the November run (2.20 Nuclear
+  column as production sees it, 2.18 A near-horizon model; the cache exists since 2026-11-13) has its verdicts:
   a change on main makes a waiting result stale.
 - **NI-1 and NI-2 are band-only.** They do not move a point prediction, so they do not restart
   the 2.3b Three-model weather blend shadow, whose bar is on `cheap2h` and `min`. They do

@@ -212,7 +212,15 @@ AVG_FEATURE_COLUMNS = [c for c in FEATURE_COLUMNS if c not in {
     "price_se4_avg_lag1", "price_se4_avg_lag2", "price_se4_avg_lag7",
     "price_se4_min_lag1", "price_se4_max_lag1",
     "price_momentum", "price_volatility_7d",
-}] + NORTH_WIND_COLUMNS     # appended last, as measured (see NORTH_WIND_COLUMNS)
+}] + NORTH_WIND_COLUMNS + ["t_index"]    # both appended last, in the measured order
+
+# Time index (round 30, plan 2.19, adopted 2026-11-14; docs/DECISIONS.md "Time index for
+# avg"): years since this date, a straight line through the calendar. The epoch is arbitrary
+# (the first date of the 2021-10-21 snapshots) but FIXED: a tree splits on its value, so
+# moving it would not change a fit within one window, yet it must be one constant in
+# training, serving and the A/B harness. `avg` only -- on `min` and `cheap2h` the same
+# column is REAL-harmful (docs/REJECTED.md), and `max` was not helped.
+TIME_INDEX_EPOCH = pd.Timestamp("2021-10-21")
 
 
 # Features that build_forecast_features() holds constant across the entire
@@ -410,6 +418,10 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     df["day_of_year_cos"] = np.cos(2 * np.pi * day_of_year / 365)
     df["dow_sin"] = np.sin(2 * np.pi * dow / 7)
     df["dow_cos"] = np.cos(2 * np.pi * dow / 7)
+
+    # A pure function of the date, so every forecast day has it and it is never frozen.
+    # Read by `avg` only (AVG_FEATURE_COLUMNS); see TIME_INDEX_EPOCH.
+    df["t_index"] = (df["date"] - TIME_INDEX_EPOCH).dt.days.to_numpy() / 365.0
 
     return df
 

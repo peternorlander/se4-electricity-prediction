@@ -22,7 +22,13 @@ from se4.features import FEATURE_COLUMNS, TROUGH_FEATURE_COLUMNS, MIN_FEATURE_CO
 # model is independent (own regressor, own fit), so weighting it does not touch the
 # other targets' predictions. Do NOT "tidy" this into a single scalar. See the
 # docs/REJECTED.md (time-decay sample weights row).
-HALF_LIFE_DAYS = {"min": None, "avg": 500, "max": None, "cheap2h": None}
+#
+# `avg`'s half-life is 365 since 2026-11-14 (round 30, plan 2.19), measured WITH the
+# `t_index` column in its feature list: the pair beat the old 500 by -0.39 EUR/MWh over six
+# caches and replicated on a seventh. Neither half of the pair stands alone: 365 without the
+# index is NOISE (-0.03), and the index at 500 is the smaller win (-0.28). Do not change one
+# without the other. docs/DECISIONS.md "Time index for avg".
+HALF_LIFE_DAYS = {"min": None, "avg": 365, "max": None, "cheap2h": None}
 
 
 # Coupling hurdle (round 24, adopted 2026-10-16). SE4's trough is bimodal on
