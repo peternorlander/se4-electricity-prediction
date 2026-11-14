@@ -35,7 +35,7 @@ is explicitly not a priority.**
   one, that's the answer.
 - Screen on one period cluster, confirm on the others, and pre-register the
   confirmation bar before looking at the screen.
-- Measure on a long snapshot (`ab_test.py fetch --days 1825`) on the rolling grid —
+- Measure on a long snapshot (`ab_test.py fetch`) on the rolling grid —
   NOW / −6M / FAR today, see
   [Measurement grids](docs/AB_TESTING.md#measurement-grids-training-geometry-and-period-clusters-read-before-designing-a-run)
   — and judge with `classify_clustered` / `classify_ablation_clustered`, not the plain

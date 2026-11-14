@@ -202,7 +202,7 @@ period clusters NOW / −6M / −12M / −21M, `OMP_NUM_THREADS=4`. Use
 `experiments/run_round15_long_window.py::window()` and the cluster map in
 `experiments/analyze_round19c_conformal.py::CLUSTER_OF`.
 
-Snapshot: prefer a fresh `python ab_test.py fetch --days 1825` (needs
+Snapshot: prefer a fresh `python ab_test.py fetch` (needs
 `ENTSO_E_TOKEN`; Peter runs this locally). `ab_cache/long/2026-08-21` is
 usable if a fresh one is not available, but check the weather tail first
 (docs/AB_TESTING.md "Snapshot generations"). Slot share drifts strongly with solar build-out

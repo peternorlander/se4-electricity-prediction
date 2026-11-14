@@ -161,3 +161,11 @@ def test_an_overlay_with_a_hole_or_another_version_is_ignored(base_snapshot, tmp
         with seed.seeded_cache(inputs, meta, archive_lag_days=5, overlay=overlay) as (_, tmp):
             record = sc._load(sc.SOURCES["yahoo_ttf"], tmp)
         assert record["frame"]["date"].max() == TODAY - timedelta(days=1)   # the snapshot's own
+
+
+def test_a_long_fetch_starts_on_the_first_day_carbon_and_gas_exist():
+    import ab_test
+    assert ab_test.LONG_FETCH_START == date(2021, 10, 18)
+    assert ab_test.long_fetch_days(date(2026, 11, 13)) == 1852
+    for today in (date(2026, 11, 13), date(2027, 3, 1)):
+        assert today - timedelta(days=ab_test.long_fetch_days(today)) == ab_test.LONG_FETCH_START

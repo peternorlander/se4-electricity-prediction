@@ -28,7 +28,7 @@ training set -- and that makes it exactly one evaluation year too short to
 measure production honestly, because the walk-forward has to take its 364 test
 days out of that same window: its early test weeks then train on ~731 rows
 instead of 1088. Only a longer snapshot can give every test week production's
-own training length, so `fetch` defaults to ~5 years (LONG_FETCH_DAYS) under
+own training length, so `fetch` defaults to ~5 years (from LONG_FETCH_START) under
 ab_cache/long/, and `run` loads from there and trains each week on a rolling
 ab.harness.PRODUCTION_TRAIN_ROWS-row window.
 
@@ -62,7 +62,7 @@ prints which period clusters a rolling grid can reach on the rows it got.
 import argparse
 import json
 import sys
-from datetime import datetime, UTC
+from datetime import date, datetime, UTC
 from pathlib import Path
 
 from se4.ab.snapshot import (save_snapshot, list_snapshots, load_snapshot, read_meta,
@@ -71,11 +71,17 @@ from se4.ab.harness import parse_shift_range, PRODUCTION_TRAIN_ROWS, LAG_WARMUP_
 from se4.ab.verdict import run_ab
 from se4.ab.vintage import default_root as default_vintage_root
 
-# Default fetch length. 1825 days (~5 years) is the right number and asking for
-# more buys nothing: the frame cannot start before EUA carbon data does
-# (2021-10-18), so a longer window only widens the head that gets dropped. See
-# docs/AB_TESTING.md "How long a snapshot to fetch".
-LONG_FETCH_DAYS = 1825
+# A long fetch starts on a fixed date: 2021-10-18, the first day EU carbon (EUA) and TTF gas
+# exist at all. Earlier days have prices and weather but no carbon/gas, so the frame drops
+# them; later ones throw away history. A fixed number of days (1825, until 2026-11-13) drifts
+# past that date by a row a day and shrinks the frame -- it cost the -12M cluster its room.
+# See docs/AB_TESTING.md "How long a snapshot to fetch".
+LONG_FETCH_START = date(2021, 10, 18)
+
+
+def long_fetch_days(today: date) -> int:
+    """`--days` that makes a long fetch start on LONG_FETCH_START (1852 on 2026-11-13)."""
+    return (today - LONG_FETCH_START).days
 
 # One evaluation year, in rows -- the 52 x 7 test days every grid point spends.
 EVAL_DAYS = 364
@@ -171,6 +177,9 @@ def cmd_fetch(args):
         f"before running any rolling grid."
     )
 
+    today = datetime.now(UTC).date()
+    if args.days is None:
+        args.days = long_fetch_days(today)
     is_long = args.days > production_days
     fetch_data.TRAINING_DAYS = args.days
     if args.incremental is None and (args.max_stale_days is not None or args.overlay):
@@ -183,7 +192,6 @@ def cmd_fetch(args):
     else:
         cache_root = DEFAULT_CACHE_ROOT
 
-    today = datetime.now(UTC).date()
     print(f"Fetching training inputs for {today} "
           f"({fetch_data.TRAINING_DAYS} days) -> {cache_root}/ ...")
     extra_meta = {}
@@ -330,12 +338,11 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     fetch_parser = subparsers.add_parser("fetch", help="Fetch and cache today's training inputs.")
-    fetch_parser.add_argument("--days", type=int, default=LONG_FETCH_DAYS,
-                               help=f"Training window length in days (default: "
-                                    f"{LONG_FETCH_DAYS}, ~5 years, saved under "
-                                    f"ab_cache/long/). Asking for more buys no extra "
-                                    f"rows: the frame cannot start before EUA carbon "
-                                    f"data does (2021-10-18) and the head is dropped. "
+    fetch_parser.add_argument("--days", type=int, default=None,
+                               help=f"Training window length in days. Default: back to "
+                                    f"{LONG_FETCH_START} (~5 years, saved under "
+                                    f"ab_cache/long/), the first day carbon and gas prices "
+                                    f"exist -- an earlier start buys no rows. "
                                     f"Pass 1095 for a production-shaped snapshot in "
                                     f"ab_cache/ -- useful for the integration check, "
                                     f"too short for a rolling grid. See "

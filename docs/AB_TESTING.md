@@ -1076,8 +1076,12 @@ instead of 42, `min` and `cheap2h`. Its cluster-mean delta against the productio
 
 ### How long a snapshot to fetch, and why a long one is shorter than you asked for
 
-**`--days 1825` is the right length. You will get fewer rows than that, and that
-is correct behaviour, not damage.** A long fetch reaches back past the start of
+**The default long fetch starts on a fixed date, 2021-10-18 (`LONG_FETCH_START`;
+1852 days on 2026-11-13), not a fixed number of days.** Until 2026-11-13 the default
+was 1825 days; that window slid past 2021-10-18 by a row a day, and the frame shrank
+with it (1818 rows, so the −12M cluster, which needs 369 shifts, no longer fit).
+Before the window reaches that date you get fewer rows than you asked for, and that
+is correct behaviour, not damage. A long fetch reaches back past the start of
 the shortest-history source: EU ETS carbon (`CO2.L` on Yahoo) begins **2021-10-18**
 and nothing earlier exists to fetch. `_warn_uncovered` leaves those days NaN
 instead of zero-filling them, the final `dropna` removes the rows, and the frame
@@ -1092,12 +1096,17 @@ start date the fetch window implies. Measured on the three long caches:
 
 Three things follow, and they are the whole practical answer:
 
-* **The waste shrinks on its own and disappears 2026-10-20.** The floor is a
-  fixed calendar date, so every week that passes, a 1825-day window starts closer
-  to it. From 2026-10-20 a 5-year fetch loses nothing at all.
-* **Do not fetch longer to compensate.** Asking for 2200 days buys zero extra
-  usable rows — it just widens the head that gets dropped, and lengthens a fetch
-  that is already the slow part. 1825 stays the right number.
+* **The waste disappeared on its own, then reversed.** The floor is a fixed calendar
+  date, so a fixed-length window starts closer to it every week; it reached the floor
+  around 2026-10-20 and from then on a 1825-day window started *after* it and threw
+  away a row per day. That is why the default is now the date, not the length. A
+  window starting 2021-10-18 builds to a frame starting 2021-10-25 (the lag features
+  need a week of warm-up); one starting about 2021-10-14 would reach 2021-10-21 and
+  give ~4 more rows, but an `--incremental` fetch cannot start before 2021-10-18
+  (the cached TTF/EUA begin there), so the date stays one rule for both.
+* **Do not fetch longer to compensate.** Asking for more than the days back to
+  2021-10-18 buys at most ~4 usable rows — it widens the head that gets dropped, and
+  lengthens a fetch that is already the slow part.
 * **Every long cache has a different length.** 1747 / 1762 / 1787 above are three
   legitimate row counts. A grid script that asserts the count from the cache it
   was written against will trip on the next one; that assertion is doing its job.
