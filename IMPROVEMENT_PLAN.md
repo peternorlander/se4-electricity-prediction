@@ -9,7 +9,7 @@ are never started early or in part.
 
 **Item numbers are stable.** They are the September review's, and the docs, ledgers and
 commits refer to items by number ("plan 2.20", "2.1-C"), so a closed item leaves a gap
-(2.1, 2.4, 2.7–2.9, 2.12, 2.15–2.17 and 2.19 are closed) and nothing is renumbered; a new item takes the
+(2.1, 2.4, 2.7–2.9, 2.12, 2.15–2.17, 2.19 and 2.20 are closed) and nothing is renumbered; a new item takes the
 next free number. "Old item N" — a single number — means an item of the 2026-08 list, as
 it does in older commit messages that say "`IMPROVEMENT_PLAN.md` item N". **A number alone
 says nothing to a reader:** wherever an item is named outside its own heading — section 4, a
@@ -43,7 +43,8 @@ is explicitly not a priority.**
 - **Every open item is decided on the adoption bar, whenever its bar was first written.**
   "2.18 Near-horizon model" and "2.20 Nuclear column as production sees it" had bars in
   the old vocabulary (clusters, `classify_clustered`); both were rewritten onto the
-  adoption bar on 2026-11-15 (Peter: one practice for every item).
+  adoption bar on 2026-11-15 (Peter: one practice for every item). 2.20 was then read on
+  it and closed (REJECTED.md, round 33).
 - An adopted change to a point model gets a row in the
   [forward-confirmation register (4.4)](#44-forward-confirmation-register) in the commit
   that ships it.
@@ -277,7 +278,7 @@ hurdle on `min` (closed twice).
 
 ### 2.6 Slot targets (round 20)
 
-**State (2026-11-08):** Not started. **Blocked by** the November run (2.20, 2.18),
+**State (2026-11-08):** Not started. **Blocked by** the November run (2.18),
 **because** slot targets go into `model.TARGETS`, which `ab.variants.BASELINE` mirrors, and a
 baseline must not move while another candidate is being measured; **until** that run's
 verdicts are in. Nothing else blocks it.
@@ -425,8 +426,10 @@ confirm them). *Data done 2026-11-14 (Peter, with the token):* the A75 generatio
 top-up for eight zones, 2026-10-01 → 2026-11-14 (`fetch_round29_entsoe.py --since 2026-10-01`, into
 `ab_cache/entsoe_r29/2026-11-14`; the five offshore-wind requests for SE1–SE4 and FI come back empty,
 as they did on 2026-10-24, because those zones have none). *Resume at:* the 2.18 run on
-`long/2026-11-13`, its vintages fetched first (public, no token). It is evaluated in the same pass
-as 2.20 and is Peter's to take up. Its `avg` arm is measured
+`long/2026-11-13`. Its forecast vintages are already in `ab_cache/vintages` (through 2026-11-12, covering every
+year-grid test day), so no fetch is needed first. 2.20 was closed on 2026-11-15 without a change to production, so `main`
+is as the `avg` arm below expects. It is Peter's to
+take up. Its `avg` arm is measured
 against production `avg` as it is since 2026-11-14 (the time index, half-life 365): the `_mw`
 gain quoted below was read against the old `avg`, so the `base` of that pass is re-run, not read
 from the round-27 errors.
@@ -545,69 +548,6 @@ six sent days) and archive weather hides it.
 `model.predict` by horizon. The harness needs a per-row target, the same shape as
 `run_round25_vintage.py`'s per-row scoring.
 
-### 2.20 The decomposed nuclear column, replayed as production sees it (added 2026-10-24, run with 2.18)
-
-**State (2026-11-14):** Not started; scripts exist (`experiments/run_round28.py`). **Not blocked
-— can be taken now**: the replication cache `long/2026-11-13` exists. Both arms are leads picked
-as the best of seven on caches that share their windows, so only that cache's new weeks can
-confirm them, and a parser change on a lead inside the noise floor is not worth its risk.
-*Data done 2026-11-14 (Peter, with the token):* the A77 top-up from 2026-10-16
-(`fetch_round28_entsoe.py --only a77 --since 2026-10-16`, into `ab_cache/entsoe_r28/2026-11-14`, 11 rows,
-newest record created 2026-11-13). The scratch data layer used to read only the newest top-up
-directory, which dropped one forced B14 record of 2026-10-14 held by the 2026-10-22 top-up and
-not by this one; it now applies every top-up directory oldest first. *Resume at:* the run, the same
-pass as 2.18. **Its `base` has moved:** since 2026-11-14 production `avg` carries `t_index` and a 365-day half-life
-([DECISIONS.md](docs/DECISIONS.md#time-index-for-avg-round-30)), and the round-28 deltas were read
-against the old `avg`, so `base`, `Rac` and `Rall` are all re-run on the new list and half-life.
-
-**What is open.** Round 28 closed the nuclear column on its pre-registered bar (scored with every record
-visible, HS). Scored as production actually serves it (AF: planned outages visible, forced ones only once
-started — which is what `predict.py` fetches today), two arms read slightly better than today's column on
-`avg`: `Rac` (distinct nuclear units + distinct non-nuclear units, replacing `nuclear_outage_se3`) −0.05,
-negative on all six caches, and `Rall` (those two + unavailable nuclear MW + cancelled records) −0.07, negative
-on five. About half of it is the old column losing more than the new ones when future forced outages are
-invisible. It is inside the `avg` noise floor, the six caches share most of their windows, and the two arms
-were the best of seven, so it is a lead picked after the fact, not a result
-([FINDINGS.md](docs/FINDINGS.md#the-nuclear-column-and-the-week-ahead-load-carry-nothing-a-model-can-use-round-28)).
-
-**When and how.** In the same run as 2.18, on the first long cache fetched at least four weeks after
-`long/2026-10-16` (mid-November 2026 or later), plus a top-up of the A77 records to that date
-(`experiments/fetch_round28_entsoe.py --only a77 --since <four weeks before the cache>`). Re-use
-`experiments/run_round28.py` (`kind avg`, arms `base`, `Rac`, `Rall`; the data layer picks the newest
-`ab_cache/entsoe_r28/` directory). Only the new cache counts; the six old caches are not re-run.
-
-**Bar (rewritten 2026-11-15; Peter: one practice for every item).**
-[The adoption bar](docs/AB_TESTING.md#the-adoption-bar), row *addition*: replacing one column by
-several gives the model new information, so this is not a correctness fix. For `Rac` and `Rall`
-separately against `base`, under AF, on `long/2026-11-13`: the year grid (shifts 0–6 and 364–370),
-FORECAST weather, the six sent days, one seed. The script reads the verdict with
-`se4.ab.dayverdict.day_verdict` on its own per-row errors and does not reimplement the rule.
-
-- `REAL` on `avg`, and `max` (which reads the same column) not `HARMFUL`.
-- The HS reading (every record visible) not `HARMFUL` on `avg`.
-- `Rall` is four columns, so it also needs the
-  [permuted null](docs/AB_TESTING.md#adding-columns-has-a-price-the-permuted-null-arm-round-29)
-  of that row.
-- Both arms were the best of seven on these same days, so the interval reads better than it is.
-  The `--since 2026-10-17` reading (days no pick has seen; four weeks, reported and not gated)
-  goes in the entry, and the row in the
-  [forward-confirmation register (4.4)](#44-forward-confirmation-register) says: reverted unless
-  the forward read's delta is below zero.
-
-If one arm passes, it is a parser change in `se4/sources/entso_e.py` (keep unit, `psrType` and document status —
-the guard in `experiments/results/nuclear_parser_fix.patch` is the starting point) and needs the
-local integration check before it ships. If both pass, `Rac` (two columns, less to maintain) unless `Rall`'s
-delta is lower by more than 0.05. If neither is `REAL`, 2.20 is closed and the column stays: a parser
-change on an effect two years of days cannot resolve is not worth its risk.
-
-*What this replaces.* The bar of 2026-10-24 asked for a negative AF delta in each of NOW, −6M and
-FAR, a cluster mean ≤ −0.05 and an HS delta not REAL-harmful, on archive weather and all seven rows.
-A first run had been read on that bar when this one was written. That run is not a verdict under
-this bar; the arms are read again on it.
-
-**Effort.** No extra compute beyond 2.18's run (one target, three arms); the parser change about two hours if it
-passed.
-
 ### 2.21 Dependency updates through Dependabot (added 2026-11-08)
 
 **State (2026-11-08):** Not started. **Not blocked — can be taken now** (it is 4.1 item 2).
@@ -652,10 +592,9 @@ quarter, and about 15 minutes for the version check on a numeric PR.
 
 ### 2.22 Warm-up days before the training window (added 2026-11-10)
 
-**State (2026-11-10):** Not started. **Blocked by** the November pass over 2.20 / 2.18,
+**State (2026-11-10):** Not started. **Blocked by** the 2.18 run,
 **because** it changes the rows production trains on and so moves the baseline those results
-are measured against (the round 30 rule, section 4); **until** that pass is done, earliest
-2026-11-13. Then take it at the first place in 4.1.
+are measured against (the round 30 rule, section 4); **until** both are done. Then take it at the first place in 4.1.
 
 **Mechanism.** The window is fetched as exactly `TRAINING_DAYS = 1095` days, and every source
 starts on its first day. The lagged features need days *before* it: `price_se4_avg_lag7` is NaN
@@ -701,10 +640,8 @@ warm-up days present and absent), plus one snapshot fetch and one pass.
 
 ### 2.23 Seed-averaged prediction (reopened 2026-11-15)
 
-**State (2026-11-15):** Not started. **Blocked by** the "2.20 Nuclear column as production
-sees it" and "2.18 Near-horizon model" runs, **because** it changes what every point model
-predicts and so moves the baseline those results are measured against; **until** both are
-done.
+**State (2026-11-15):** Not started. **Blocked by** the "2.18 Near-horizon model" run, **because** it changes what every point model
+predicts and so moves the baseline that result is measured against; **until** it is done.
 
 **What it is.** Fit each target under K seeds and serve the mean of the K predictions,
 instead of one fit under seed 42.
@@ -871,7 +808,8 @@ plan means the first item of 4.1, and nothing else.**
 - 4.2 holds every item whose State says *Blocked*. Nothing in it is started — not partly, not
   early, not "the half that can run now", not a fetch script or a prepared run for it — until
   the blocker clears. A result measured on today's model goes stale with the next change to
-  main (round 30, 2026-10-31: the six-cache half of a time-index item, since shipped, was started early
+  main — so `main` changes between measurements, never during one: a finished and confirmed
+  item ships at once, and the next measurement starts on the new `main` (round 30, 2026-10-31: the six-cache half of a time-index item, since shipped, was started early
   and stopped for that reason). Pausing is different: stopping an item and writing down where it stands is always
   allowed, and it is what the State line is for.
 - Before taking the first item of 4.1, check 4.2: an item whose blocker has cleared (its date
@@ -884,9 +822,8 @@ plan means the first item of 4.1, and nothing else.**
 
 ### 4.1 Ready now, in order
 
-1. **2.18 Near-horizon model** and **2.20 Nuclear column as production sees it** — one pass over
-   `long/2026-11-13`, on the new `avg` baseline. The token fetches (A75/A65 and A77 top-ups) are done
-   (2026-11-14); next the vintages for the cache, then the run. 2.22 and 2.6 wait for this pass.
+1. **2.18 Near-horizon model** — on `main` as it is (2.20 closed on 2026-11-15 with no change to
+   production); its vintages are already cached. 2.22 and 2.6 wait for it.
 2. **Section 3, low-priority leads** — `ttf_vs_30d` (gas price against its 30-day mean),
    `cpl_gap7` (a coupling-gap lag for `cheap2h`), the q90 charging rule. Only with a stated
    mechanism, and not while a 4.2 run is due within a week (the same staleness rule).
@@ -901,17 +838,17 @@ the *because*, what is done so far and where to resume are in the item.
 
 | Item | Blocked by | Earliest |
 |---|---|---|
-| **2.22 Warm-up days before the training window** | The 2.18 / 2.20 pass (4.1 item 1): a change to production's training rows moves the baseline it measures against | after that pass |
+| **2.22 Warm-up days before the training window** | The 2.18 run (4.1 item 1): a change to production's training rows moves the baseline it measures against | after 2.18 |
 | **2.2 Production scorecard** · **2.13 Northern wind, production check** | Four weeks of the prediction log | 2026-11-15 |
 | **2.3b Three-model weather blend** (shadow arm running, 4.3) | The scorecard (2.2) and four weeks of logged `blend` rows | four weeks after the first `blend` row, not before 2026-11-15 |
 | **2.3c Train on forecast weather** | The 2.3b verdict | after 2.3b |
 | **2.3d Weather-uncertainty band** | The scorecard (2.2), a written bar and its own shadow arm | after 2.2 |
-| **2.6 Slot targets** · then **2.5 Hurdle label, slot-specific arm** | The 2.18 / 2.20 pass (4.1 item 1) (a baseline must not move mid-measurement); 2.5 also needs 2.6 | after that run |
+| **2.6 Slot targets** · then **2.5 Hurdle label, slot-specific arm** | The 2.18 run (4.1 item 1) (a baseline must not move mid-measurement); 2.5 also needs 2.6 | after 2.18 |
 | **2.10 `min ≤ cheap2h` coherence, re-check** | A long cache from mid-January 2027 | 2027-01-15 |
 | **2.11 Longer horizon** | Peter's product decision | — |
 | **2.14 Nord Pool outage messages (UMM)** (parked) | A consumer: a new per-day column from a revisioned document | — |
 | **`B6_fuel_co2` on `min`** (section 3) | Far periods that train on post-crisis windows | the mid-November cache |
-| **2.23 Seed-averaged prediction** | The 2.20 and 2.18 runs: it changes what every point model predicts | after both |
+| **2.23 Seed-averaged prediction** | The 2.18 run: it changes what every point model predicts | after 2.18 |
 | **2.25 Re-audit of the trough feature lists** | The 2.18 run: it may change the `cheap2h` / `min` models | after 2.18 |
 | **2.24 Forward confirmation, first pass** | Forward days after the changes of 2026-10 and 2026-11 | 2027-05-15 |
 
