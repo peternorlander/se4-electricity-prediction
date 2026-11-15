@@ -125,6 +125,10 @@ What they show:
 
 - Verdicts before this date are not re-judged. Their words keep their old meaning
   ([AB_TESTING.md](AB_TESTING.md#the-adoption-bar), last paragraph of the bar).
+- Open plan items are not exempt. The two that had pre-registered a bar in the old
+  vocabulary ("2.18 Near-horizon model", "2.20 Nuclear column as production sees it")
+  were rewritten onto the new bar on 2026-11-15, one of them after a first run had been
+  read on the old one.
 - Small effects become `UNRESOLVED` where the sign rules sometimes said REAL or NOISE.
   That is the honest reading of two years of days, and it will reject changes the old
   rule would have shipped. More seeds narrow the interval by a sixth; more days do not

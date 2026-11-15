@@ -271,11 +271,13 @@ reproduce when the change ships. Before reading any verdict, settle the question
 in [Horizon honesty](#horizon-honesty-measure-only-what-production-can-know)
 below, and record the answer in the ledger entry.
 
-**Items whose bar was written before 2026-11-15 keep it.** A plan item that
-pre-registered its bar in the old vocabulary (in November 2026: "2.18 Near-horizon
-model" and "2.20 Nuclear column as production sees it") is decided on that bar and on
-the grid it names; `ab_test.py run --grid clusters` prints those rules. Its entry also
-records the interval verdict from a default run. Ledger entries before that date keep
+**Every open item is decided on this table, whenever its bar was first written.** The
+two plan items that had pre-registered a bar in the old vocabulary ("2.18 Near-horizon
+model" and "2.20 Nuclear column as production sees it") had it rewritten onto this
+table on 2026-11-15. A bar may be rewritten onto the table after a run has been read on
+the old one, and the item then says so; it may not be rewritten back.
+`ab_test.py run --grid clusters` still prints the old rules, for reading old entries.
+Ledger entries before 2026-11-15 keep
 their words: `REAL` / `BORDERLINE` / `NOISE` there are `classify` or `classify_clustered`
 labels, "clmean" is the mean of three cluster means, and "REAL on 6/6 caches" means the
 cluster rule passed on six caches that share almost all of their test days.

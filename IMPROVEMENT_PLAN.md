@@ -40,10 +40,10 @@ is explicitly not a priority.**
   run, which row of [the adoption bar](docs/AB_TESTING.md#the-adoption-bar) it has to
   clear (addition, removal, correctness fix, band-only) and how many seeds it runs.
   `OMP_NUM_THREADS=4`.
-- **An item whose bar was written before 2026-11-15 keeps that bar** and the cluster
-  grid it names (`ab_test.py run --grid clusters`); its ledger entry also records the
-  interval verdict of a default run. In November 2026 that is "2.18 Near-horizon model"
-  and "2.20 Nuclear column as production sees it".
+- **Every open item is decided on the adoption bar, whenever its bar was first written.**
+  "2.18 Near-horizon model" and "2.20 Nuclear column as production sees it" had bars in
+  the old vocabulary (clusters, `classify_clustered`); both were rewritten onto the
+  adoption bar on 2026-11-15 (Peter: one practice for every item).
 - An adopted change to a point model gets a row in the
   [forward-confirmation register (4.4)](#44-forward-confirmation-register) in the commit
   that ships it.
@@ -470,10 +470,8 @@ reads the price today.
   **D+5 −0.14 / −0.24 / −0.36** (every cache and cluster negative, NOW −0.08 … −0.25),
   against ≈ 0 in NOW with the columns on all six days. The split was picked after seeing
   these numbers, so it is pre-registered here, before the 2.18 run: **near `avg` = AVG
-  list + the two `_mw` columns for D+2…D+5, today's `avg` for D+6…D+7**. Bar: production-
-  mapped forecast-weather delta negative in every cluster on ≥ 2 long caches with
-  genuinely new NOW windows (one fetched mid-November 2026 or later), and the six-day
-  total not worse. `min` and cheap2h do not get the columns at any horizon (worse on a
+  list + the two `_mw` columns for D+2…D+5, today's `avg` for D+6…D+7**. Bar: the one at
+  the end of this item. `min` and cheap2h do not get the columns at any horizon (worse on a
   forecast at every lead, round 27). Build it on the same per-horizon routing as the
   price-family near model; it is not worth a second avg model on its own (−0.14 in NOW
   is near the ~0.10–0.15 `avg` noise floor).
@@ -488,12 +486,9 @@ that exists on a forecast and not on the archive, chosen after the numbers were 
 better of two first-stage variants, and neutral in the newest four weeks. The table, the
 size of the effect in percent of the base error and the traps are in
 [FINDINGS.md](docs/FINDINGS.md#the-physical-residual-load-is-a-high-ceiling-that-the-weather-reaches-little-of-round-29).
-**Bar, written 2026-10-25 before any replication exists:** on a
-long cache fetched mid-November 2026 or later (with its own vintage fetch and the A75/A65
-top-up, `experiments/fetch_round29_entsoe.py --since 2026-10-01`), the production-mapped
-D+2…D+4 delta is negative in every cluster on `cheap2h` and not positive on `min`, the
-archive delta is not REAL-harmful in any cluster, the six-day total is not worse, and
-`ab_test.py band` shows no breach. Run it with `experiments/run_round29_cal.py --arms
+**Bar:** the one at the end of this item, on `long/2026-11-13` (with its own vintage fetch
+and the A75/A65 top-up, `experiments/fetch_round29_entsoe.py --since 2026-10-01`). Run it
+with `experiments/run_round29_cal.py --arms
 base,CALRn` in the same pass as the price family. Cost if it holds: A75 + A65 for eight zones
 fetched on every run (about five minutes with the token production already uses) and a first
 stage refit per run; it would be a column of the near model, never of the all-horizon lists.
@@ -506,28 +501,45 @@ same run as one more candidate for the near model, next to the price family and 
 the horizon where it stops paying decides where it is switched off. Until that run the
 production model gets nothing from it.
 
-**Bar** (write it down before the run). Per horizon, `classify_clustered` REAL and
-favourable on ≥ 2 long caches with genuinely different NOW windows. The total over
-D+2…D+7 must not get worse.
+**Bar (rewritten 2026-11-15, before any run of this item; Peter: one practice for every
+item).** [The adoption bar](docs/AB_TESTING.md#the-adoption-bar), row *addition*, for each
+of the three candidates separately. What is compared is the routed model (the near model
+on its days, today's model on the rest) against today's model, on `long/2026-11-13`: the
+year grid, FORECAST weather, the six sent days, one seed. A scratch runner reads the
+verdict with `se4.ab.dayverdict.day_verdict` on its own per-row errors and does not
+reimplement the rule.
 
-**Measurement geometry: decide before the run (Peter, 2026-10-24).** The step-7 grid is
-right for all-horizon verdicts, but this item makes one per horizon, and two properties of
-the grid then matter. Within one grid point, eval row k is always the same weekday, so a
-per-horizon delta is also a per-weekday delta. And each horizon gets only 52 test days per
-point. Consider rolling origins instead: fit once per test week as now, then issue a
-forecast from each of the seven start days in that week, each with its own freeze anchor.
-Every test day is then scored at every horizon and every horizon sees every weekday, for
-about the cost in fits of the current grid. Both arms share the same fits, so the model
-being 0–6 days old at an origin (production: ~1) does not bias the comparison. Three
-things to settle in writing first: (1) the extra origins sharpen each point's per-horizon
-estimate but are not replication, because the same day at D+3 and D+6 is strongly
-correlated; the cluster stays the unit of the verdict
-([AB_TESTING.md](docs/AB_TESTING.md)), and per-window spreads from overlapping origins are
-optimistic. (2) Score D+2…D+7 only; row 7 (D+8) is not sent. (3) Run it on forecast
-vintages as well as archive weather. On archive weather a day's D+3 and D+6 differ only by
-the age of the frozen lags, while most of the real decay with horizon is weather forecast
-error (+1.3 cheap2h / +1.5 min / +2.4 avg on the six sent days). The near/far split N is
-the quantity most exposed to that.
+- *Price family* (`cheap2h`, `min`): `REAL` on `cheap2h`; `min` `REAL` or left on today's
+  model; neither `MIXED`; no target `HARMFUL`; every `BREACH` of `ab_test.py band`
+  decided on.
+- *`avg` `_mw` split* (D+2…D+5): `REAL` on `avg`.
+- *`CALRn`* (D+2…D+4): `REAL` on `cheap2h`, `min` not `HARMFUL`, the band as above, and
+  the ARCHIVE reading not `HARMFUL` (the gain is expected on a forecast only).
+
+*Choosing N for the price family.* N is fixed before the two-year verdict is read, from
+the PREV year alone (`--shifts 364-370`): the per-lead mean delta, no verdict on it, and
+N is the last lead before the first one whose delta is not below zero. No such lead
+closes the price family. The routed model with that N then has to be `REAL` on the
+default run, with the NOW-year delta (the year N was not chosen on) below zero.
+
+*The two post hoc candidates carry a stricter revert bar.* The `_mw` split and `CALRn`
+had their horizons picked after their numbers were seen on these same days, so their
+interval reads better than it is. Each is shipped on the bar above, with the
+`--since 2026-10-17` reading (days no pick has seen; four weeks, reported and not
+gated) in its entry, and its row in the
+[forward-confirmation register (4.4)](#44-forward-confirmation-register) says: reverted
+unless the forward read's delta is below zero.
+
+**Measurement geometry: settled by the year grid (2026-11-15).** The question of
+2026-10-24 was that on one step-7 point a horizon is also a weekday, and gets only 52
+test days. The year grid runs all seven week alignments, so every test day is scored at
+every sent horizon and every horizon sees every weekday, which is what the rolling
+origins considered then would have bought. The three things that were to be settled: the
+same day at two horizons is strongly correlated, and the interval handles it, because
+the bootstrap draws whole 14-day calendar blocks with all their rows; only D+2…D+7 are
+scored; and the gate is read on forecast weather, which matters most for N, since most
+of the decay with horizon is forecast error (+1.3 cheap2h / +1.5 min / +2.4 avg on the
+six sent days) and archive weather hides it.
 
 **Cost.** One extra model per near horizon, plus routing in `predict.py` and
 `model.predict` by horizon. The harness needs a per-row target, the same shape as
@@ -562,14 +574,36 @@ were the best of seven, so it is a lead picked after the fact, not a result
 `long/2026-10-16` (mid-November 2026 or later), plus a top-up of the A77 records to that date
 (`experiments/fetch_round28_entsoe.py --only a77 --since <four weeks before the cache>`). Re-use
 `experiments/run_round28.py` (`kind avg`, arms `base`, `Rac`, `Rall`; the data layer picks the newest
-`ab_cache/entsoe_r28/` directory). Only the new cache's own grid counts; the six old caches are not re-run.
+`ab_cache/entsoe_r28/` directory). Only the new cache counts; the six old caches are not re-run.
 
-**Bar (written 2026-10-24, before the run).** For `Rac` and `Rall` separately, delta against `base` under AF on
-the new cache: negative in each of NOW, −6M and FAR, cluster mean ≤ −0.05, and the HS delta not REAL-harmful.
+**Bar (rewritten 2026-11-15; Peter: one practice for every item).**
+[The adoption bar](docs/AB_TESTING.md#the-adoption-bar), row *addition*: replacing one column by
+several gives the model new information, so this is not a correctness fix. For `Rac` and `Rall`
+separately against `base`, under AF, on `long/2026-11-13`: the year grid (shifts 0–6 and 364–370),
+FORECAST weather, the six sent days, one seed. The script reads the verdict with
+`se4.ab.dayverdict.day_verdict` on its own per-row errors and does not reimplement the rule.
+
+- `REAL` on `avg`, and `max` (which reads the same column) not `HARMFUL`.
+- The HS reading (every record visible) not `HARMFUL` on `avg`.
+- `Rall` is four columns, so it also needs the
+  [permuted null](docs/AB_TESTING.md#adding-columns-has-a-price-the-permuted-null-arm-round-29)
+  of that row.
+- Both arms were the best of seven on these same days, so the interval reads better than it is.
+  The `--since 2026-10-17` reading (days no pick has seen; four weeks, reported and not gated)
+  goes in the entry, and the row in the
+  [forward-confirmation register (4.4)](#44-forward-confirmation-register) says: reverted unless
+  the forward read's delta is below zero.
+
 If one arm passes, it is a parser change in `se4/sources/entso_e.py` (keep unit, `psrType` and document status —
-the guard in `experiments/results/nuclear_parser_fix.patch` is the starting point) and needs `max` reported and
-the local integration check before it ships. If both pass, `Rac` (two columns, less to maintain) unless `Rall`
-is ahead by more than 0.05. If neither passes, 2.20 is closed for good and the column stays.
+the guard in `experiments/results/nuclear_parser_fix.patch` is the starting point) and needs the
+local integration check before it ships. If both pass, `Rac` (two columns, less to maintain) unless `Rall`'s
+delta is lower by more than 0.05. If neither is `REAL`, 2.20 is closed and the column stays: a parser
+change on an effect two years of days cannot resolve is not worth its risk.
+
+*What this replaces.* The bar of 2026-10-24 asked for a negative AF delta in each of NOW, −6M and
+FAR, a cluster mean ≤ −0.05 and an HS delta not REAL-harmful, on archive weather and all seven rows.
+A first run had been read on that bar when this one was written. That run is not a verdict under
+this bar; the arms are read again on it.
 
 **Effort.** No extra compute beyond 2.18's run (one target, three arms); the parser change about two hours if it
 passed.
